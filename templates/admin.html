@@ -161,7 +161,39 @@
       </form>
     </div>
   </div>
+
+  <!-- Diagnostica connessione Dynamics -->
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">Dynamics 365 · diagnostica</div>
+      <div class="sub">Verifica perché una ricerca Dynamics non restituisce risultati</div></div>
+    <div class="panel-body">
+      <div class="notice">La <strong>Diagnostica</strong> controlla la catena: URL istanza → token → <em>audience</em> del token (per quale risorsa è stato emesso) → chiamata di prova. Il <strong>log</strong> mostra le ultime righe registrate dalle ricerche Dynamics.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+        <button type="button" class="primary" id="dynDiagBtn">Esegui diagnostica</button>
+        <button type="button" id="dynLogBtn">Mostra log ricerche</button>
+      </div>
+      <pre id="dynDiagOut" style="display:none; white-space:pre-wrap; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:10px; padding:14px; font-size:12.5px; line-height:1.55; max-height:420px; overflow:auto;"></pre>
+    </div>
+  </div>
 </div>
+<script>
+  (function(){
+    var out=document.getElementById("dynDiagOut");
+    function show(t){ out.style.display="block"; out.textContent=t; }
+    var d=document.getElementById("dynDiagBtn");
+    if(d) d.addEventListener("click", async function(){
+      show("Diagnostica in corso…");
+      try{ var r=await fetch("/admin/dynamics/diagnose"); var j=await r.json(); show(j.report||"(nessun esito)"); }
+      catch(e){ show("Errore: "+e); }
+    });
+    var l=document.getElementById("dynLogBtn");
+    if(l) l.addEventListener("click", async function(){
+      show("Carico il log…");
+      try{ var r=await fetch("/admin/dynamics/log"); var j=await r.json(); show(j.log||"(log vuoto)"); }
+      catch(e){ show("Errore: "+e); }
+    });
+  })();
+</script>
 <script>
   (function(){
     var b=document.getElementById("autofillBtn"); if(!b) return;

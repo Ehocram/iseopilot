@@ -38,6 +38,32 @@ DYN_DIR = _DATA_DIR / "dynamics"
 DYN_DIR.mkdir(parents=True, exist_ok=True)
 dynamics_search.CATALOG_FILE = DYN_DIR / "catalog.json"
 dynamics_search.SCHEMA_DIR = DYN_DIR / "schema"
+# Log diagnostico Dynamics in un percorso noto (nel volume dati), così è
+# leggibile dall'admin senza entrare nel container.
+DYN_LOG = DYN_DIR / "dyn_debug.log"
+try:
+    dynamics_search._DBG_LOG = DYN_LOG
+except Exception:
+    pass
+
+
+def _dyn_log(msg: str):
+    try:
+        import datetime
+        with open(DYN_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [connectors] {msg}\n")
+    except Exception:
+        pass
+
+
+def dyn_log_tail(n: int = 80) -> str:
+    try:
+        if not DYN_LOG.is_file():
+            return "(nessun log Dynamics ancora generato)"
+        lines = DYN_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(lines[-n:])
+    except Exception as e:
+        return f"(impossibile leggere il log: {e})"
 
 # Registro dei report HTML generati da Dynamics: il modulo li scrive su disco
 # e restituisce [REPORT_HTML: path]; qui li mappiamo a un token non indovinabile
@@ -223,7 +249,7 @@ def poll_once(user: str, conn: str) -> dict:
 
 # ── Ricerca (riusa i moduli desktop col token per-utente) ───
 def search(user: str, conn: str, query: str, max_results: int = 3,
-           current_user_name: str = "") -> str:
+           current_user_name: str = "", ai_settings: dict | None = None) -> str:
     """Cerca con l'identità dell'utente. Stringa vuota se non connesso o errore.
     Reindirizza il TOKEN_FILE del modulo al file dell'utente, sotto lock."""
     if conn not in CONNECTORS or not is_connected(user, conn):
@@ -247,12 +273,7 @@ def search(user: str, conn: str, query: str, max_results: int = 3,
                 prev = dynamics_search.TOKEN_FILE
                 dynamics_search.TOKEN_FILE = user_token
                 try:
-                    dyn = dynamics_search.DynamicsSearch({
-                        "dyn_client_id": cfg["client_id"],
-                        "dyn_tenant_id": cfg["tenant_id"],
-                        "dyn_resource_url": cfg["resource_url"],
-                        "dyn_schema_dir": str(dynamics_search.SCHEMA_DIR),
-                    })
+                    dyn = dynamics_search.DynamicsSearch(_dyn_full_cfg(cfg, ai_settings))
                     return dyn.search(query, max_results=max_results,
                                       current_user_name=current_user_name) or ""
                 finally:
@@ -261,8 +282,36 @@ def search(user: str, conn: str, query: str, max_results: int = 3,
             return ""
 
 
+def _dyn_full_cfg(cfg: dict, ai_settings: dict | None) -> dict:
+    """Costruisce il cfg COMPLETO per DynamicsSearch, come fa l'app desktop.
+    Il modulo non usa solo i parametri di connessione: per il planner agentico
+    e per tradurre la domanda in parole chiave chiama il motore AI, quindi gli
+    servono ai_engine + chiave/modello. Senza questi, il planner fallisce in
+    silenzio e la ricerca torna vuota."""
+    ai = ai_settings or {}
+    return {
+        # connessione
+        "dyn_client_id": cfg["client_id"],
+        "dyn_tenant_id": cfg["tenant_id"],
+        "dyn_resource_url": cfg["resource_url"],
+        "dyn_schema_dir": str(dynamics_search.SCHEMA_DIR),
+        # motore AI per il planner (replica il cfg desktop)
+        "ai_engine": ai.get("ai_engine", "claude"),
+        "claude_api_key": ai.get("claude_api_key", ""),
+        "claude_model": ai.get("claude_model", "claude-opus-4-8"),
+        "openai_api_key": ai.get("openai_api_key", ""),
+        "openai_model": ai.get("openai_model", ""),
+        "lm_url": ai.get("lm_url", ""),
+        "lm_model": ai.get("lm_model", ""),
+        "reply_lang": ai.get("reply_lang", "Italiano"),
+        # comportamento ricerca
+        "dyn_agentic": ai.get("dyn_agentic", True),
+    }
+
+
 def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
-                      current_user_name: str = "") -> tuple[str, list[dict]]:
+                      current_user_name: str = "",
+                      ai_settings: dict | None = None) -> tuple[str, list[dict]]:
     """Come search(), ma ritorna anche i link strutturati delle fonti
     (nome, url) — replica i last_links del desktop. Per Dynamics i link
     non sono applicabili e la lista è vuota."""
@@ -289,15 +338,21 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
             else:
                 prev = dynamics_search.TOKEN_FILE
                 dynamics_search.TOKEN_FILE = user_token
+                _dyn_log(f"search avviata | query={query[:80]!r} | "
+                         f"resource_url={cfg.get('resource_url','')!r} | "
+                         f"token_file_esiste={user_token.is_file()}")
+                _ai = ai_settings or {}
+                _dyn_log(f"planner AI | motore={_ai.get('ai_engine','(assente)')} | "
+                         f"chiave_claude={'presente' if _ai.get('claude_api_key') else 'ASSENTE'} | "
+                         f"modello={_ai.get('claude_model','(default)')}")
+                if not cfg.get("resource_url"):
+                    _dyn_log("ERRORE: resource_url VUOTO — il token non può avere lo "
+                             "scope Dynamics. Configura l'URL istanza in Admin e RICONNETTI.")
                 try:
-                    dyn = dynamics_search.DynamicsSearch({
-                        "dyn_client_id": cfg["client_id"],
-                        "dyn_tenant_id": cfg["tenant_id"],
-                        "dyn_resource_url": cfg["resource_url"],
-                        "dyn_schema_dir": str(dynamics_search.SCHEMA_DIR),
-                    })
+                    dyn = dynamics_search.DynamicsSearch(_dyn_full_cfg(cfg, ai_settings))
                     text = dyn.search(query, max_results=max_results,
                                       current_user_name=current_user_name) or ""
+                    _dyn_log(f"search conclusa | caratteri_risultato={len(text)}")
                     # Estrai eventuale report HTML generato dal modulo: lo
                     # registriamo per token e lo togliamo dal testo (così non
                     # finisce grezzo nel contesto inviato a Claude).
@@ -311,11 +366,87 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
                     return text, links
                 finally:
                     dynamics_search.TOKEN_FILE = prev
-        except Exception:
+        except Exception as e:
+            import traceback
+            _dyn_log("ECCEZIONE durante la ricerca " + conn + ":\n" + traceback.format_exc())
             return "", []
 
 
 # ── Catalogo entità Dynamics (mappa relazioni + schema .md) ─
+def _jwt_audience(token: str) -> str:
+    """Estrae il claim 'aud' (audience) da un JWT senza verificarne la firma:
+    serve solo a capire PER QUALE risorsa è stato emesso il token."""
+    try:
+        import base64
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8", "replace"))
+        return str(data.get("aud", ""))
+    except Exception:
+        return ""
+
+
+def dyn_diagnose(user: str) -> str:
+    """Diagnostica end-to-end della connessione Dynamics dell'utente: resource
+    URL, presenza token, ottenimento access token, audience del token e una
+    chiamata di prova. Pensata per l'admin: dice dove si rompe la catena."""
+    out = []
+    if not is_connected(user, "dynamics"):
+        return ("Dynamics non risulta connesso per questo utente.\n"
+                "Vai in Connessioni e completa l'accesso device-code.")
+    cfg = ms_cfg("dynamics")
+    res = cfg.get("resource_url", "")
+    out.append("1) URL istanza (resource_url): " + (res if res else "*** VUOTO ***"))
+    if not res:
+        out.append("   ⛔ Senza URL istanza il token non può avere lo scope Dynamics.")
+        out.append("   → Imposta l'URL in Admin, poi DISCONNETTI e RICONNETTI Dynamics.")
+        return "\n".join(out)
+    user_token = _token_path(user, "dynamics")
+    out.append("2) File token utente: " + ("presente" if user_token.is_file() else "ASSENTE"))
+    with _LOCK:
+        prev = dynamics_search.TOKEN_FILE
+        dynamics_search.TOKEN_FILE = user_token
+        try:
+            dyn = dynamics_search.DynamicsSearch({
+                "dyn_client_id": cfg["client_id"],
+                "dyn_tenant_id": cfg["tenant_id"],
+                "dyn_resource_url": res,
+                "dyn_schema_dir": str(dynamics_search.SCHEMA_DIR),
+            })
+            tok = ""
+            try:
+                tok = dyn.tm.get_access_token() or ""
+                out.append("3) Access token: " + ("ottenuto" if tok else "NON ottenuto"))
+            except Exception as e:
+                out.append("3) Access token: ERRORE " + str(e)[:160])
+            if tok:
+                aud = _jwt_audience(tok)
+                out.append("4) Audience del token (aud): " + (aud or "(non leggibile)"))
+                res_host = res.replace("https://", "").rstrip("/")
+                if aud and (res in aud or res_host in aud):
+                    out.append("   ✅ Il token punta all'istanza Dynamics giusta.")
+                else:
+                    out.append("   ⛔ Il token NON è per questa istanza Dynamics "
+                               "(scope sbagliato al momento della connessione).")
+                    out.append("   → DISCONNETTI e RICONNETTI Dynamics ora che l'URL è impostato.")
+                # 5) chiamata di prova
+                try:
+                    import requests
+                    r = requests.get(res + "/data/$metadata",
+                                     headers={"Authorization": "Bearer " + tok},
+                                     timeout=30)
+                    out.append("5) GET /data/$metadata → HTTP " + str(r.status_code))
+                    if r.status_code == 401:
+                        out.append("   ⛔ 401 Unauthorized: token senza accesso. Riconnetti.")
+                    elif r.status_code == 200:
+                        out.append("   ✅ Dynamics risponde correttamente.")
+                except Exception as e:
+                    out.append("5) Chiamata di prova: ERRORE " + str(e)[:160])
+        finally:
+            dynamics_search.TOKEN_FILE = prev
+    return "\n".join(out)
+
+
 def dyn_catalog_status() -> dict:
     """Stato del catalogo Dynamics: presente, n. entità, relazioni, schema .md."""
     cf = Path(dynamics_search.CATALOG_FILE)

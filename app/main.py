@@ -217,7 +217,7 @@ def api_chat(request: Request, body: ChatRequest):
                     parts.append("[OneDrive]\n" + od)
                 source_links.extend(od_links)
             if store.get_user_setting(uid, "use_dynamics", "0") == "1" and connectors.is_connected(uid, "dynamics"):
-                dy, dy_links = connectors.search_with_links(uid, "dynamics", search_q, max_results=5, current_user_name=uid)
+                dy, dy_links = connectors.search_with_links(uid, "dynamics", search_q, max_results=5, current_user_name=uid, ai_settings=settings)
                 if dy.strip():
                     parts.append("[Dynamics 365]\n" + dy)
                 source_links.extend(dy_links)
@@ -879,6 +879,22 @@ def admin_build_dyn_catalog(request: Request):
         return RedirectResponse(url="/admin?dyn_err=" + str(res["errore"]).replace(" ", "+")[:200], status_code=303)
     msg = f"Catalogo+generato:+{res.get('count',0)}+entità,+{res.get('relazioni',0)}+relazioni,+{res.get('schema_md',{}).get('file',0)}+schema."
     return RedirectResponse(url="/admin?saved=1&dyn_msg=" + msg, status_code=303)
+
+
+@app.get("/admin/dynamics/diagnose")
+def admin_dyn_diagnose(request: Request):
+    user = auth.current_user(request)
+    if not user or not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    return JSONResponse({"report": connectors.dyn_diagnose(user["username"])})
+
+
+@app.get("/admin/dynamics/log")
+def admin_dyn_log(request: Request):
+    user = auth.current_user(request)
+    if not user or not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    return JSONResponse({"log": connectors.dyn_log_tail(120)})
 
 
 @app.get("/download/{token}")
