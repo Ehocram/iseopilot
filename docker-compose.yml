@@ -1,0 +1,25 @@
+# ============================================================
+# ISEO Chat Web — Docker Compose (srv-hq-ai-01)
+# Servizio: web   (coerente con la convenzione del progetto Flusso-AI)
+#
+# SICUREZZA — binding di rete:
+# La porta è pubblicata SOLO su 127.0.0.1, non sull'IP della LAN. L'app NON è
+# raggiungibile direttamente: l'unico ingresso è il reverse proxy / app proxy,
+# che pre-autentica e inietta l'identità. Questo è il presupposto che rende
+# valido il modello "niente autenticazione applicativa". Non cambiare in
+# 0.0.0.0 senza un proxy davanti.
+# ============================================================
+services:
+  web:
+    build: .
+    container_name: iseo-chat-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"     # SOLO loopback — esporre via proxy
+    env_file:
+      - .env
+    volumes:
+      - chat_data:/data           # DB SQLite + token per-utente (persistenti)
+
+volumes:
+  chat_data:

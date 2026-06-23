@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ t("Chat") }} — ISEOPilot{% endblock %}
+{% block nav_chat %}active{% endblock %}
+{% block body %}
+<div class="statusbar">
+  <div class="item"><span class="dot live" id="st-conn"></span><label>{{ t("Stato") }}</label><strong id="st-state">{{ t("Pronto") }}</strong></div>
+  <div class="item"><span class="dot on"></span><label>{{ t("Motore") }}</label><strong id="st-engine">Claude</strong></div>
+  <div class="item"><span class="dot on" id="st-anon-dot"></span><label>{{ t("Anonimizzazione") }}</label><strong id="st-anon">{{ t("attiva") }}</strong></div>
+  <div class="item"><span class="dot on"></span><label>{{ t("Modalità") }}</label><strong id="st-mode">{{ t("Documentale") }}</strong></div>
+  <div class="item"><label>{{ t("Area conoscenza") }}</label><strong>{{ department }}</strong></div>
+</div>
+
+<div class="chat-layout">
+  <aside class="chat-sidebar">
+    <button class="new-chat-btn" id="new-chat">＋ {{ t("Nuova chat") }}</button>
+    <div class="chat-list-head">{{ t("Conversazioni") }}</div>
+    <div class="chat-list" id="chat-list"><div class="chat-empty" id="chat-empty">{{ t("Nessuna conversazione salvata") }}</div></div>
+  </aside>
+
+  <div class="chat-shell">
+    <div class="messages" id="messages">
+      <div class="msg system">
+        <div class="role">{{ t("Sistema") }}</div>
+        <div class="bubble">{{ t("Assistente AI ISEO. Scrivi una domanda: la risposta arriva in streaming dal motore selezionato. Con Claude i dati tecnici sensibili (IP, email, codici fiscali, P.IVA, hash, token…) vengono anonimizzati prima dell'invio.") }}</div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="row">
+        <textarea id="input" placeholder="{{ t('Scrivi la tua domanda…  (Invio per inviare · Maiusc+Invio per andare a capo)') }}"></textarea>
+        <button class="send" id="send">{{ t("Invia") }}</button>
+      </div>
+      <div class="controls">
+        <div class="ctl">
+          <label for="engine">{{ t("Motore AI") }}</label>
+          <select id="engine">
+            <option value="claude">Claude</option>
+            <option value="lmstudio">LM Studio ({{ t("locale") }})</option>
+          </select>
+        </div>
+        <div class="ctl">
+          <label for="mode">{{ t("Modalità") }}</label>
+          <select id="mode" title="{{ t('Documentale: cerca nelle fonti. AI libera: conoscenza generale, senza cercare nei documenti.') }}">
+            <option value="kb">{{ t("Documentale") }}</option>
+            <option value="free">{{ t("AI libera") }}</option>
+          </select>
+        </div>
+        <div class="ctl">
+          <label for="tone">{{ t("Tono") }}</label>
+          <select id="tone">{% for tn in tones %}<option value="{{ tn }}">{{ tn }}</option>{% endfor %}</select>
+        </div>
+        <div class="ctl">
+          <label for="lang">{{ t("Lingua risposta") }}</label>
+          <select id="lang">{% for l in langs %}<option value="{{ l }}" {% if l == 'Italiano' %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  window.I18N_FB = {
+    good: "{{ t('Risposta utile — salva come esempio') }}",
+    bad: "{{ t('Risposta non utile') }}",
+    saved: "{{ t('Salvata come esempio') }}",
+    noted: "{{ t('Segnalazione registrata') }}",
+    confirmDel: "{{ t('Eliminare questa conversazione?') }}",
+    renamePrompt: "{{ t('Nuovo titolo della conversazione:') }}",
+    you: "{{ t('Tu') }}", assistant: "{{ t('Assistente') }}"
+  };
+</script>
+<script src="/static/chat.js"></script>
+{% endblock %}

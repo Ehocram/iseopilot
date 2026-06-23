@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Utenti — ISEOPilot{% endblock %}
+{% block nav_users %}active{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div class="eyebrow">Amministrazione · accessi</div>
+  <h1>Utenti</h1>
+  <p>Crea e gestisci gli account. Ogni utente appartiene a un dipartimento, che ne determina la base di conoscenza visibile.</p>
+</div>
+<div class="wrap">
+  {% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+  {% if err %}<div class="flash err">{{ err }}</div>{% endif %}
+
+  <!-- Nuovo utente -->
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">Nuovo accesso</div><h2>Crea utente</h2></div>
+    <form method="post" action="/admin/users" autocomplete="off">
+      <div class="row2">
+        <div class="field">
+          <label for="new_username">Nome utente</label>
+          <input type="text" id="new_username" name="new_username" required placeholder="nome.cognome">
+        </div>
+        <div class="field">
+          <label for="new_password">Password iniziale</label>
+          <input type="password" id="new_password" name="new_password" required placeholder="min. 8 caratteri">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="new_department">Dipartimento</label>
+          <select id="new_department" name="new_department" required>
+            {% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+          </select>
+          <div class="hint">Determina la collezione di conoscenza dell'utente.</div>
+        </div>
+        <div class="field">
+          <label>Ruolo</label>
+          <div class="checkrow" style="margin-top:6px;">
+            <input type="checkbox" id="new_is_admin" name="new_is_admin" value="1">
+            <label for="new_is_admin">Amministratore</label>
+          </div>
+          <div class="hint">Gli admin gestiscono motore, utenti e dipartimenti.</div>
+        </div>
+      </div>
+      <div class="actions"><button type="submit" class="primary">Crea utente</button></div>
+    </form>
+  </div>
+
+  <!-- Elenco utenti -->
+  <div class="panel wide">
+    <div class="panel-head"><div class="eyebrow">{{ users|length }} account</div><h2>Account esistenti</h2></div>
+    <div class="panel-body" style="padding:0;">
+      <table class="grid">
+        <thead>
+          <tr><th>Utente</th><th>Dipartimento</th><th>Ruolo</th><th>Stato</th><th>Modifica</th></tr>
+        </thead>
+        <tbody>
+        {% for u in users %}
+          <tr>
+            <td class="u-name">{{ u.username }}</td>
+            <td><code>{{ u.department or '—' }}</code></td>
+            <td>{% if u.is_admin %}<span class="badge admin">admin</span>{% else %}<span class="badge user">utente</span>{% endif %}</td>
+            <td>{% if u.active %}<span class="badge live">attivo</span>{% else %}<span class="badge dead">disattivo</span>{% endif %}</td>
+            <td>
+              <form method="post" action="/admin/users/update" class="inline-form" autocomplete="off">
+                <input type="hidden" name="username" value="{{ u.username }}">
+                <select name="department">
+                  {% for d in departments %}<option value="{{ d }}" {% if d == u.department %}selected{% endif %}>{{ d }}</option>{% endfor %}
+                </select>
+                <label class="mini-check"><input type="checkbox" name="is_admin" value="1" {% if u.is_admin %}checked{% endif %}>admin</label>
+                <label class="mini-check"><input type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}>attivo</label>
+                <input type="password" name="reset_password" placeholder="nuova pwd">
+                <button type="submit" class="ghost">Aggiorna</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

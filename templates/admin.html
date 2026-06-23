@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}Motore — ISEOPilot{% endblock %}
+{% block nav_admin %}active{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div class="eyebrow">{{ t("Amministrazione · impostazioni globali") }}</div>
+  <h1>Motore, anonimizzazione &amp; conoscenza</h1>
+  <p>{{ t("Configurazione valida per tutti gli utenti. I segreti sono cifrati a riposo; le chiavi non vengono mai mostrate. L'utente sceglie poi quale motore usare in chat.") }}</p>
+</div>
+<div class="wrap">
+  <form method="post" action="/admin" autocomplete="off">
+    {% if saved %}<div class="flash ok">✓ Impostazioni salvate.</div>{% endif %}
+
+    <!-- Connessione AI -->
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">{{ t("Connessione AI") }}</div><h2>{{ t("Credenziali e modelli") }}</h2></div>
+      <div class="panel-body">
+        <div class="field">
+          <label for="claude_api_key">Chiave API Claude (Anthropic)
+            {% if claude_key_set %}<span class="badge set">{{ t("impostata") }}</span>{% else %}<span class="badge unset">{{ t("mancante") }}</span>{% endif %}
+          </label>
+          <input type="password" id="claude_api_key" name="claude_api_key" placeholder="sk-ant-…  (vuoto = invariata)">
+          <div class="hint">Usata per tutti gli utenti. Inserita qui, cifrata, non più nel codice sorgente.</div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="claude_model">Modello Claude</label>
+            <input type="text" id="claude_model" name="claude_model" value="{{ claude_model }}">
+            <div class="hint">Consigliato: <code>claude-opus-4-8</code>.</div>
+          </div>
+          <div class="field">
+            <label for="lm_model">Modello LM Studio</label>
+            <input type="text" id="lm_model" name="lm_model" value="{{ lm_model }}" placeholder="nome-modello-caricato">
+          </div>
+        </div>
+        <div class="field">
+          <label for="lm_url">Endpoint LM Studio (locale)</label>
+          <input type="text" id="lm_url" name="lm_url" value="{{ lm_url }}" placeholder="http://host-lmstudio:1234/v1/chat/completions">
+          <div class="hint">Motore on-premise. Nessun dato esce verso il cloud.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Anonimizzazione -->
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">Privacy</div><h2>Anonimizzazione (solo Claude)</h2></div>
+      <div class="panel-body">
+        <div class="field">
+          <div class="checkrow">
+            <input type="checkbox" id="claude_anonymize" name="claude_anonymize" value="1" {% if claude_anonymize %}checked{% endif %}>
+            <label for="claude_anonymize">Anonimizza i dati tecnici prima dell'invio a Claude</label>
+          </div>
+          <div class="hint">Sostituisce IP, email, codici fiscali, P.IVA, hash, token e i nomi del dizionario con segnaposto, ripristinati nella risposta.</div>
+        </div>
+        <div class="field">
+          <label for="anon_dictionary">Dizionario anonimizzazione nomi</label>
+          <textarea id="anon_dictionary" name="anon_dictionary" placeholder="Un nome per riga (persone, aziende, progetti riservati)…">{{ anon_dictionary }}</textarea>
+          <div class="hint">Un termine per riga. Ogni occorrenza viene mascherata prima dell'invio a Claude.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ChromaDB -->
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">Base di conoscenza · ChromaDB
+        {% if kb_available %}<span class="badge set">{{ t("disponibile") }}</span>{% else %}<span class="badge unset">{{ t("non installato") }}</span>{% endif %}</div>
+        <h2>Conoscenza vettoriale per dipartimento</h2></div>
+      <div class="panel-body">
+        <div class="field">
+          <label for="kb_embedding_model">Modello di embedding</label>
+          <input type="text" id="kb_embedding_model" name="kb_embedding_model" value="{{ kb_embedding_model }}">
+          <div class="hint">Per contenuti in italiano consigliato <code>multilingual</code>. Cambiare modello crea una collezione nuova da reindicizzare (gli spazi vettoriali non sono confrontabili).</div>
+        </div>
+        <div class="field">
+          <div class="checkrow">
+            <input type="checkbox" id="kb_mode" name="kb_mode" value="remote" {% if kb_mode == 'remote' %}checked{% endif %}>
+            <label for="kb_mode">Usa un'istanza ChromaDB remota (centralizzata)</label>
+          </div>
+          <div class="hint">Spuntato = server ChromaDB dedicato (consigliato in produzione, accessi governati una volta). Vuoto = archivio locale sul server, sotto il volume dati.</div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="kb_host">Host ChromaDB remoto</label>
+            <input type="text" id="kb_host" name="kb_host" value="{{ kb_host }}" placeholder="chroma.interno.iseo">
+          </div>
+          <div class="field">
+            <label for="kb_port">Porta</label>
+            <input type="text" id="kb_port" name="kb_port" value="{{ kb_port }}" placeholder="8000">
+          </div>
+        </div>
+        <div class="field">
+          <label for="kb_api_key">Token ChromaDB remoto {% if kb_key_set %}<span class="badge set">{{ t("impostato") }}</span>{% endif %}</label>
+          <input type="password" id="kb_api_key" name="kb_api_key" placeholder="(vuoto = invariato / non richiesto)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Connettori Microsoft -->
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">Connettori Microsoft · OneDrive / Dynamics 365</div>
+        <h2>{{ t("Configurazione (auto-compilata con i valori ISEO)") }}</h2></div>
+      <div class="panel-body">
+        <div class="notice">Questi NON sono segreti: sono gli identificatori pubblici dell'app/tenant Azure e l'URL dell'istanza Dynamics. L'autenticazione resta <strong>per-utente</strong> (device code, nessun client secret): ogni utente collegherà il proprio account. Sono già precompilati con i valori dell'app desktop; svuota un campo per ripristinare il default.</div>
+        <div class="row2">
+          <div class="field">
+            <label for="od_client_id">OneDrive — Client ID</label>
+            <input type="text" id="od_client_id" name="od_client_id" value="{{ od_client_id }}" style="font-family:var(--mono);">
+          </div>
+          <div class="field">
+            <label for="od_tenant_id">OneDrive — Tenant ID</label>
+            <input type="text" id="od_tenant_id" name="od_tenant_id" value="{{ od_tenant_id }}" style="font-family:var(--mono);">
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="dyn_client_id">Dynamics — Client ID</label>
+            <input type="text" id="dyn_client_id" name="dyn_client_id" value="{{ dyn_client_id }}" style="font-family:var(--mono);">
+          </div>
+          <div class="field">
+            <label for="dyn_tenant_id">Dynamics — Tenant ID</label>
+            <input type="text" id="dyn_tenant_id" name="dyn_tenant_id" value="{{ dyn_tenant_id }}" style="font-family:var(--mono);">
+          </div>
+        </div>
+        <div class="field">
+          <label for="dyn_resource_url">Dynamics — URL risorsa (istanza F&amp;O)</label>
+          <input type="text" id="dyn_resource_url" name="dyn_resource_url" value="{{ dyn_resource_url }}" style="font-family:var(--mono);" placeholder="https://...operations.dynamics.com">
+        </div>
+        <button type="button" class="ghost" id="autofillBtn">{{ t("Auto-compila con i valori ISEO") }}</button>
+        <div class="hint" style="margin-top:8px;">Gli utenti collegano il proprio account dalla pagina <em>Connessioni</em> (sign-in device code).</div>
+      </div>
+    </div>
+
+    <div class="actions" style="max-width:780px;margin:0 auto 40px;"><button type="submit" class="primary">{{ t("Salva tutte le impostazioni") }}</button></div>
+  </form>
+
+  <!-- Catalogo entità Dynamics (mappa relazioni + schema .md) -->
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">Dynamics 365 · mappa entità e relazioni</div>
+      <h2>Catalogo entità + schema</h2></div>
+    <div class="panel-body">
+      {% if dyn_msg %}<div class="flash ok">✓ {{ dyn_msg }}</div>{% endif %}
+      {% if dyn_err %}<div class="flash err">{{ dyn_err }}</div>{% endif %}
+      <div class="notice">Il catalogo mappa tutte le entità F&amp;O con i campi e il <strong>grafo delle relazioni</strong> (navigation property + referential constraint), e genera uno schema <code>.md</code> per entità. È ciò che permette query OData affidabili con join lungo relazioni reali. Si genera una volta dal $metadata dell'istanza ed è condiviso da tutti gli utenti.</div>
+      {% if dyn_catalog.present %}
+        <div class="kv"><span class="kv-l">Stato</span><span class="kv-v">Presente · versione {{ dyn_catalog.versione }}</span></div>
+        <div class="kv"><span class="kv-l">Entità</span><span class="kv-v">{{ dyn_catalog.count }}</span></div>
+        <div class="kv"><span class="kv-l">Relazioni</span><span class="kv-v">{{ dyn_catalog.relazioni }}</span></div>
+        <div class="kv"><span class="kv-l">Schema .md</span><span class="kv-v">{{ dyn_catalog.schema_md }} file</span></div>
+        <div class="kv"><span class="kv-l">Generato</span><span class="kv-v">{{ dyn_catalog.generato }}</span></div>
+        <div class="kv"><span class="kv-l">Istanza</span><code class="kv-v">{{ dyn_catalog.istanza }}</code></div>
+      {% else %}
+        <div class="kv"><span class="kv-l">Stato</span><span class="kv-v">Non ancora generato</span></div>
+      {% endif %}
+      <form method="post" action="/admin/dynamics/build-catalog" style="margin-top:16px;" data-wait="{{ t('Genero il catalogo entità… può richiedere qualche minuto') }}">
+        {% if dyn_connected %}
+          <button type="submit" class="primary">{% if dyn_catalog.present %}Rigenera catalogo{% else %}Genera catalogo{% endif %}</button>
+          <div class="hint" style="margin-top:8px;">Operazione lunga: scarica i metadati completi dell'istanza (migliaia di entità). Usa la tua connessione Dynamics.</div>
+        {% else %}
+          <div class="notice">Per generare il catalogo, collega prima il tuo account Dynamics dalla pagina <a href="/settings" style="color:var(--iseo-2)">Connessioni</a>.</div>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+</div>
+<script>
+  (function(){
+    var b=document.getElementById("autofillBtn"); if(!b) return;
+    b.addEventListener("click", function(){
+      var v={od_client_id:"{{ def_od_client_id }}",od_tenant_id:"{{ def_od_tenant_id }}",
+             dyn_client_id:"{{ def_dyn_client_id }}",dyn_tenant_id:"{{ def_dyn_tenant_id }}",
+             dyn_resource_url:"{{ def_dyn_resource_url }}"};
+      for(var k in v){ var el=document.getElementById(k); if(el) el.value=v[k]; }
+    });
+  })();
+</script>
+{% endblock %}

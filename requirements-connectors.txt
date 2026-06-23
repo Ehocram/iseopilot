@@ -1,0 +1,16 @@
+# ============================================================
+# ISEO Chat Web — Dipendenze CONNETTORI (Incremento 2)
+# Necessarie solo quando si attivano OneDrive / Dynamics / Vector DB / KB locale.
+# Attenzione: sentence-transformers tira dietro torch (centinaia di MB).
+#   pip install -r requirements-connectors.txt
+# ============================================================
+python-docx>=1.1
+openpyxl>=3.1
+PyMuPDF>=1.24
+pdfplumber>=0.11
+python-pptx>=0.6
+chromadb>=0.5
+sentence-transformers>=2.7
+# Anonimizzazione NLP nomi propri (opzionale):
+#   python -m spacy download it_core_news_sm
+spacy>=3.7

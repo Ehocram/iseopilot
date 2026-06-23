@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}{{ t("Connessioni") }} — ISEOPilot{% endblock %}
+{% block nav_settings %}active{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div class="eyebrow">{{ t("Fonti nelle risposte") }} · {{ user }}</div>
+  <h1>{{ t("Cosa può consultare l'assistente") }}</h1>
+  <p>{{ t("Accendi o spegni le fonti che l'assistente usa per arricchire le risposte. Le scelte valgono solo per te. Conoscenza e cartelle sono limitate al tuo dipartimento") }} (<strong>{{ department }}</strong>).</p>
+</div>
+<div class="wrap">
+  {% if saved %}<div class="flash ok">✓ {{ t("Preferenze salvate.") }}</div>{% endif %}
+
+  <form method="post" action="/settings">
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">{{ t("Fonti del dipartimento") }}</div><h2>{{ t("Conoscenza interna") }}</h2></div>
+      <div class="panel-body">
+        <div class="toggle-row">
+          <label class="switch"><input type="checkbox" name="use_kb" value="1" {% if use_kb %}checked{% endif %}><span class="slider"></span></label>
+          <div class="toggle-txt">
+            <b>{{ t("Conoscenza del dipartimento (ChromaDB)") }}</b>
+            <span>{{ kb_count }} {{ t("indicizzati") }}. <a href="/knowledge" style="color:var(--iseo-2)">{{ t("Gestisci") }}</a></span>
+          </div>
+        </div>
+        <div class="toggle-row">
+          <label class="switch"><input type="checkbox" name="use_folder" value="1" {% if use_folder %}checked{% endif %}><span class="slider"></span></label>
+          <div class="toggle-txt">
+            <b>{{ t("Cartelle del dipartimento") }}</b>
+            <span>{{ folders|length }} {{ t("configurate") }}.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">{{ t("Connettori personali Microsoft") }}</div><h2>OneDrive &amp; Dynamics 365</h2></div>
+      <div class="panel-body">
+        {% if not od_configured and not dyn_configured %}
+        <div class="notice">I connettori non sono ancora configurati dall'amministratore (pagina <em>Motore</em>).</div>
+        {% endif %}
+
+        <!-- OneDrive -->
+        <div class="toggle-row">
+          <label class="switch"><input type="checkbox" name="use_onedrive" value="1" {% if use_onedrive %}checked{% endif %} {% if not od_connected %}disabled{% endif %}><span class="slider"></span></label>
+          <div class="toggle-txt">
+            <b>OneDrive
+              {% if od_connected %}<span class="badge set">{{ t("connesso") }}</span>{% else %}<span class="badge unset">{{ t("non connesso") }}</span>{% endif %}
+            </b>
+            <span>Cerca tra i tuoi documenti OneDrive con la tua identità.</span>
+            <div class="conn-actions">
+              {% if od_connected %}
+                <form method="post" action="/connect/onedrive/logout" style="display:inline;"><button type="submit" class="ghost">{{ t("Disconnetti") }}</button></form>
+              {% elif od_configured %}
+                <button type="button" class="ghost connect-btn" data-conn="onedrive">{{ t("Connetti il mio account") }}</button>
+              {% endif %}
+            </div>
+            <div class="devicebox" id="box-onedrive" hidden></div>
+          </div>
+        </div>
+
+        <!-- Dynamics -->
+        <div class="toggle-row">
+          <label class="switch"><input type="checkbox" name="use_dynamics" value="1" {% if use_dynamics %}checked{% endif %} {% if not dyn_connected %}disabled{% endif %}><span class="slider"></span></label>
+          <div class="toggle-txt">
+            <b>Dynamics 365 Finance &amp; Operations
+              {% if dyn_connected %}<span class="badge set">{{ t("connesso") }}</span>{% else %}<span class="badge unset">{{ t("non connesso") }}</span>{% endif %}
+            </b>
+            <span>Interrogazione in sola lettura con la tua identità.</span>
+            <div class="conn-actions">
+              {% if dyn_connected %}
+                <form method="post" action="/connect/dynamics/logout" style="display:inline;"><button type="submit" class="ghost">{{ t("Disconnetti") }}</button></form>
+              {% elif dyn_configured %}
+                <button type="button" class="ghost connect-btn" data-conn="dynamics">{{ t("Connetti il mio account") }}</button>
+              {% endif %}
+            </div>
+            <div class="devicebox" id="box-dynamics" hidden></div>
+          </div>
+        </div>
+        <p class="hint" style="margin-top:14px;">Il token resta isolato per la tua identità sul server. I toggle si attivano dopo la connessione.</p>
+      </div>
+    </div>
+
+    <div class="actions" style="max-width:780px;margin:0 auto 40px;"><button type="submit" class="primary">{{ t("Salva preferenze") }}</button></div>
+  </form>
+</div>
+
+<script>
+(function(){
+  document.querySelectorAll(".connect-btn").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var conn = btn.getAttribute("data-conn");
+      var box = document.getElementById("box-" + conn);
+      btn.disabled = true; box.hidden = false;
+      box.innerHTML = "<div class='dev-wait'>Avvio della connessione…</div>";
+      fetch("/connect/" + conn + "/start", {method:"POST"})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if(!d.ok){ box.innerHTML = "<div class='dev-err'>"+(d.error||"Errore")+"</div>"; btn.disabled=false; return; }
+          box.innerHTML =
+            "<div class='dev-step'>1. Apri <a href='"+d.verification_uri+"' target='_blank' rel='noopener'>"+d.verification_uri+"</a></div>"+
+            "<div class='dev-step'>2. Inserisci il codice: <span class='dev-code'>"+d.user_code+"</span></div>"+
+            "<div class='dev-status' id='st-"+conn+"'>In attesa di autorizzazione…</div>";
+          var interval = (d.interval || 5) * 1000;
+          var poll = setInterval(function(){
+            fetch("/connect/" + conn + "/poll").then(function(r){return r.json();}).then(function(p){
+              if(p.status === "connected"){ clearInterval(poll); document.getElementById("st-"+conn).innerHTML = "✓ Connesso. Aggiorno…"; setTimeout(function(){location.reload();}, 800); }
+              else if(p.status === "error"){ clearInterval(poll); document.getElementById("st-"+conn).innerHTML = "<span class='dev-err'>"+(p.message||"Errore")+"</span>"; btn.disabled=false; }
+            }).catch(function(){});
+          }, interval);
+        })
+        .catch(function(){ box.innerHTML = "<div class='dev-err'>Errore di rete.</div>"; btn.disabled=false; });
+    });
+  });
+})();
+</script>
+{% endblock %}

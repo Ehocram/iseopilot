@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="{{ ui_lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}ISEOPilot{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/static/iseo_logo.png" alt="ISEO" class="brand-logo-sm">
+      <span class="brand-tag">Pilot</span>
+    </div>
+    <span class="sep"></span>
+    <nav>
+      <a href="/" class="{% block nav_chat %}{% endblock %}">{{ t("Chat") }}</a>
+      <a href="/knowledge" data-wait="{{ t('Carico la base di conoscenza…') }}" class="{% block nav_knowledge %}{% endblock %}">{{ t("Conoscenza") }}</a>
+      <a href="/settings" class="{% block nav_settings %}{% endblock %}">{{ t("Connessioni") }}</a>
+      {% if is_admin %}
+      <span class="sep"></span>
+      <a href="/admin" class="{% block nav_admin %}{% endblock %}">{{ t("Motore") }}</a>
+      <a href="/admin/users" class="{% block nav_users %}{% endblock %}">{{ t("Utenti") }}</a>
+      <a href="/admin/departments" class="{% block nav_departments %}{% endblock %}">{{ t("Dipartimenti") }}</a>
+      {% endif %}
+    </nav>
+    <div class="right">
+      <span class="langsel" title="{{ t('Lingua') }}">
+        <a href="/ui-lang?to=it&next={{ next_path|urlencode }}" class="{% if ui_lang == 'it' %}on{% endif %}">IT</a>
+        <a href="/ui-lang?to=en&next={{ next_path|urlencode }}" class="{% if ui_lang == 'en' %}on{% endif %}">EN</a>
+      </span>
+      <span class="clearance" title="{{ t('Area') }}">
+        <span class="ring"></span><span class="lbl">{{ t("Area") }}</span><span class="dep">{{ department }}</span>
+      </span>
+      <span class="who-id">{{ user }}</span>
+      <a class="logout" href="/logout">{{ t("Esci") }}</a>
+    </div>
+  </header>
+  {% block body %}{% endblock %}
+
+  <!-- Overlay di attesa globale (azioni lente: caricamento conoscenza, indicizzazione, catalogo…) -->
+  <div id="wait-overlay" class="wait-overlay" hidden>
+    <div class="wait-card">
+      <div class="wait-spinner" aria-hidden="true"></div>
+      <div class="wait-msg" id="wait-msg">{{ t("Attendere…") }}</div>
+      <div class="wait-sub">{{ t("Operazione in corso, non chiudere la pagina.") }}</div>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    var ov = document.getElementById("wait-overlay");
+    var msg = document.getElementById("wait-msg");
+    var DEFAULT = "{{ t('Attendere…') }}";
+    // API globale: showWait("messaggio") / hideWait()
+    window.showWait = function (text) { if (msg) msg.textContent = text || DEFAULT; if (ov) ov.hidden = false; };
+    window.hideWait = function () { if (ov) ov.hidden = true; };
+
+    // Link con data-wait: mostra l'overlay prima della navigazione.
+    document.querySelectorAll("a[data-wait]").forEach(function (a) {
+      a.addEventListener("click", function (e) {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || a.target === "_blank") return;
+        window.showWait(a.getAttribute("data-wait"));
+      });
+    });
+    // Form con data-wait: mostra l'overlay al submit.
+    document.querySelectorAll("form[data-wait]").forEach(function (f) {
+      f.addEventListener("submit", function () { window.showWait(f.getAttribute("data-wait")); });
+    });
+    // Se la pagina viene ripristinata dalla cache (back/forward), nascondi l'overlay.
+    window.addEventListener("pageshow", function (ev) { if (ev.persisted) window.hideWait(); });
+  })();
+  </script>
+</body>
+</html>

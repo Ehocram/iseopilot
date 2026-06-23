@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Dipartimenti — ISEOPilot{% endblock %}
+{% block nav_departments %}active{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div class="eyebrow">{{ t("Amministrazione · aree di conoscenza") }}</div>
+  <h1>Dipartimenti / Aree</h1>
+  <p>Ogni dipartimento è un compartimento di conoscenza isolato in ChromaDB. Puoi assegnare a ciascuna area una o più <strong>cartelle del server</strong> (anche share di rete) per la ricerca live, scegliendole con il browser.</p>
+</div>
+<div class="wrap">
+  {% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+  {% if err %}<div class="flash err">{{ err }}</div>{% endif %}
+
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">Nuova area</div><h2>{{ t("Crea dipartimento") }}</h2></div>
+    <form method="post" action="/admin/departments" autocomplete="off">
+      <div class="field">
+        <label for="new_department">Nome dipartimento / area</label>
+        <input type="text" id="new_department" name="new_department" required placeholder="es. Legal, Marketing, Quality…">
+        <div class="hint">Diventerà subito assegnabile agli utenti.</div>
+      </div>
+      <div class="actions"><button type="submit" class="primary">{{ t("Crea dipartimento") }}</button></div>
+    </form>
+  </div>
+
+  <div class="panel wide">
+    <div class="panel-head"><div class="eyebrow">{{ departments|length }} aree</div><h2>{{ t("Aree esistenti") }}</h2></div>
+    <div class="panel-body" style="padding:0;">
+      <table class="grid">
+        <thead><tr><th>Dipartimento</th><th>Collezione (ChromaDB)</th><th>{{ t("Cartelle ricercabili") }}</th><th style="text-align:right;">{{ t("Cartelle") }}</th></tr></thead>
+        <tbody>
+        {% for d in departments %}
+          <tr>
+            <td class="u-name">{{ d.name }}</td>
+            <td><code>{{ d.collection }}</code></td>
+            <td>
+              {% if d.folders %}
+                {% for f in d.folders %}
+                  <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                    <code style="font-size:12px;">{{ f }}</code>
+                    <form method="post" action="/admin/departments/folder/remove" style="display:inline;">
+                      <input type="hidden" name="department" value="{{ d.name }}">
+                      <input type="hidden" name="path" value="{{ f }}">
+                      <button type="submit" class="linkbtn" title="Rimuovi">✕</button>
+                    </form>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <span class="muted">{{ t("nessuna") }}</span>
+              {% endif %}
+            </td>
+            <td style="text-align:right;">
+              <a href="/admin/browse?dept={{ d.name }}&path=/" class="ghost" style="text-decoration:none;">{{ t("Sfoglia / aggiungi") }}</a>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

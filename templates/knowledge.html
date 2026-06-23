@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Conoscenza — ISEOPilot{% endblock %}
+{% block nav_knowledge %}active{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div class="eyebrow">Base di conoscenza · area {{ department }}</div>
+  <h1>{{ t("La conoscenza del mio dipartimento") }}</h1>
+  <p>Tutto ciò che carichi qui finisce nella collezione del tuo dipartimento (<code>{{ kb_collection }}</code>) e viene usato dall'assistente solo per gli utenti della tua area. Nessun altro dipartimento la vede.</p>
+</div>
+<div class="wrap">
+  {% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+  {% if err %}<div class="flash err">{{ err }}</div>{% endif %}
+
+  {% if not kb_available %}
+  <div class="notice"><strong>ChromaDB non installato sul server.</strong> Per attivare la base di conoscenza vettoriale: <code>pip install -r requirements-connectors.txt</code> e riavvio. La ricerca cartelle qui sotto funziona comunque.</div>
+  {% endif %}
+
+  <!-- Upload ChromaDB -->
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">Carica documenti · {{ kb_count }} indicizzati</div><h2>{{ t("Aggiungi alla conoscenza del dipartimento") }}</h2></div>
+    <div class="panel-body">
+      <form method="post" action="/knowledge/upload" enctype="multipart/form-data" id="upform" data-wait="{{ t('Carico e indicizzo i documenti…') }}">
+        <label class="dropzone" id="drop">
+          <input type="file" id="filein" name="files" multiple
+                 accept=".txt,.md,.csv,.json,.xml,.py,.pdf,.docx,.xlsx,.xls" {% if not kb_available %}disabled{% endif %}>
+          <div class="dz-ico">⤓</div>
+          <div class="dz-main">{{ t("Trascina qui i file o") }} <u>{{ t("scegli dal computer") }}</u></div>
+          <div class="dz-sub">Puoi selezionare anche un'intera cartella di file. Tipi: {{ allowed_ext }}</div>
+          <div class="dz-list" id="dzlist"></div>
+        </label>
+        <div class="actions" style="margin-top:16px;">
+          <button type="submit" class="primary" {% if not kb_available %}disabled{% endif %}>{{ t("Carica e indicizza") }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Documenti presenti -->
+  {% if kb_docs %}
+  <div class="panel wide">
+    <div class="panel-head"><div class="eyebrow">{{ kb_docs|length }} documenti</div><h2>{{ t("Nella collezione del dipartimento") }}</h2></div>
+    <div class="panel-body" style="padding:0;">
+      <table class="grid">
+        <thead><tr><th>{{ t("Documento") }}</th><th style="text-align:right;">{{ t("Azione") }}</th></tr></thead>
+        <tbody>
+        {% for d in kb_docs %}
+          <tr>
+            <td class="u-name">{{ d }}</td>
+            <td style="text-align:right;">
+              <form method="post" action="/knowledge/delete" class="inline-form" style="justify-content:flex-end;">
+                <input type="hidden" name="filename" value="{{ d }}">
+                <button type="submit" class="ghost">{{ t("Rimuovi") }}</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Ricerca cartelle locali/di rete -->
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">Cartelle del dipartimento · ricerca live</div><h2>{{ t("Cartelle locali o di rete") }}</h2></div>
+    <div class="panel-body">
+      {% if folders %}
+        <div class="kv"><span class="kv-l">Indice</span><span class="kv-v">{{ folder_count }} passaggi indicizzati in totale</span></div>
+        <div style="margin:12px 0 18px;">
+          {% for f in folders %}
+            <div class="conn-row" style="padding:9px 0;">
+              <div class="conn-ico">📁</div>
+              <div class="conn-txt"><b style="font-family:var(--mono);font-size:12.5px;word-break:break-all;">{{ f }}</b></div>
+              {% if is_admin %}
+              <form method="post" action="/knowledge/folder/remove" class="inline-form">
+                <input type="hidden" name="path" value="{{ f }}">
+                <button type="submit" class="ghost">{{ t("Rimuovi") }}</button>
+              </form>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        <p class="hint" style="margin:0 0 18px;">Le cartelle vengono lette dal server e indicizzate (FTS5). I documenti restano dove sono. Lancia un aggiornamento dopo modifiche ai file.</p>
+        <form method="post" action="/knowledge/reindex" data-wait="{{ t('Aggiorno l\'indice delle cartelle…') }}">
+          <button type="submit" class="primary">{{ t("Aggiorna indice cartelle") }}</button>
+        </form>
+      {% elif not is_admin %}
+        <div class="notice">Nessuna cartella configurata per il dipartimento <strong>{{ department }}</strong>. Le assegna l'amministratore.</div>
+      {% endif %}
+
+      {% if is_admin %}
+        <div style="margin-top:{% if folders %}26px;padding-top:22px;border-top:1px solid var(--line);{% else %}0;{% endif %}">
+          <div class="eyebrow" style="margin-bottom:10px;">Aggiungi cartella del server (admin)</div>
+          <form method="post" action="/knowledge/folder/add" class="inline-form" style="margin-bottom:10px;" data-wait="{{ t('Aggiungo e indicizzo la cartella…') }}">
+            <input type="text" name="path" placeholder="/mnt/share/area  oppure  //server/share" style="flex:1;font-family:var(--mono);">
+            <button type="submit" class="primary">Aggiungi</button>
+          </form>
+          <a href="/admin/browse?dept={{ department }}&path=/" class="linkbtn" style="font-size:13px;">↳ oppure sfoglia il filesystem del server</a>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+  // Anteprima dei file scelti + drag&drop (no upload via JS: invio form classico).
+  (function () {
+    const input = document.getElementById("filein");
+    const list = document.getElementById("dzlist");
+    const drop = document.getElementById("drop");
+    if (!input) return;
+    function render() {
+      const files = Array.from(input.files || []);
+      list.innerHTML = files.slice(0, 30).map(f => "<span class='chip'>" + f.name + "</span>").join("");
+      if (files.length > 30) list.innerHTML += "<span class='chip'>+" + (files.length - 30) + " altri</span>";
+    }
+    input.addEventListener("change", render);
+    ["dragover", "dragenter"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+    ["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+    drop.addEventListener("drop", ev => { if (ev.dataTransfer && ev.dataTransfer.files.length) { input.files = ev.dataTransfer.files; render(); } });
+  })();
+</script>
+{% endblock %}

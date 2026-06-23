@@ -1,0 +1,13 @@
+# ============================================================
+# ISEO Chat Web — Dipendenze CORE (Incremento 1)
+# Tutto il necessario per: chat Claude/LM, pannello admin, sicurezza.
+# Python 3.11+
+#   pip install -r requirements.txt
+# ============================================================
+fastapi>=0.111
+uvicorn[standard]>=0.30        # ASGI server (dietro reverse proxy)
+jinja2>=3.1                    # template HTML server-side
+python-multipart>=0.0.9        # form POST
+requests>=2.31                 # chiamate Claude / LM Studio
+cryptography>=42.0             # Fernet: cifratura segreti a riposo
+itsdangerous>=2.1            # firma cookie di sessione (login locale)

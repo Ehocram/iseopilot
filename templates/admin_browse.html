@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Sfoglia cartelle — ISEOPilot{% endblock %}
+{% block nav_departments %}active{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div class="eyebrow">{{ t("Amministrazione · cartelle ricercabili del server") }}</div>
+  <h1>Seleziona cartelle{% if dept %} per <span style="color:var(--iseo-2)">{{ dept }}</span>{% endif %}</h1>
+  <p>{{ t("Naviga il filesystem del server (incluse le share di rete montate) e aggiungi le cartelle che gli utenti del dipartimento potranno cercare. I documenti restano dove sono: vengono indicizzati sul posto.") }}</p>
+</div>
+<div class="wrap">
+
+  <!-- Vai a un percorso assoluto -->
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">{{ t("Percorso") }}</div><h2>{{ t("Vai a una cartella") }}</h2></div>
+    <div class="panel-body">
+      <form method="get" action="/admin/browse" class="inline-form">
+        <input type="hidden" name="dept" value="{{ dept }}">
+        <input type="text" name="path" value="{{ here }}" style="flex:1;font-family:var(--mono);" placeholder="/mnt/share/area  oppure  //server/share">
+        <button type="submit" class="ghost">{{ t("Apri") }}</button>
+      </form>
+      <div class="hint" style="margin-top:10px;">Suggerimento: per una share di rete, montala sul server (es. <code>/mnt/...</code>) e indica qui il punto di mount.</div>
+    </div>
+  </div>
+
+  <!-- Esplora -->
+  <div class="panel wide">
+    <div class="panel-head">
+      <div class="eyebrow">{{ t("Stai esplorando") }}</div>
+      <h2 style="font-family:var(--mono);font-size:15px;word-break:break-all;">{{ here }}</h2>
+    </div>
+    <div class="panel-body">
+      {% if dept %}
+      <form method="post" action="/admin/departments/folder/add" style="margin-bottom:16px;">
+        <input type="hidden" name="department" value="{{ dept }}">
+        <input type="hidden" name="path" value="{{ here }}">
+        <button type="submit" class="primary">＋ Aggiungi <span style="font-family:var(--mono)">questa</span> cartella a {{ dept }}</button>
+      </form>
+      {% else %}
+      <div class="notice">Seleziona prima un dipartimento dalla pagina <a href="/admin/departments" style="color:var(--iseo-2)">{{ t("Dipartimenti") }}</a> per poter aggiungere cartelle.</div>
+      {% endif %}
+
+      <div class="fs-list">
+        <a class="fs-row up" href="/admin/browse?dept={{ dept }}&path={{ parent|urlencode }}">
+          <span class="fs-ico">↰</span><span class="fs-name">.. (cartella superiore)</span>
+        </a>
+        {% for d in subdirs %}
+        <a class="fs-row" href="/admin/browse?dept={{ dept }}&path={{ d.path|urlencode }}">
+          <span class="fs-ico">📁</span><span class="fs-name">{{ d.name }}</span>
+        </a>
+        {% else %}
+        <div class="fs-empty">Nessuna sottocartella leggibile qui.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Cartelle già assegnate -->
+  {% if dept %}
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">{{ current_folders|length }} cartelle</div><h2>Già assegnate a {{ dept }}</h2></div>
+    <div class="panel-body">
+      {% if current_folders %}
+        {% for f in current_folders %}
+        <div class="conn-row">
+          <div class="conn-ico">📁</div>
+          <div class="conn-txt"><b style="font-family:var(--mono);font-size:13px;">{{ f }}</b></div>
+          <form method="post" action="/admin/departments/folder/remove" class="inline-form">
+            <input type="hidden" name="department" value="{{ dept }}">
+            <input type="hidden" name="path" value="{{ f }}">
+            <button type="submit" class="ghost">{{ t("Rimuovi") }}</button>
+          </form>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="hint">Nessuna cartella ancora assegnata.</div>
+      {% endif %}
+      <div style="margin-top:16px;"><a href="/admin/departments" class="ghost" style="display:inline-block;text-decoration:none;">← Torna ai dipartimenti</a></div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="{{ ui_lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ t("Accesso sicuro") }} — ISEOPilot</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="auth">
+    <section class="auth-brand">
+      <div class="cyl" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span class="core"></span>
+      </div>
+      <div class="b-top">
+        <img src="/static/iseo_logo.png" alt="ISEO" class="brand-logo">
+        <span class="brand-pilot">Pilot</span>
+      </div>
+      <div class="b-mid">
+        <h1>{{ t("Conoscenza aziendale, protetta per area.") }}</h1>
+        <p>{{ t("Assistente AI interno con motore Claude e modello locale. Ogni dipartimento ha la propria base di conoscenza isolata. Dati sensibili anonimizzati prima di lasciare il perimetro.") }}</p>
+        <div class="trust">
+          <span>{{ t("Accesso gestito") }}</span>
+          <span>{{ t("Segreti cifrati") }}</span>
+          <span>{{ t("Anonimizzazione") }}</span>
+          <span>On-prem ready</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="auth-form">
+      <div class="auth-langsel">
+        <a href="/ui-lang?to=it&next=/login" class="{% if ui_lang == 'it' %}on{% endif %}">IT</a>
+        <a href="/ui-lang?to=en&next=/login" class="{% if ui_lang == 'en' %}on{% endif %}">EN</a>
+      </div>
+      <div class="auth-card" id="card">
+        <div class="lockmark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2.2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        </div>
+        <h2>{{ t("Accesso sicuro") }}</h2>
+        <p class="sub">{{ t("Inserisci le credenziali fornite dall'amministratore.") }}</p>
+
+        {% if error %}<div class="auth-err">{{ error }}</div>{% endif %}
+
+        <form method="post" action="/login" id="loginForm" autocomplete="off">
+          <div class="f">
+            <label for="username">{{ t("Nome utente") }}</label>
+            <input type="text" id="username" name="username" autofocus required>
+          </div>
+          <div class="f">
+            <label for="password">{{ t("Password") }}</label>
+            <input type="password" id="password" name="password" required>
+          </div>
+          <button type="submit" id="submitBtn" data-unlocking="{{ t('Sblocco in corso…') }}">{{ t("Sblocca accesso") }}</button>
+        </form>
+
+        <div class="auth-foot">{{ t("ISEO Serrature S.p.A. · Piattaforma interna · L'accesso è registrato.") }}</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const form = document.getElementById("loginForm");
+      const card = document.getElementById("card");
+      const btn = document.getElementById("submitBtn");
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      form.addEventListener("submit", function (e) {
+        if (reduce) return;
+        e.preventDefault();
+        card.classList.add("unlocking");
+        btn.textContent = btn.getAttribute("data-unlocking");
+        btn.disabled = true;
+        setTimeout(() => form.submit(), 620);
+      });
+    })();
+  </script>
+</body>
+</html>
