@@ -215,6 +215,26 @@ def _stream_lmstudio(messages, settings, context: str = "", free_mode: bool = Fa
 
 
 # ── Dispatcher ──────────────────────────────────────────────
+def complete(system: str, user_text: str, settings: dict, max_tokens: int = 4000) -> str:
+    """Chiamata Claude NON in streaming: ritorna il testo completo. Usata per
+    generare contenuti strutturati (documenti)."""
+    api_key = settings.get("claude_api_key", "").strip()
+    model = settings.get("claude_model", "claude-opus-4-8").strip() or "claude-opus-4-8"
+    if not api_key:
+        raise RuntimeError("Chiave API Claude non configurata dall'amministratore.")
+    payload = {"model": model, "max_tokens": max_tokens, "system": system,
+               "messages": [{"role": "user", "content": user_text}]}
+    resp = requests.post(
+        ANTHROPIC_URL, json=payload,
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"},
+        timeout=120)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Errore API Claude ({resp.status_code}): {resp.text[:200]}")
+    data = resp.json()
+    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+
+
 def stream_reply(messages, settings, anon_names, context: str = "", free_mode: bool = False,
                  memory_context: str = "", feedback_context: str = "") -> Iterator[str]:
     """Genera la risposta in streaming secondo il motore selezionato."""

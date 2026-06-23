@@ -529,6 +529,162 @@ def test_chat_page_has_sidebar_and_thumbs_setup():
     assert "window.I18N_FB" in r.text
 
 
+def test_settings_ajax_autosave_persists():
+    store.create_user("toggle@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client()
+    login(c, "toggle@test", "Password123")
+    # auto-save via AJAX: accende OneDrive (anche se non connesso, il valore si salva)
+    r = c.post("/settings", data={"use_kb": "1", "use_onedrive": "1", "ajax": "1"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert store.get_user_setting("toggle@test", "use_onedrive", "0") == "1"
+    assert store.get_user_setting("toggle@test", "use_kb", "0") == "1"
+    # spegnere: use_onedrive non inviato -> torna "0"
+    r2 = c.post("/settings", data={"use_kb": "1", "ajax": "1"})
+    assert r2.status_code == 200
+    assert store.get_user_setting("toggle@test", "use_onedrive", "0") == "0"
+
+
+def test_settings_page_has_autosave_script():
+    store.create_user("tgui@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client()
+    login(c, "tgui@test", "Password123")
+    r = c.get("/settings")
+    assert "saveSources" in r.text and 'name^="use_"' in r.text
+
+
+def test_dyn_report_served_to_owner_only():
+    import tempfile, os
+    from app import connectors
+    store.create_user("rep@test", auth.hash_password("Password123"), "IT")
+    store.create_user("rep2@test", auth.hash_password("Password123"), "Sales")
+    # crea un finto report HTML e registralo per rep@test
+    fd, path = tempfile.mkstemp(suffix=".html")
+    os.write(fd, b"<html><body>Report Dynamics riservato</body></html>"); os.close(fd)
+    token = connectors.register_report("rep@test", path)
+    # proprietario: ottiene l'HTML
+    c = fresh_client(); login(c, "rep@test", "Password123")
+    r = c.get("/dyn-report/" + token)
+    assert r.status_code == 200 and "Report Dynamics riservato" in r.text
+    # altro utente: 404 (isolamento)
+    c2 = fresh_client(); login(c2, "rep2@test", "Password123")
+    assert c2.get("/dyn-report/" + token).status_code == 404
+    # token inesistente: 404
+    assert c.get("/dyn-report/nonexistent").status_code == 404
+
+
+def test_docgen_detect_format():
+    from app import docgen
+    assert docgen.detect_request("creami un word con la sintesi") == "docx"
+    assert docgen.detect_request("fammi una presentazione") == "pptx"
+    assert docgen.detect_request("generami un excel dei costi") == "xlsx"
+    assert docgen.detect_request("esporta in pdf") == "pdf"
+    assert docgen.detect_request("qual è la policy?") is None
+
+
+def test_docgen_builders_produce_files():
+    from app import docgen
+    import os
+    spec = {"title": "Test", "subtitle": "x",
+            "sections": [{"heading": "S", "paragraphs": ["p"], "bullets": ["b1", "b2"]}]}
+    for fn in (docgen.gen_docx, docgen.gen_pdf):
+        p, name = fn(spec)
+        assert os.path.getsize(p) > 500
+    p, name = docgen.gen_pptx({"title": "T", "slides": [{"title": "A", "bullets": ["x"]}]})
+    assert os.path.getsize(p) > 500 and name.endswith(".pptx")
+    p, name = docgen.gen_xlsx({"title": "D", "sheets": [{"name": "S", "columns": ["A", "B"],
+                              "rows": [["x", 1], ["y", 2]], "total_columns": [1]}]})
+    assert os.path.getsize(p) > 500 and name.endswith(".xlsx")
+
+
+def test_download_owner_only():
+    import tempfile, os
+    from app import connectors
+    store.create_user("dl@test", auth.hash_password("Password123"), "IT")
+    store.create_user("dl2@test", auth.hash_password("Password123"), "Sales")
+    fd, path = tempfile.mkstemp(suffix=".docx"); os.write(fd, b"PK fake docx"); os.close(fd)
+    token = connectors.register_download("dl@test", path, "documento.docx")
+    c = fresh_client(); login(c, "dl@test", "Password123")
+    r = c.get("/download/" + token)
+    assert r.status_code == 200
+    assert "documento.docx" in r.headers.get("content-disposition", "")
+    c2 = fresh_client(); login(c2, "dl2@test", "Password123")
+    assert c2.get("/download/" + token).status_code == 404
+
+
+def test_attachment_extraction_endpoint():
+    import io
+    store.create_user("att@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client()
+    login(c, "att@test", "Password123")
+    # txt
+    r = c.post("/api/attach", files={"files": ("nota.txt", io.BytesIO(b"Policy change management: approvazione obbligatoria."), "text/plain")})
+    assert r.status_code == 200
+    a = r.json()["attachments"][0]
+    assert a["ok"] and "change management" in a["text"]
+    # tipo non supportato
+    r2 = c.post("/api/attach", files={"files": ("x.exe", io.BytesIO(b"MZ"), "application/octet-stream")})
+    assert r2.json()["attachments"][0]["ok"] is False
+
+
+def test_pptx_extraction():
+    # crea una pptx minima e verifica l'estrazione testo
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches
+    except Exception:
+        return  # libreria non installata nell'ambiente di test: salta
+    import io
+    from app import knowledge
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "Procedura backup"
+    buf = io.BytesIO(); prs.save(buf)
+    txt = knowledge.extract_attachment_text("p.pptx", buf.getvalue())
+    assert "Procedura backup" in txt
+
+
+def test_chat_page_has_attach_ui():
+    store.create_user("attui@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client()
+    login(c, "attui@test", "Password123")
+    r = c.get("/")
+    assert 'id="attach-btn"' in r.text and 'id="attach-input"' in r.text
+    js = c.get("/static/chat.js").text
+    assert "handleFiles" in js and "/api/attach" in js
+
+
+def test_search_with_links_signature():
+    from app import connectors
+    # non connesso -> ("", []) senza eccezioni
+    txt, links = connectors.search_with_links("nobody@test", "onedrive", "x")
+    assert txt == "" and links == []
+
+
+def test_chat_page_renders_sources_support():
+    store.create_user("src@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client()
+    login(c, "src@test", "Password123")
+    # la pagina inietta il dizionario con l'etichetta "Fonti"
+    r = c.get("/")
+    assert "I18N_FB" in r.text and "sources:" in r.text
+    # la logica delle fonti è in chat.js (file statico)
+    js = c.get("/static/chat.js").text
+    assert "addSources" in js and 'type === "sources"' in js
+
+
+def test_onedrive_query_keywords():
+    from app.engines.onedrive_search import _build_query
+    # mappa concettuale: "anni" -> documento "anagrafica" (logica desktop)
+    q = _build_query("quanti anni ha marco bonometti?")
+    assert "anagrafica" in q and "bonometti" in q
+    # contratto
+    assert "contratto" in _build_query("mostrami il contratto di mario verdi")
+    # fattura
+    assert "fattura" in _build_query("fattura fornitore tecnoplast")
+    # query senza concetto noto: tiene comunque i termini di contenuto
+    assert _build_query("procedura backup server").strip() != ""
+
+
 def test_build_system_includes_context():
     from app.orchestrator import build_system
     s = build_system("Tecnico", "Italiano", "FATTO_RISERVATO_XYZ")

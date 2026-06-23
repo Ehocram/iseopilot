@@ -25,8 +25,11 @@
       </div>
     </div>
 
-    <div class="composer">
+    <div class="composer" id="composer">
+      <div class="attach-bar" id="attach-bar" hidden></div>
       <div class="row">
+        <button class="attach-btn" id="attach-btn" title="{{ t('Allega file (fino a 20)') }}" type="button">📎</button>
+        <input type="file" id="attach-input" multiple accept=".txt,.md,.csv,.json,.xml,.py,.pdf,.docx,.xlsx,.xls,.pptx,.ppt" hidden>
         <textarea id="input" placeholder="{{ t('Scrivi la tua domanda…  (Invio per inviare · Maiusc+Invio per andare a capo)') }}"></textarea>
         <button class="send" id="send">{{ t("Invia") }}</button>
       </div>
@@ -66,7 +69,10 @@
     noted: "{{ t('Segnalazione registrata') }}",
     confirmDel: "{{ t('Eliminare questa conversazione?') }}",
     renamePrompt: "{{ t('Nuovo titolo della conversazione:') }}",
-    you: "{{ t('Tu') }}", assistant: "{{ t('Assistente') }}"
+    you: "{{ t('Tu') }}", assistant: "{{ t('Assistente') }}", sources: "{{ t('Fonti') }}",
+    attaching: "{{ t('Estraggo il testo…') }}",
+    attachErr: "{{ t('Non leggibile') }}",
+    tooMany: "{{ t('Massimo 20 allegati') }}"
   };
 </script>
 <script src="/static/chat.js"></script>

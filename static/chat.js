@@ -25,7 +25,79 @@
 
   let history = [];      // {role, content}
   let sessionId = null;  // sessione corrente (null = nuova non ancora salvata)
+  let attachments = [];  // {name, text, chars}
   const systemWelcomeHTML = messagesEl.innerHTML; // per "Nuova chat"
+
+  // ── Allegati (fino a 20, drag&drop) ─────────────────────
+  const attachBtn = document.getElementById("attach-btn");
+  const attachInput = document.getElementById("attach-input");
+  const attachBar = document.getElementById("attach-bar");
+  const composerEl = document.getElementById("composer");
+
+  function humanSize(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return Math.round(n / 1024) + " KB";
+    return (n / 1024 / 1024).toFixed(1) + " MB";
+  }
+  function renderChips() {
+    attachBar.innerHTML = "";
+    if (!attachments.length) { attachBar.hidden = true; return; }
+    attachBar.hidden = false;
+    attachments.forEach(function (a, idx) {
+      var chip = document.createElement("div");
+      chip.className = "chip" + (a.error ? " err" : "");
+      var label = document.createElement("span");
+      label.className = "chip-name";
+      label.textContent = "📄 " + a.name + (a.error ? " — " + a.error : " · " + (a.chars || 0) + " char");
+      var x = document.createElement("button");
+      x.className = "chip-x"; x.type = "button"; x.textContent = "×";
+      x.addEventListener("click", function () { attachments.splice(idx, 1); renderChips(); });
+      chip.appendChild(label); chip.appendChild(x);
+      attachBar.appendChild(chip);
+    });
+  }
+  async function handleFiles(fileList) {
+    var files = Array.from(fileList || []);
+    if (!files.length) return;
+    if (attachments.length + files.length > 20) {
+      var room = 20 - attachments.length;
+      if (room <= 0) { alert(I18N.tooMany || "Massimo 20 allegati"); return; }
+      files = files.slice(0, room);
+    }
+    // chip "in corso"
+    var pending = files.map(function (f) {
+      return { name: f.name, chars: 0, text: "", error: I18N.attaching || "…" };
+    });
+    var base = attachments.length;
+    attachments = attachments.concat(pending); renderChips();
+    var fd = new FormData();
+    files.forEach(function (f) { fd.append("files", f); });
+    try {
+      var r = await fetch("/api/attach", { method: "POST", body: fd });
+      var data = await r.json();
+      (data.attachments || []).forEach(function (res, i) {
+        var slot = base + i;
+        if (res.ok) attachments[slot] = { name: res.name, text: res.text, chars: res.chars };
+        else attachments[slot] = { name: res.name, error: res.error || (I18N.attachErr || "errore") };
+      });
+    } catch (e) {
+      for (var i = 0; i < pending.length; i++) attachments[base + i] = { name: pending[i].name, error: I18N.attachErr };
+    }
+    renderChips();
+  }
+  if (attachBtn) attachBtn.addEventListener("click", function () { attachInput.click(); });
+  if (attachInput) attachInput.addEventListener("change", function () { handleFiles(attachInput.files); attachInput.value = ""; });
+  if (composerEl) {
+    ["dragenter", "dragover"].forEach(function (ev) {
+      composerEl.addEventListener(ev, function (e) { e.preventDefault(); composerEl.classList.add("drop"); });
+    });
+    ["dragleave", "drop"].forEach(function (ev) {
+      composerEl.addEventListener(ev, function (e) { e.preventDefault(); composerEl.classList.remove("drop"); });
+    });
+    composerEl.addEventListener("drop", function (e) {
+      if (e.dataTransfer && e.dataTransfer.files) handleFiles(e.dataTransfer.files);
+    });
+  }
 
   // ── Barra di stato ──────────────────────────────────────
   function refreshStatus() {
@@ -99,6 +171,28 @@
     wrap.appendChild(bar);
   }
 
+  // Sezione "Fonti" con link cliccabili sotto una risposta (come il desktop).
+  function addSources(wrap, items) {
+    if (!items || !items.length) return;
+    var old = wrap.querySelector(".src-box");
+    if (old) old.remove();
+    var box = document.createElement("div");
+    box.className = "src-box";
+    var head = document.createElement("div");
+    head.className = "src-head";
+    head.textContent = (I18N.sources || "Fonti") + " (" + items.length + ")";
+    box.appendChild(head);
+    items.forEach(function (s) {
+      var a = document.createElement("a");
+      a.className = "src-link";
+      a.href = s.url; a.target = "_blank"; a.rel = "noopener noreferrer";
+      var icon = (s.kind === "report") ? "📊 " : (s.kind === "download") ? "⬇️ " : "📄 ";
+      a.textContent = icon + (s.name || s.url);
+      box.appendChild(a);
+    });
+    wrap.appendChild(box);
+  }
+
   function sendFeedback(kind, question, answer) {
     fetch("/api/feedback/" + kind, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -138,6 +232,8 @@
           reply_lang: langSel.value,
           free_mode: modeSel && modeSel.value === "free",
           session_id: sessionId,
+          attachments: attachments.filter(function(a){return a.text;})
+                                  .map(function(a){return {name:a.name, text:a.text};}),
         }),
       });
 
@@ -165,6 +261,9 @@
           if (evt.type === "delta") {
             acc += evt.text;
             m.bubble.innerHTML = renderMarkdownish(acc);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          } else if (evt.type === "sources") {
+            addSources(m.wrap, evt.items);
             messagesEl.scrollTop = messagesEl.scrollHeight;
           } else if (evt.type === "error") {
             acc += "\n\n⚠️ " + evt.text;
@@ -262,6 +361,8 @@
   function newChat() {
     history = [];
     sessionId = null;
+    attachments = [];
+    renderChips();
     messagesEl.innerHTML = systemWelcomeHTML;
     loadList();
     inputEl.focus();

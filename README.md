@@ -172,6 +172,16 @@ python tests/test_smoke.py
 
 ---
 
+## Allegati e generazione documenti
+
+**Allegati (fino a 20, drag&drop).** Nella chat, con la graffetta o trascinando i file, si allegano documenti (txt, md, csv, json, xml, py, pdf, docx, xlsx, pptx). Il testo viene estratto e usato con priorità nel contesto, **sia in Documentale sia in AI libera** (es. "fammi la sintesi del file allegato").
+
+**Generazione file scaricabili.** Chiedendo in chat "creami un Word/Excel/PowerPoint/PDF…", ISEOPilot rileva il formato, fa generare il contenuto al modello e costruisce il file, offrendolo in **download** sotto la risposta. Word e PowerPoint usano i **template aziendali** (`app/doc_templates/`); Excel è generato da zero con intestazioni e formule di totale. Il PDF è prodotto dal Word sul template via LibreOffice (incluso nell'immagine Docker); in mancanza di LibreOffice ricade su un layout in stile ISEO. I file sono serviti via token legato all'utente (download riservato al proprietario).
+
+> Nota: la generazione del contenuto usa Claude (chiamata non in streaming), quindi richiede la chiave API configurata, anche se il motore di chat è LM Studio.
+
+---
+
 ## Cronologia conversazioni e feedback
 
 Ogni conversazione viene **salvata automaticamente** dopo ogni risposta, per-utente, nella barra laterale della chat: si può riaprire, rinominare, eliminare e iniziare una **Nuova chat**. Titoli e contenuti sono **cifrati a riposo** (Fernet), come i segreti.

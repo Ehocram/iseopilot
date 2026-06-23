@@ -39,6 +39,50 @@ DYN_DIR.mkdir(parents=True, exist_ok=True)
 dynamics_search.CATALOG_FILE = DYN_DIR / "catalog.json"
 dynamics_search.SCHEMA_DIR = DYN_DIR / "schema"
 
+# Registro dei report HTML generati da Dynamics: il modulo li scrive su disco
+# e restituisce [REPORT_HTML: path]; qui li mappiamo a un token non indovinabile
+# legato all'utente, così possiamo servirli in sicurezza (no path traversal,
+# solo il proprietario). Effimeri: vivono finché il processo è attivo.
+import re as _re
+import uuid as _uuid
+_REPORTS: dict[str, dict] = {}
+_REPORTS_LOCK = threading.Lock()
+_REPORT_RE = _re.compile(r"\[REPORT_HTML: (.+?)\]")
+
+
+def register_report(user: str, path: str) -> str:
+    token = _uuid.uuid4().hex
+    with _REPORTS_LOCK:
+        _REPORTS[token] = {"user": user, "path": path}
+    return token
+
+
+def report_path(user: str, token: str) -> str | None:
+    with _REPORTS_LOCK:
+        rec = _REPORTS.get(token)
+    if not rec or rec["user"] != user:
+        return None
+    return rec["path"]
+
+
+# Registro dei file generati (Word/Excel/PPT/PDF) per il download sicuro.
+_DOWNLOADS: dict[str, dict] = {}
+
+
+def register_download(user: str, path: str, filename: str) -> str:
+    token = _uuid.uuid4().hex
+    with _REPORTS_LOCK:
+        _DOWNLOADS[token] = {"user": user, "path": path, "filename": filename}
+    return token
+
+
+def download_info(user: str, token: str) -> dict | None:
+    with _REPORTS_LOCK:
+        rec = _DOWNLOADS.get(token)
+    if not rec or rec["user"] != user:
+        return None
+    return rec
+
 # Valori predefiniti dei connettori Microsoft (app desktop ISEO).
 DEF_OD_CLIENT_ID     = "c5a90f54-d599-4f71-a98f-0fa0781145c1"
 DEF_OD_TENANT_ID     = "a97887fe-14ea-46bc-afa8-f7b85f2164ff"
@@ -215,6 +259,60 @@ def search(user: str, conn: str, query: str, max_results: int = 3,
                     dynamics_search.TOKEN_FILE = prev
         except Exception:
             return ""
+
+
+def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
+                      current_user_name: str = "") -> tuple[str, list[dict]]:
+    """Come search(), ma ritorna anche i link strutturati delle fonti
+    (nome, url) — replica i last_links del desktop. Per Dynamics i link
+    non sono applicabili e la lista è vuota."""
+    if conn not in CONNECTORS or not is_connected(user, conn):
+        return "", []
+    cfg = ms_cfg(conn)
+    user_token = _token_path(user, conn)
+    with _LOCK:
+        try:
+            if conn == "onedrive":
+                prev = onedrive_search.TOKEN_FILE
+                onedrive_search.TOKEN_FILE = user_token
+                try:
+                    od = onedrive_search.OneDriveSearch({
+                        "od_client_id": cfg["client_id"],
+                        "od_tenant_id": cfg["tenant_id"],
+                    })
+                    text = od.search(query, max_results=max_results) or ""
+                    links = [{"name": n, "url": u}
+                             for (n, u) in getattr(od, "last_links", []) if u]
+                    return text, links
+                finally:
+                    onedrive_search.TOKEN_FILE = prev
+            else:
+                prev = dynamics_search.TOKEN_FILE
+                dynamics_search.TOKEN_FILE = user_token
+                try:
+                    dyn = dynamics_search.DynamicsSearch({
+                        "dyn_client_id": cfg["client_id"],
+                        "dyn_tenant_id": cfg["tenant_id"],
+                        "dyn_resource_url": cfg["resource_url"],
+                        "dyn_schema_dir": str(dynamics_search.SCHEMA_DIR),
+                    })
+                    text = dyn.search(query, max_results=max_results,
+                                      current_user_name=current_user_name) or ""
+                    # Estrai eventuale report HTML generato dal modulo: lo
+                    # registriamo per token e lo togliamo dal testo (così non
+                    # finisce grezzo nel contesto inviato a Claude).
+                    links = []
+                    m = _REPORT_RE.search(text)
+                    if m:
+                        token = register_report(user, m.group(1).strip())
+                        text = text.replace(m.group(0), "").lstrip()
+                        links.append({"name": "Report Dynamics (HTML)",
+                                      "url": "/dyn-report/" + token, "kind": "report"})
+                    return text, links
+                finally:
+                    dynamics_search.TOKEN_FILE = prev
+        except Exception:
+            return "", []
 
 
 # ── Catalogo entità Dynamics (mappa relazioni + schema .md) ─

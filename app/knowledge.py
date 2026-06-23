@@ -40,6 +40,8 @@ folder_index.INDEX_DIR = FOLDER_INDEX_DIR
 # Estensioni accettate per l'upload in ChromaDB.
 ALLOWED_UPLOAD_EXT = {".txt", ".md", ".csv", ".json", ".xml", ".py",
                       ".pdf", ".docx", ".xlsx", ".xls"}
+# Gli allegati di chat accettano anche le presentazioni.
+ALLOWED_ATTACH_EXT = ALLOWED_UPLOAD_EXT | {".pptx", ".ppt"}
 
 
 # ── Configurazione ChromaDB per dipartimento ────────────────
@@ -81,6 +83,45 @@ def extract_text(filename: str, raw: bytes) -> str:
             tmp_path.unlink()
         except Exception:
             pass
+
+
+def _extract_pptx_text(raw: bytes) -> str:
+    """Testo di una presentazione: titoli, testo delle forme, note relatore."""
+    try:
+        from pptx import Presentation
+        import io
+        prs = Presentation(io.BytesIO(raw))
+        out = []
+        for i, slide in enumerate(prs.slides, 1):
+            out.append(f"-- Slide {i} --")
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for p in shape.text_frame.paragraphs:
+                        t = "".join(r.text for r in p.runs).strip()
+                        if t:
+                            out.append(t)
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells]
+                        out.append(" | ".join(cells))
+            if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+                note = slide.notes_slide.notes_text_frame.text.strip()
+                if note:
+                    out.append("[Note: " + note + "]")
+        return "\n".join(out)
+    except Exception:
+        return ""
+
+
+def extract_attachment_text(filename: str, raw: bytes) -> str:
+    """Estrae il testo da un allegato di chat. Come extract_text ma include
+    anche le presentazioni PowerPoint."""
+    ext = Path(filename).suffix.lower()
+    if ext in {".pptx", ".ppt"}:
+        return _extract_pptx_text(raw)
+    if ext in ALLOWED_UPLOAD_EXT:
+        return extract_text(filename, raw)
+    return ""
 
 
 # ── Operazioni KB (ChromaDB) per dipartimento ───────────────

@@ -14,3 +14,4 @@ sentence-transformers>=2.7
 # Anonimizzazione NLP nomi propri (opzionale):
 #   python -m spacy download it_core_news_sm
 spacy>=3.7
+reportlab>=4.0

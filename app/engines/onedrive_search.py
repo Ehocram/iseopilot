@@ -208,6 +208,64 @@ class TokenManager:
 
 
 # ── Graph Search ─────────────────────────────────────────
+def _build_query(text: str) -> str:
+    """Estrae parole chiave per OneDrive mappando i CONCETTI a TERMINI
+    DOCUMENTALI (porting fedele di _extract_keywords dell'app desktop).
+
+    Esempio chiave: "quanti anni ha Marco Bonometti?" non viene cercato così
+    com'è (Graph cerca i termini), ma tradotto in "anagrafica bonometti marco":
+    il concetto 'anni' mappa al documento 'anagrafica', che è il file giusto.
+    """
+    import re
+    tl = (text or "").lower()
+
+    # Mappa concettuale — concetto della domanda -> termine presente nei documenti.
+    concept_map = [
+        (['anni', 'anno', 'nato', 'nata', 'nascita', 'eta', 'età', 'compleanno',
+          'quanti anni', 'data nascita', 'quand'], 'anagrafica'),
+        (['risiede', 'abita', 'residente', 'residenza', 'indirizzo', 'dove vive',
+          'città', 'citta', 'comune', 'domicilio'], 'anagrafica'),
+        (['codice fiscale', 'partita iva', 'piva', 'cf '], 'anagrafica'),
+        (['contratto', 'assunto', 'assunzione', 'stipendio', 'salario', 'ral',
+          'ferie', 'permessi', 'ccnl', 'busta paga'], 'contratto'),
+        (['fattura', 'invoice', 'pagamento', 'importo', 'bonifico'], 'fattura'),
+        (['vulnerabilit', 'cve', 'exploit', 'patch', 'pentest', 'remediation'], 'vulnerability'),
+        (['riunione', 'meeting', 'verbale', 'minuti riunione'], 'verbale'),
+        (['report', 'relazione', 'analisi', 'findings', 'risultati'], 'report'),
+    ]
+
+    extra = []
+    for triggers, keyword in concept_map:
+        if any(t in tl for t in triggers):
+            extra.append(keyword)
+            if len(extra) >= 2:
+                break
+
+    # Stopword — esclude le parole funzionali (non i termini della concept_map).
+    stopwords = {
+        'ciao', 'il', 'lo', 'la', 'gli', 'le', 'un', 'uno', 'una', 'di', 'da', 'in',
+        'con', 'su', 'per', 'tra', 'fra', 'e', 'o', 'ma', 'se', 'non', 'che', 'chi',
+        'come', 'quando', 'dove', 'cosa', 'qual', 'quali', 'quanto', 'quanti', 'quante',
+        'mi', 'ti', 'ci', 'vi', 'si', 'ne', 'ho', 'ha', 'hai', 'hanno', 'sono', 'sei',
+        'siamo', 'siete', 'era', 'del', 'della', 'dei', 'degli', 'delle', 'al', 'alla',
+        'ai', 'agli', 'alle', 'nel', 'nella', 'nei', 'negli', 'nelle', 'sul', 'sulla',
+        'sui', 'sugli', 'sulle', 'dal', 'dalla', 'dai', 'the', 'an', 'is', 'are', 'was',
+        'were', 'been', 'have', 'has', 'had', 'did', 'will', 'would', 'could', 'should',
+        'may', 'might', 'shall', 'can', 'dammi', 'dimmi', 'parlami', 'raccontami',
+        'mostrami', 'dicci', 'descrivimi', 'quale', 'questo', 'questa', 'questi',
+        'queste', 'molto', 'poco', 'tanto', 'fatto', 'fatta', 'fatti', 'fatte',
+        'avere', 'essere', 'stare',
+    }
+
+    words = re.findall(r'[a-zA-ZàèéìòùÀÈÉÌÒÙ]{4,}', tl)
+    concept_kw = {kw for _, kw in concept_map}
+    content_words = [w for w in words if w not in stopwords and w not in concept_kw]
+    content_words = sorted(set(content_words), key=len, reverse=True)[:2]
+
+    result = extra + [w for w in content_words if w not in extra]
+    return ' '.join(result[:3]) if result else (text or "")[:50]
+
+
 class OneDriveSearch:
     """Ricerca full-text in OneDrive tramite Microsoft Graph Search API."""
 
@@ -249,12 +307,15 @@ class OneDriveSearch:
         self.last_links = []   # link strutturati (nome, url) dell'ultima ricerca
         if not token:
             return ""
+        # Domanda -> parole chiave: Graph cerca i termini, non interpreta la frase.
+        query_string = _build_query(query)
+        _odlog(f"OneDrive query: '{query}' -> '{query_string}'")
         try:
             import requests as req
             payload = {
                 "requests": [{
                     "entityTypes": ["driveItem"],
-                    "query": {"queryString": query},
+                    "query": {"queryString": query_string},
                     "from": 0,
                     "size": max_results,
                     "fields": ["id", "name", "webUrl", "lastModifiedDateTime",

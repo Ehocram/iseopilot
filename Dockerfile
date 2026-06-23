@@ -11,11 +11,17 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Dipendenze prima del codice: sfrutta la cache dei layer.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# LibreOffice headless (solo Writer) per convertire Word->PDF mantenendo il
+# template ISEO; più i font. Senza, il PDF ricade su un layout reportlab.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice-writer fonts-dejavu \
+    && rm -rf /var/lib/apt/lists/*
 
-# Codice applicativo
+# Dipendenze prima del codice: sfrutta la cache dei layer.
+COPY requirements.txt requirements-connectors.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-connectors.txt
+
+# Codice applicativo (include i template documentali in app/doc_templates)
 COPY app/ ./app/
 COPY templates/ ./templates/
 COPY static/ ./static/

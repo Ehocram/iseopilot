@@ -376,3 +376,28 @@ table.grid code{font-family:var(--mono); font-size:12px; color:var(--dim);}
 .fb-btn.active{opacity:1; filter:none; border-color:var(--iseo,#ec1d2b); background:rgba(236,29,43,.12);}
 .fb-note{font-size:11.5px; color:var(--faint); margin-left:2px;}
 @media (max-width: 720px){ .chat-sidebar{width:180px;} }
+
+/* ── Indicatore salvataggio automatico (Connessioni) ─────── */
+.src-saved{font-size:12.5px; color:var(--ok,#34d399); font-weight:600; opacity:0; transition:opacity .2s;}
+.src-saved.show{opacity:1;}
+
+/* ── Fonti cliccabili sotto la risposta (link OneDrive ecc.) ─ */
+.src-box{margin:8px 0 2px; padding:11px 13px; border:1px solid var(--line); border-radius:10px;
+  background:rgba(255,255,255,.02); display:flex; flex-direction:column; gap:6px;}
+.src-head{font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint);}
+.src-link{font-size:13px; color:var(--iseo-2,#ff6470); text-decoration:none; word-break:break-all;
+  padding:3px 0; border-bottom:1px solid transparent; width:fit-content;}
+.src-link:hover{border-bottom-color:var(--iseo-2,#ff6470);}
+
+/* ── Allegati di chat (drag&drop + chip) ─────────────────── */
+.composer.drop{outline:2px dashed var(--iseo,#ec1d2b); outline-offset:-6px; background:rgba(236,29,43,.05);}
+.attach-btn{flex:none; width:46px; height:46px; border-radius:11px; border:1px solid var(--line-2,#2a2e38);
+  background:rgba(255,255,255,.03); color:var(--text); font-size:18px; cursor:pointer; align-self:flex-end;}
+.attach-btn:hover{background:rgba(255,255,255,.07);}
+.attach-bar{display:flex; flex-wrap:wrap; gap:7px; margin-bottom:10px;}
+.chip{display:flex; align-items:center; gap:6px; padding:5px 6px 5px 10px; border-radius:8px;
+  background:rgba(255,255,255,.05); border:1px solid var(--line-2,#2a2e38); font-size:12px; max-width:280px;}
+.chip.err{border-color:rgba(236,29,43,.4); background:rgba(236,29,43,.08);}
+.chip-name{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--dim,#cdd2db);}
+.chip-x{background:none; border:none; color:var(--faint); cursor:pointer; font-size:16px; line-height:1; padding:0 2px;}
+.chip-x:hover{color:var(--iseo-2,#ff6470);}

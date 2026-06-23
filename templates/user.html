@@ -79,9 +79,43 @@
       </div>
     </div>
 
-    <div class="actions" style="max-width:780px;margin:0 auto 40px;"><button type="submit" class="primary">{{ t("Salva preferenze") }}</button></div>
+    <div class="actions" style="max-width:780px;margin:0 auto 40px; display:flex; align-items:center; gap:14px;">
+      <button type="submit" class="primary">{{ t("Salva preferenze") }}</button>
+      <span class="hint" style="margin:0;">{{ t("Le modifiche agli interruttori si salvano da sole.") }}</span>
+      <span id="src-saved" class="src-saved" hidden>✓ {{ t("Salvato") }}</span>
+    </div>
   </form>
 </div>
+
+<script>
+(function(){
+  // Salvataggio automatico al cambio di un interruttore (nessun reload).
+  var savedTag = document.getElementById("src-saved");
+  var savedTimer = null;
+  function showSaved(){
+    if(!savedTag) return;
+    savedTag.hidden = false; savedTag.classList.add("show");
+    if(savedTimer) clearTimeout(savedTimer);
+    savedTimer = setTimeout(function(){ savedTag.classList.remove("show"); savedTag.hidden = true; }, 1600);
+  }
+  function saveSources(){
+    var body = new URLSearchParams();
+    body.append("ajax", "1");
+    document.querySelectorAll('input[name^="use_"]').forEach(function(cb){
+      if(cb.checked && !cb.disabled) body.append(cb.name, "1");
+    });
+    fetch("/settings", {method:"POST",
+      headers:{"Content-Type":"application/x-www-form-urlencoded"},
+      body: body.toString()})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ if(d && d.ok) showSaved(); })
+      .catch(function(){});
+  }
+  document.querySelectorAll('input[name^="use_"]').forEach(function(cb){
+    cb.addEventListener("change", saveSources);
+  });
+})();
+</script>
 
 <script>
 (function(){

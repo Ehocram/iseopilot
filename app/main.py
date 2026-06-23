@@ -6,6 +6,7 @@ Tutte le pagine sono protette dal login, tranne /login e /healthz.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.background import BackgroundTask
 
-from . import auth, connectors, i18n, knowledge, memory, store
+from . import auth, connectors, docgen, i18n, knowledge, memory, store
 from .connectors import (DEF_OD_CLIENT_ID, DEF_OD_TENANT_ID, DEF_DYN_CLIENT_ID,
                          DEF_DYN_TENANT_ID, DEF_DYN_RESOURCE_URL)
 from .orchestrator import TONES, LANG_INSTR, stream_reply
@@ -151,6 +152,7 @@ class ChatRequest(BaseModel):
     reply_lang: str = "Italiano"
     free_mode: bool = False
     session_id: str | None = None
+    attachments: list[dict] = []
 
 
 @app.post("/api/chat")
@@ -177,42 +179,131 @@ def api_chat(request: Request, body: ChatRequest):
     # ChromaDB del dipartimento e/o cartelle del dipartimento. Scoping per area.
     # In MODALITÀ AI LIBERA non si consulta alcuna fonte: risposta da conoscenza generale.
     context = ""
+    source_links: list[dict] = []
+    uid = user["username"]
+    query = clean[-1]["content"] if clean else ""
+
+    # Allegati della conversazione: hanno priorità e valgono SEMPRE, anche in AI
+    # libera (l'utente allega un file e chiede sintesi/elaborazione).
+    attach_block = ""
+    if body.attachments:
+        ab = []
+        for a in body.attachments[:20]:
+            name = str(a.get("name", "allegato"))
+            text = str(a.get("text", ""))[:12000]
+            if text.strip():
+                ab.append(f"[ALLEGATO: {name}]\n{text}")
+        attach_block = "\n\n".join(ab)
+
     if not body.free_mode:
         try:
             dept = user.get("department") or ""
-            uid = user["username"]
-            query = clean[-1]["content"]
             use_kb = store.get_user_setting(uid, "use_kb", "1") == "1"
             use_folder = store.get_user_setting(uid, "use_folder", "1") == "1"
-            parts = [knowledge.retrieve(dept, query, use_kb=use_kb, use_folder=use_folder)]
-            # Connettori personali: solo se il toggle è attivo E l'account è connesso.
+            # se ci sono allegati, arricchisci la query con le loro parole chiave
+            search_q = query
+            if attach_block:
+                try:
+                    from .engines.onedrive_search import _build_query as _kw
+                    akw = _kw(attach_block[:2000])
+                    if akw and akw.strip() and akw.strip() != query.strip():
+                        search_q = (query + " " + akw).strip()
+                except Exception:
+                    pass
+            parts = [knowledge.retrieve(dept, search_q, use_kb=use_kb, use_folder=use_folder)]
             if store.get_user_setting(uid, "use_onedrive", "0") == "1" and connectors.is_connected(uid, "onedrive"):
-                od = connectors.search(uid, "onedrive", query, max_results=3)
+                od, od_links = connectors.search_with_links(uid, "onedrive", search_q, max_results=5)
                 if od.strip():
                     parts.append("[OneDrive]\n" + od)
+                source_links.extend(od_links)
             if store.get_user_setting(uid, "use_dynamics", "0") == "1" and connectors.is_connected(uid, "dynamics"):
-                dy = connectors.search(uid, "dynamics", query, max_results=5, current_user_name=uid)
+                dy, dy_links = connectors.search_with_links(uid, "dynamics", search_q, max_results=5, current_user_name=uid)
                 if dy.strip():
                     parts.append("[Dynamics 365]\n" + dy)
+                source_links.extend(dy_links)
             context = "\n\n".join(p for p in parts if p.strip())[:8000]
         except Exception:
             context = ""
 
+    # Gli allegati precedono il resto del contesto (massima priorità).
+    if attach_block:
+        context = (attach_block + ("\n\n" + context if context else ""))[:14000]
+
+    # ── Generazione documenti su richiesta (Word/Excel/PPT/PDF) ──
+    # Funziona sia in Documentale sia in AI libera; il contenuto è prodotto da
+    # Claude e il file è costruito sui template ISEO (Excel da zero).
+    gen_fmt = docgen.detect_request(query)
+    if gen_fmt:
+        def gen_stream():
+            try:
+                yield "data: " + json.dumps({"type": "delta", "text": "Sto preparando il file…\n\n"}, ensure_ascii=False) + "\n\n"
+                path, fname = docgen.generate(gen_fmt, query, context, settings)
+                token = connectors.register_download(uid, path, fname)
+                yield "data: " + json.dumps({"type": "delta", "text": f"Ho preparato **{fname}**. Puoi scaricarlo qui sotto."}, ensure_ascii=False) + "\n\n"
+                yield "data: " + json.dumps({"type": "sources", "items": [{"name": fname, "url": "/download/" + token, "kind": "download"}]}, ensure_ascii=False) + "\n\n"
+            except Exception as e:
+                yield "data: " + json.dumps({"type": "error", "text": "Generazione non riuscita: " + str(e)[:200]}, ensure_ascii=False) + "\n\n"
+        return StreamingResponse(gen_stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     # Memoria conversazionale + esempi promossi (pollice su) dell'utente: danno
     # continuità tra sessioni e qualità. La sessione corrente è esclusa dalla
     # memoria per non duplicare la conversazione in corso.
-    uid = user["username"]
     try:
         mem_ctx = memory.build_memory_context(uid, exclude_session=body.session_id)
         fb_ctx = memory.build_feedback_context(uid)
     except Exception:
         mem_ctx, fb_ctx = "", ""
 
+    def _gen():
+        # Risposta in streaming (i link NON passano da Claude/anonimizzazione).
+        yield from stream_reply(clean, settings, anon_names(), context,
+                                body.free_mode, mem_ctx, fb_ctx)
+        # Fonti cliccabili (link strutturati), come i last_links del desktop.
+        if source_links:
+            # dedup mantenendo l'ordine di rilevanza
+            seen, uniq = set(), []
+            for s in source_links:
+                key = s.get("url", "")
+                if key and key not in seen:
+                    seen.add(key)
+                    uniq.append(s)
+            if uniq:
+                yield "data: " + json.dumps({"type": "sources", "items": uniq}, ensure_ascii=False) + "\n\n"
+
     return StreamingResponse(
-        stream_reply(clean, settings, anon_names(), context, body.free_mode, mem_ctx, fb_ctx),
+        _gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/attach")
+async def api_attach(request: Request, files: list[UploadFile] = File(...)):
+    user = auth.current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sessione scaduta.")
+    out = []
+    for f in files[:20]:
+        ext = Path(f.filename or "").suffix.lower()
+        if ext not in knowledge.ALLOWED_ATTACH_EXT:
+            out.append({"name": f.filename, "ok": False,
+                        "error": "Tipo non supportato"})
+            continue
+        try:
+            raw = await f.read()
+            if len(raw) > 25 * 1024 * 1024:  # 25 MB per file
+                out.append({"name": f.filename, "ok": False, "error": "File troppo grande (max 25 MB)"})
+                continue
+            text = knowledge.extract_attachment_text(f.filename or "", raw)
+            if not text.strip():
+                out.append({"name": f.filename, "ok": False, "error": "Nessun testo estraibile"})
+                continue
+            out.append({"name": f.filename, "ok": True,
+                        "chars": len(text), "text": text[:14000]})
+        except Exception as e:
+            out.append({"name": f.filename, "ok": False, "error": str(e)[:120]})
+    return {"attachments": out}
 
 
 # ── Cronologia conversazioni (per-utente) ──────────────────
@@ -696,15 +787,21 @@ def settings_page(request: Request):
 
 @app.post("/settings")
 def settings_save(request: Request, use_kb: str = Form("0"), use_folder: str = Form("0"),
-                  use_onedrive: str = Form("0"), use_dynamics: str = Form("0")):
+                  use_onedrive: str = Form("0"), use_dynamics: str = Form("0"),
+                  ajax: str = Form("")):
     user = auth.current_user(request)
     if not user:
+        if ajax == "1":
+            return JSONResponse({"ok": False}, status_code=401)
         return RedirectResponse(url="/login", status_code=303)
     uname = user["username"]
     store.set_user_setting(uname, "use_kb", "1" if use_kb == "1" else "0")
     store.set_user_setting(uname, "use_folder", "1" if use_folder == "1" else "0")
     store.set_user_setting(uname, "use_onedrive", "1" if use_onedrive == "1" else "0")
     store.set_user_setting(uname, "use_dynamics", "1" if use_dynamics == "1" else "0")
+    if ajax == "1":
+        # Salvataggio automatico (cambio toggle): nessun reload di pagina.
+        return JSONResponse({"ok": True})
     return RedirectResponse(url="/settings?saved=1", status_code=303)
 
 
@@ -725,7 +822,11 @@ def connect_poll(request: Request, conn: str):
         return JSONResponse({"status": "error", "message": "Sessione scaduta."}, status_code=401)
     if conn not in connectors.CONNECTORS:
         return JSONResponse({"status": "error", "message": "Connettore non valido."}, status_code=404)
-    return JSONResponse(connectors.poll_once(user["username"], conn))
+    res = connectors.poll_once(user["username"], conn)
+    # Appena connesso, attiva automaticamente la fonte: "connesso" implica "in uso".
+    if res.get("status") == "connected":
+        store.set_user_setting(user["username"], "use_" + conn, "1")
+    return JSONResponse(res)
 
 
 @app.post("/connect/{conn}/logout")
@@ -778,6 +879,35 @@ def admin_build_dyn_catalog(request: Request):
         return RedirectResponse(url="/admin?dyn_err=" + str(res["errore"]).replace(" ", "+")[:200], status_code=303)
     msg = f"Catalogo+generato:+{res.get('count',0)}+entità,+{res.get('relazioni',0)}+relazioni,+{res.get('schema_md',{}).get('file',0)}+schema."
     return RedirectResponse(url="/admin?saved=1&dyn_msg=" + msg, status_code=303)
+
+
+@app.get("/download/{token}")
+def download_file(request: Request, token: str):
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    rec = connectors.download_info(user["username"], token)
+    if not rec or not Path(rec["path"]).is_file():
+        raise HTTPException(status_code=404, detail="File non disponibile o scaduto.")
+    from fastapi.responses import FileResponse
+    return FileResponse(rec["path"], filename=rec["filename"])
+
+
+@app.get("/dyn-report/{token}", response_class=HTMLResponse)
+def dyn_report(request: Request, token: str):
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    # Solo il proprietario del report; il path arriva dal registro (non da input
+    # utente), quindi niente path traversal. Il report è dati Dynamics riservati.
+    path = connectors.report_path(user["username"], token)
+    if not path or not Path(path).is_file():
+        raise HTTPException(status_code=404, detail="Report non disponibile o scaduto.")
+    try:
+        html = Path(path).read_text(encoding="utf-8")
+    except Exception:
+        raise HTTPException(status_code=404, detail="Report non leggibile.")
+    return HTMLResponse(content=html)
 
 
 @app.get("/healthz")
