@@ -1,0 +1,13 @@
+# ── Blocco da AGGIUNGERE al Caddyfile di Flusso-AI ──────────────────────
+# (in fondo al file, dopo il blocco di flussoai.iseo.com — NON rimuovere nulla)
+#
+# IMPORTANTE: la riga "tls" deve avere lo STESSO percorso dei certificati che
+# usa già il blocco flussoai.iseo.com. Copia quella riga dal blocco esistente
+# e incollala qui, così usi lo stesso certificato PKI. I percorsi sono quelli
+# DENTRO il container Caddy (dove i .pem sono montati), non quelli dell'host.
+
+iseopilot.iseo.com {
+	tls /CHANGE/ME/fullchain.pem /CHANGE/ME/key.pem
+	reverse_proxy iseopilot:8000
+	encode gzip
+}

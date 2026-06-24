@@ -1,0 +1,41 @@
+# ============================================================
+# ISEOPilot — deploy su server CONDIVISO con Flusso-AI (10.1.10.139)
+#
+# Modello: compose INDIPENDENTE (non tocca quello di Flusso-AI).
+# Rete: il container sta su "proxy-net" (condivisa SOLO col Caddy) e su una
+#       rete interna sua. NON è sulla rete dati di Flusso-AI, quindi non vede
+#       il suo database. Nessuna porta pubblicata sull'host: l'unico ingresso
+#       è il Caddy via proxy-net.
+# Risorse: tetto di RAM/CPU per non far scattare l'OOM killer su Flusso-AI.
+# ============================================================
+services:
+  iseopilot:
+    build: .
+    image: iseopilot:latest
+    container_name: iseopilot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - iseopilot_data:/data        # DB SQLite, token per-utente, catalogo Dynamics
+    networks:
+      - proxy-net                   # condivisa col Caddy di Flusso-AI
+      - internal                    # privata (per eventuali servizi futuri)
+    mem_limit: 3g                    # tetto RAM (ChromaDB + embedding ~1-2 GB)
+    memswap_limit: 3g                # niente swap oltre il limite
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+networks:
+  proxy-net:
+    external: true                  # creata a mano (vedi DEPLOY.md)
+  internal:
+    driver: bridge
+
+volumes:
+  iseopilot_data:
