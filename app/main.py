@@ -76,6 +76,20 @@ def _ctx(request: Request, user: dict, **extra) -> dict:
     return base
 
 
+def _client_ip(request: Request) -> str:
+    """IP reale del client. Dietro il reverse proxy (Caddy) l'IP diretto è quello
+    del proxy: si legge il primo della catena X-Forwarded-For."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.headers.get("x-real-ip", "") or (request.client.host if request.client else "")
+
+
+def _audit(request: Request, username: str, action: str, detail: str = "") -> None:
+    """Registra un'attività nell'audit trail con l'IP del client."""
+    store.audit_log(username, action, detail, _client_ip(request))
+
+
 # ── Login / Logout ──────────────────────────────────────────
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
@@ -89,17 +103,22 @@ def login_page(request: Request):
 def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
     user = auth.authenticate(username, password)
     if not user:
+        _audit(request, (username or "").strip(), "login_fallito", "credenziali non valide o utenza disattivata")
         return templates.TemplateResponse(
             request, "login.html",
             {"error": "Credenziali non valide o utenza disattivata.", **_i18n_ctx(request)},
             status_code=401,
         )
     request.session["user"] = user["username"]
+    _audit(request, user["username"], "login", "")
     return RedirectResponse(url="/", status_code=303)
 
 
 @app.get("/logout")
 def logout(request: Request):
+    u = request.session.get("user", "")
+    if u:
+        _audit(request, u, "logout", "")
     request.session.clear()
     return RedirectResponse(url="/login", status_code=303)
 
@@ -234,6 +253,7 @@ def api_chat(request: Request, body: ChatRequest):
     # Claude e il file è costruito sui template ISEO (Excel da zero).
     gen_fmt = docgen.detect_request(query)
     if gen_fmt:
+        _audit(request, uid, "generazione_documento", f"formato={gen_fmt}")
         def gen_stream():
             try:
                 yield "data: " + json.dumps({"type": "delta", "text": "Sto preparando il file…\n\n"}, ensure_ascii=False) + "\n\n"
@@ -255,11 +275,14 @@ def api_chat(request: Request, body: ChatRequest):
     except Exception:
         mem_ctx, fb_ctx = "", ""
 
+    _audit(request, uid, "chat",
+           f"modalita={'libera' if body.free_mode else 'documentale'}, "
+           f"allegati={len(body.attachments or [])}, motore={body.engine}")
+
     def _gen():
         # Risposta in streaming (i link NON passano da Claude/anonimizzazione).
         yield from stream_reply(clean, settings, anon_names(), context,
                                 body.free_mode, mem_ctx, fb_ctx)
-        # Fonti cliccabili (link strutturati), come i last_links del desktop.
         if source_links:
             # dedup mantenendo l'ordine di rilevanza
             seen, uniq = set(), []
@@ -537,6 +560,7 @@ def users_create(
                            is_admin=(new_is_admin == "1"))
     if not ok:
         return RedirectResponse(url="/admin/users?err=Username+gi%C3%A0+esistente.", status_code=303)
+    _audit(request, user["username"], "admin_utente_creato", f"utente={uname}, reparto={new_department}, admin={new_is_admin=='1'}")
     return RedirectResponse(url=f"/admin/users?msg=Utente+{uname}+creato.", status_code=303)
 
 
@@ -576,7 +600,93 @@ def users_update(
 
     store.update_user(username, department=department, is_admin=want_admin,
                       active=want_active, password_hash=pwd_hash)
+    _audit(request, admin["username"], "admin_utente_modificato",
+           f"utente={username}, reparto={department}, admin={want_admin}, "
+           f"attivo={want_active}, reset_password={bool(reset_password.strip())}")
     return RedirectResponse(url=f"/admin/users?msg=Utente+{username}+aggiornato.", status_code=303)
+
+
+# ── Audit trail (admin) ─────────────────────────────────────
+def _audit_range(preset: str, frm: str, to: str):
+    """Calcola (start_iso, end_iso, etichetta) dai filtri temporali."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    if preset == "24h":
+        return (now - timedelta(hours=24)).isoformat(), None, "Ultime 24 ore"
+    if preset == "7d":
+        return (now - timedelta(days=7)).isoformat(), None, "Ultimi 7 giorni"
+    if preset == "30d":
+        return (now - timedelta(days=30)).isoformat(), None, "Ultimi 30 giorni"
+    if preset == "custom" and (frm or to):
+        s = e = None
+        try:
+            if frm:
+                s = datetime.fromisoformat(frm).replace(tzinfo=timezone.utc).isoformat()
+            if to:
+                e = (datetime.fromisoformat(to).replace(tzinfo=timezone.utc) + timedelta(days=1)).isoformat()
+        except Exception:
+            pass
+        return s, e, f"Dal {frm or '—'} al {to or '—'}"
+    return None, None, "Tutto"
+
+
+@app.get("/admin/audit", response_class=HTMLResponse)
+def audit_page(request: Request):
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    qp = request.query_params
+    preset = qp.get("preset", "24h")
+    frm, to = qp.get("from", ""), qp.get("to", "")
+    f_user, f_action = qp.get("user", ""), qp.get("action", "")
+    start, end, label = _audit_range(preset, frm, to)
+    rows = store.audit_query(start, end, f_user or None, f_action or None, limit=2000)
+    return templates.TemplateResponse(request, "admin_audit.html", _ctx(
+        request, user, rows=rows, label=label, total=len(rows),
+        preset=preset, frm=frm, to=to, f_user=f_user, f_action=f_action,
+        actions=store.audit_actions(), usernames=store.audit_usernames(),
+    ))
+
+
+@app.get("/admin/audit/export")
+def audit_export(request: Request):
+    user = auth.current_user(request)
+    if not user or not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    qp = request.query_params
+    start, end, label = _audit_range(qp.get("preset", "24h"), qp.get("from", ""), qp.get("to", ""))
+    rows = store.audit_query(start, end, qp.get("user") or None, qp.get("action") or None, limit=100000)
+
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Audit"
+    headers = ["Data/ora (UTC)", "Utente", "Azione", "Dettaglio", "IP"]
+    for j, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=j, value=h)
+        c.fill = PatternFill("solid", fgColor="EC1D2B")
+        c.font = Font(color="FFFFFF", bold=True)
+        c.alignment = Alignment(horizontal="center")
+    for i, r in enumerate(rows, 2):
+        ws.cell(row=i, column=1, value=(r["ts"] or "").replace("T", " ")[:19])
+        ws.cell(row=i, column=2, value=r["username"])
+        ws.cell(row=i, column=3, value=r["action"])
+        ws.cell(row=i, column=4, value=r["detail"])
+        ws.cell(row=i, column=5, value=r["ip"])
+    for j, w in enumerate([22, 22, 26, 60, 18], 1):
+        ws.column_dimensions[chr(64 + j)].width = w
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    from datetime import datetime
+    fname = f"audit_iseopilot_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.xlsx"
+    from fastapi.responses import StreamingResponse as _SR
+    return _SR(buf,
+               media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+               headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 # ── Gestione dipartimenti (admin) ───────────────────────────
@@ -728,6 +838,7 @@ def knowledge_upload(request: Request, files: list[UploadFile] = File(...)):
         except Exception:
             fail.append(f.filename)
     msg = f"{ok_count}+file+indicizzati+nella+collezione+del+dipartimento."
+    _audit(request, user["username"], "upload_conoscenza", f"reparto={dept}, file_ok={ok_count}, falliti={len(fail)}")
     if fail:
         return RedirectResponse(
             url=f"/knowledge?msg={msg}&err=" + "+".join(("Non+caricati:", *fail))[:300],
@@ -761,6 +872,41 @@ def knowledge_reindex(request: Request):
 
 
 # ── Connessioni utente ──────────────────────────────────────
+# ── Account utente (cambio password self-service) ───────────
+@app.get("/account", response_class=HTMLResponse)
+def account_page(request: Request, ok: str = "", err: str = ""):
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(request, "account.html",
+                                      _ctx(request, user, ok=ok, err=err))
+
+
+@app.post("/account/password")
+def account_password(request: Request,
+                     current_password: str = Form(""),
+                     new_password: str = Form(""),
+                     confirm_password: str = Form("")):
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    # 1) la password attuale deve essere corretta (anche se la sessione è aperta:
+    #    impedisce a chi trova un PC sbloccato di cambiare la password senza saperla)
+    if not auth.authenticate(user["username"], current_password):
+        return RedirectResponse(url="/account?err=current", status_code=303)
+    # 2) validazione della nuova password
+    if len(new_password) < 8:
+        return RedirectResponse(url="/account?err=short", status_code=303)
+    if new_password != confirm_password:
+        return RedirectResponse(url="/account?err=match", status_code=303)
+    if new_password == current_password:
+        return RedirectResponse(url="/account?err=same", status_code=303)
+    # 3) salva l'hash scrypt della nuova password (mai in chiaro)
+    store.update_user(user["username"], password_hash=auth.hash_password(new_password))
+    _audit(request, user["username"], "cambio_password", "")
+    return RedirectResponse(url="/account?ok=1", status_code=303)
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
     user = auth.current_user(request)
@@ -826,6 +972,7 @@ def connect_poll(request: Request, conn: str):
     # Appena connesso, attiva automaticamente la fonte: "connesso" implica "in uso".
     if res.get("status") == "connected":
         store.set_user_setting(user["username"], "use_" + conn, "1")
+        _audit(request, user["username"], "connettore_connesso", conn)
     return JSONResponse(res)
 
 
@@ -836,6 +983,7 @@ def connect_logout(request: Request, conn: str):
         return RedirectResponse(url="/login", status_code=303)
     if conn in connectors.CONNECTORS:
         connectors.disconnect(user["username"], conn)
+        _audit(request, user["username"], "connettore_disconnesso", conn)
     return RedirectResponse(url="/settings?saved=1", status_code=303)
 
 
@@ -851,6 +999,7 @@ def knowledge_folder_add(request: Request, path: str = Form(...)):
     if not p or not Path(p).exists():
         return RedirectResponse(url="/knowledge?err=Percorso+non+raggiungibile+dal+server:+" + p.replace(" ", "+")[:160], status_code=303)
     store.add_department_folder(dept, p)
+    _audit(request, user["username"], "cartella_aggiunta", f"reparto={dept}, percorso={p}")
     # Indicizzazione automatica in background (anche share di rete): la cartella
     # è subito agganciata; l'indice si costruisce senza bloccare la risposta.
     return RedirectResponse(url="/knowledge?msg=Cartella+aggiunta,+indicizzazione+avviata.",
@@ -866,6 +1015,7 @@ def knowledge_folder_remove(request: Request, path: str = Form(...)):
         raise HTTPException(status_code=403, detail="Solo l'amministratore può rimuovere cartelle.")
     dept = user.get("department") or ""
     store.remove_department_folder(dept, path)
+    _audit(request, user["username"], "cartella_rimossa", f"reparto={dept}, percorso={path}")
     return RedirectResponse(url="/knowledge?msg=Cartella+rimossa.", status_code=303)
 
 

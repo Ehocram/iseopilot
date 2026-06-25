@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ t("Account") }} — ISEOPilot{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div class="eyebrow">{{ t("Account") }} · {{ user }}</div>
+  <h1>{{ t("Il tuo account") }}</h1>
+  <p>{{ t("Gestisci la password del tuo accesso. La password è cifrata e non è visibile a nessuno, nemmeno all'amministratore.") }}</p>
+</div>
+<div class="wrap">
+  {% if ok %}<div class="flash ok">✓ {{ t("Password aggiornata.") }}</div>{% endif %}
+  {% if err == "current" %}<div class="flash err">⚠️ {{ t("La password attuale non è corretta.") }}</div>{% endif %}
+  {% if err == "short" %}<div class="flash err">⚠️ {{ t("La nuova password deve avere almeno 8 caratteri.") }}</div>{% endif %}
+  {% if err == "match" %}<div class="flash err">⚠️ {{ t("La nuova password e la conferma non coincidono.") }}</div>{% endif %}
+  {% if err == "same" %}<div class="flash err">⚠️ {{ t("La nuova password deve essere diversa da quella attuale.") }}</div>{% endif %}
+
+  <form method="post" action="/account/password" autocomplete="off">
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">{{ t("Sicurezza") }}</div><h2>{{ t("Cambia password") }}</h2></div>
+      <div class="panel-body">
+        <div class="field">
+          <label>{{ t("Password attuale") }}</label>
+          <input type="password" name="current_password" required autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label>{{ t("Nuova password") }}</label>
+          <input type="password" name="new_password" required minlength="8" autocomplete="new-password">
+          <div class="hint">{{ t("Almeno 8 caratteri.") }}</div>
+        </div>
+        <div class="field">
+          <label>{{ t("Conferma nuova password") }}</label>
+          <input type="password" name="confirm_password" required minlength="8" autocomplete="new-password">
+        </div>
+        <button class="primary" type="submit">{{ t("Aggiorna password") }}</button>
+      </div>
+    </div>
+  </form>
+</div>
+{% endblock %}

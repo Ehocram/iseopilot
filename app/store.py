@@ -116,6 +116,19 @@ def init_db() -> None:
             "  created_at TEXT)"
         )
         cx.execute("CREATE INDEX IF NOT EXISTS idx_good_user ON good_answers(user_id, id)")
+        # Audit trail: registro append-only delle attività. Contiene azioni e
+        # METADATI (mai il contenuto delle chat né password), più utente, IP e
+        # orario UTC. Visibile solo all'admin.
+        cx.execute(
+            "CREATE TABLE IF NOT EXISTS audit_log ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  ts TEXT NOT NULL,"
+            "  username TEXT,"
+            "  action TEXT NOT NULL,"
+            "  detail TEXT,"
+            "  ip TEXT)"
+        )
+        cx.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)")
         # Seed dipartimenti (solo se la tabella è vuota: non sovrascrive scelte admin)
         existing = cx.execute("SELECT COUNT(*) FROM departments").fetchone()[0]
         if existing == 0:
@@ -129,6 +142,58 @@ def init_db() -> None:
             cx.execute("INSERT OR IGNORE INTO dept_folders (department, path) VALUES (?,?)",
                        (r["name"], r["folder_path"]))
         cx.commit()
+
+
+# ── Audit trail (append-only) ───────────────────────────────
+def audit_log(username: str, action: str, detail: str = "", ip: str = "") -> None:
+    """Registra un'attività. Best-effort: non solleva mai, per non far fallire
+    la richiesta utente se il log non riesce."""
+    try:
+        with _lock, _cx() as cx:
+            cx.execute(
+                "INSERT INTO audit_log (ts, username, action, detail, ip) VALUES (?,?,?,?,?)",
+                (_now(), username or "", action or "", (detail or "")[:1000], ip or ""),
+            )
+            cx.commit()
+    except Exception:
+        import sys
+        print(f"[audit] impossibile registrare: {action}", file=sys.stderr)
+
+
+def audit_query(start_iso: str | None = None, end_iso: str | None = None,
+                username: str | None = None, action: str | None = None,
+                limit: int = 10000) -> list[dict]:
+    """Righe di audit filtrate per intervallo (UTC ISO), utente e azione."""
+    where, params = [], []
+    if start_iso:
+        where.append("ts >= ?"); params.append(start_iso)
+    if end_iso:
+        where.append("ts <= ?"); params.append(end_iso)
+    if username:
+        where.append("username = ?"); params.append(username)
+    if action:
+        where.append("action = ?"); params.append(action)
+    sql = "SELECT ts, username, action, detail, ip FROM audit_log"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    with _lock, _cx() as cx:
+        rows = cx.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def audit_actions() -> list[str]:
+    """Elenco delle azioni distinte presenti, per il filtro a tendina."""
+    with _lock, _cx() as cx:
+        rows = cx.execute("SELECT DISTINCT action FROM audit_log ORDER BY action").fetchall()
+    return [r["action"] for r in rows if r["action"]]
+
+
+def audit_usernames() -> list[str]:
+    with _lock, _cx() as cx:
+        rows = cx.execute("SELECT DISTINCT username FROM audit_log WHERE username != '' ORDER BY username").fetchall()
+    return [r["username"] for r in rows]
 
 
 # ── Collezione ChromaDB per dipartimento ────────────────────

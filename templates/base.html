@@ -22,6 +22,7 @@
       <a href="/admin" class="{% block nav_admin %}{% endblock %}">{{ t("Motore") }}</a>
       <a href="/admin/users" class="{% block nav_users %}{% endblock %}">{{ t("Utenti") }}</a>
       <a href="/admin/departments" class="{% block nav_departments %}{% endblock %}">{{ t("Dipartimenti") }}</a>
+      <a href="/admin/audit" class="{% block nav_audit %}{% endblock %}">{{ t("Audit") }}</a>
       {% endif %}
     </nav>
     <div class="right">
@@ -32,7 +33,7 @@
       <span class="clearance" title="{{ t('Area') }}">
         <span class="ring"></span><span class="lbl">{{ t("Area") }}</span><span class="dep">{{ department }}</span>
       </span>
-      <span class="who-id">{{ user }}</span>
+      <a class="who-id" href="/account" title="{{ t('Account') }}">{{ user }}</a>
       <a class="logout" href="/logout">{{ t("Esci") }}</a>
     </div>
   </header>

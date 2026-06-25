@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}{{ t("Audit") }} — ISEOPilot{% endblock %}
+{% block nav_audit %}active{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div class="eyebrow">{{ t("Sicurezza") }} · {{ t("Registro attività") }}</div>
+  <h1>{{ t("Audit trail") }}</h1>
+  <p>{{ t("Registro delle attività degli utenti: accessi, ricerche, generazione documenti, connessioni, modifiche. Sono tracciati azione, utente, orario (UTC) e IP — mai il contenuto delle conversazioni.") }}</p>
+</div>
+<div class="wrap">
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">{{ t("Filtri") }}</div></div>
+    <div class="panel-body">
+      <form method="get" action="/admin/audit" class="audit-filters">
+        <div class="af-row">
+          <label>{{ t("Periodo") }}
+            <select name="preset" onchange="document.getElementById('customRange').style.display=(this.value=='custom'?'flex':'none')">
+              <option value="24h" {% if preset=='24h' %}selected{% endif %}>{{ t("Ultime 24 ore") }}</option>
+              <option value="7d" {% if preset=='7d' %}selected{% endif %}>{{ t("Ultimi 7 giorni") }}</option>
+              <option value="30d" {% if preset=='30d' %}selected{% endif %}>{{ t("Ultimi 30 giorni") }}</option>
+              <option value="custom" {% if preset=='custom' %}selected{% endif %}>{{ t("Intervallo personalizzato") }}</option>
+              <option value="all" {% if preset=='all' %}selected{% endif %}>{{ t("Tutto") }}</option>
+            </select>
+          </label>
+          <span id="customRange" class="af-custom" style="display:{% if preset=='custom' %}flex{% else %}none{% endif %}">
+            <label>{{ t("Dal") }} <input type="date" name="from" value="{{ frm }}"></label>
+            <label>{{ t("Al") }} <input type="date" name="to" value="{{ to }}"></label>
+          </span>
+        </div>
+        <div class="af-row">
+          <label>{{ t("Utente") }}
+            <select name="user">
+              <option value="">{{ t("Tutti") }}</option>
+              {% for u in usernames %}<option value="{{ u }}" {% if u==f_user %}selected{% endif %}>{{ u }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>{{ t("Azione") }}
+            <select name="action">
+              <option value="">{{ t("Tutte") }}</option>
+              {% for a in actions %}<option value="{{ a }}" {% if a==f_action %}selected{% endif %}>{{ a }}</option>{% endfor %}
+            </select>
+          </label>
+          <button class="primary" type="submit">{{ t("Applica") }}</button>
+        </div>
+      </form>
+      <div class="af-actions">
+        <span class="af-count">{{ label }} · {{ total }} {{ t("eventi") }}</span>
+        <a class="btn-export" href="/admin/audit/export?preset={{ preset }}&from={{ frm }}&to={{ to }}&user={{ f_user }}&action={{ f_action }}">⬇️ {{ t("Esporta in Excel") }}</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <table class="audit-table">
+        <thead>
+          <tr><th>{{ t("Data/ora (UTC)") }}</th><th>{{ t("Utente") }}</th><th>{{ t("Azione") }}</th><th>{{ t("Dettaglio") }}</th><th>IP</th></tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td class="mono">{{ r.ts|replace("T"," ")|truncate(19, true, "") }}</td>
+            <td class="mono">{{ r.username }}</td>
+            <td><span class="act-tag">{{ r.action }}</span></td>
+            <td class="detail">{{ r.detail }}</td>
+            <td class="mono dim">{{ r.ip }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="empty">{{ t("Nessun evento nel periodo selezionato.") }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

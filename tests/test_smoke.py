@@ -572,6 +572,83 @@ def test_dyn_report_served_to_owner_only():
     assert c.get("/dyn-report/nonexistent").status_code == 404
 
 
+def test_audit_logging_and_query():
+    from app import store
+    store.audit_log("alice", "login", "", "10.0.0.5")
+    store.audit_log("alice", "chat", "modalita=documentale", "10.0.0.5")
+    store.audit_log("bob", "login_fallito", "", "10.0.0.9")
+    rows = store.audit_query()
+    assert len(rows) >= 3
+    # filtro per utente
+    only_alice = store.audit_query(username="alice")
+    assert all(r["username"] == "alice" for r in only_alice) and len(only_alice) >= 2
+    # filtro per azione
+    fails = store.audit_query(action="login_fallito")
+    assert all(r["action"] == "login_fallito" for r in fails)
+    # azioni e utenti distinti
+    assert "login" in store.audit_actions()
+    assert "alice" in store.audit_usernames()
+
+
+def test_audit_page_admin_only():
+    store.create_user("auditadmin@test", auth.hash_password("Password123"), "IT", is_admin=True)
+    store.create_user("audituser@test", auth.hash_password("Password123"), "IT")
+    ca = fresh_client(); login(ca, "auditadmin@test", "Password123")
+    assert ca.get("/admin/audit").status_code == 200
+    # export excel
+    r = ca.get("/admin/audit/export?preset=all")
+    assert r.status_code == 200
+    assert "spreadsheetml" in r.headers.get("content-type", "")
+    assert "audit_iseopilot" in r.headers.get("content-disposition", "")
+    # utente normale: 403
+    cu = fresh_client(); login(cu, "audituser@test", "Password123")
+    assert cu.get("/admin/audit").status_code == 403
+    assert cu.get("/admin/audit/export").status_code == 403
+
+
+def test_login_writes_audit():
+    from app import store
+    store.create_user("auditlog@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client()
+    login(c, "auditlog@test", "Password123")
+    rows = store.audit_query(username="auditlog@test", action="login")
+    assert len(rows) >= 1
+
+
+def test_account_change_password():
+    store.create_user("acct@test", auth.hash_password("OldPassw0rd"), "IT")
+    c = fresh_client()
+    login(c, "acct@test", "OldPassw0rd")
+    # pagina account raggiungibile
+    assert c.get("/account").status_code == 200
+    # password attuale sbagliata -> errore
+    r = c.post("/account/password", data={"current_password": "WRONG",
+        "new_password": "NewPassw0rd", "confirm_password": "NewPassw0rd"},
+        follow_redirects=False)
+    assert "err=current" in r.headers.get("location", "")
+    # nuova troppo corta
+    r = c.post("/account/password", data={"current_password": "OldPassw0rd",
+        "new_password": "short", "confirm_password": "short"}, follow_redirects=False)
+    assert "err=short" in r.headers.get("location", "")
+    # conferma non combacia
+    r = c.post("/account/password", data={"current_password": "OldPassw0rd",
+        "new_password": "NewPassw0rd", "confirm_password": "Diversa123"}, follow_redirects=False)
+    assert "err=match" in r.headers.get("location", "")
+    # cambio valido
+    r = c.post("/account/password", data={"current_password": "OldPassw0rd",
+        "new_password": "NewPassw0rd", "confirm_password": "NewPassw0rd"}, follow_redirects=False)
+    assert "ok=1" in r.headers.get("location", "")
+    # la vecchia non funziona più, la nuova sì
+    assert auth.authenticate("acct@test", "OldPassw0rd") is None
+    assert auth.authenticate("acct@test", "NewPassw0rd") is not None
+
+
+def test_account_requires_login():
+    c = fresh_client()
+    r = c.get("/account", follow_redirects=False)
+    assert r.status_code == 303 and "/login" in r.headers.get("location", "")
+
+
 def test_docgen_detect_format():
     from app import docgen
     assert docgen.detect_request("creami un word con la sintesi") == "docx"
