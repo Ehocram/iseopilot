@@ -586,10 +586,32 @@ def test_settings_no_nested_forms():
     assert "/connect/onedrive/logout" in tpl and "fetch(" in tpl
 
 
+def test_select_sources_cited_and_dedup():
+    from app.main import _select_sources
+    links = [
+        {"name": "anagrafica.docx", "url": "https://x/1"},
+        {"name": "2.png", "url": "https://x/2"},
+        {"name": "DetACN_PiattaformaNIS.pdf", "url": "https://x/3"},
+        {"name": "DetACN_PiattaformaNIS.pdf", "url": "https://x/3bis"},
+        {"name": "Report Dynamics (HTML)", "url": "/dyn-report/t", "kind": "report"},
+    ]
+    resp = "Marco è nato il 24/01/1979 [Fonte: anagrafica.docx]."
+    out = _select_sources(links, resp)
+    names = [s["name"] for s in out]
+    # mostra solo la fonte citata + il report; niente PNG né PDF non pertinenti
+    assert "anagrafica.docx" in names and "Report Dynamics (HTML)" in names
+    assert "2.png" not in names and "DetACN_PiattaformaNIS.pdf" not in names
+    # nessuna citazione -> fallback: tutte, ma deduplicate per nome
+    out2 = _select_sources(links, "risposta senza citazioni")
+    names2 = [s["name"] for s in out2]
+    assert names2.count("DetACN_PiattaformaNIS.pdf") == 1 and len(out2) == 4
+
+
 def test_onedrive_binary_filter():
     from app.engines.onedrive_search import _is_binary_name
     assert _is_binary_name("ChatAssistant_v2.0_WINDOWS_fix-indicizzazione.zip")
     assert _is_binary_name("setup.EXE") and _is_binary_name("backup.tar")
+    assert _is_binary_name("2.png") and _is_binary_name("foto.JPEG")
     assert not _is_binary_name("anagrafica.docx")
     assert not _is_binary_name("relazione.pdf") and not _is_binary_name("dati.xlsx")
 

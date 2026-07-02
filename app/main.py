@@ -77,6 +77,36 @@ def _ctx(request: Request, user: dict, **extra) -> dict:
     return base
 
 
+def _select_sources(source_links: list, resp_text: str) -> list:
+    """Sceglie le fonti da mostrare sotto la risposta.
+
+    Le fonti CITATE nella risposta (per nome) vengono preferite: se il modello
+    ha usato solo anagrafica.docx, gli altri risultati Graph non pertinenti non
+    vengono mostrati. Report Dynamics e download sono sempre mantenuti. Se
+    nessuna fonte risulta citata, si mostrano tutte (fallback prudente).
+    Dedup per nome: lo stesso file trovato due volte compare una sola volta."""
+    if not source_links:
+        return []
+    low = (resp_text or "").lower()
+    cited, others = [], []
+    for s in source_links:
+        name = str(s.get("name", "")).strip()
+        if s.get("kind") in ("report", "download"):
+            cited.append(s)
+        elif name and name.lower() in low:
+            cited.append(s)
+        else:
+            others.append(s)
+    chosen = cited if any(s.get("kind") not in ("report", "download") for s in cited) else (cited + others)
+    seen, uniq = set(), []
+    for s in chosen:
+        key = (str(s.get("name", "")).lower() or s.get("url", ""), s.get("kind", ""))
+        if key not in seen:
+            seen.add(key)
+            uniq.append(s)
+    return uniq
+
+
 def _client_ip(request: Request) -> str:
     """IP reale del client. Dietro il reverse proxy (Caddy) l'IP diretto è quello
     del proxy: si legge il primo della catena X-Forwarded-For."""
@@ -360,18 +390,21 @@ def api_chat(request: Request, body: ChatRequest):
             return
 
         # Risposta in streaming (i link NON passano da Claude/anonimizzazione).
-        yield from stream_reply(clean, settings, anon_names(), context,
-                                body.free_mode, mem_ctx, fb_ctx)
-        if source_links:
-            # dedup mantenendo l'ordine di rilevanza
-            seen, uniq = set(), []
-            for so in source_links:
-                key = so.get("url", "")
-                if key and key not in seen:
-                    seen.add(key)
-                    uniq.append(so)
-            if uniq:
-                yield "data: " + json.dumps({"type": "sources", "items": uniq}, ensure_ascii=False) + "\n\n"
+        # Accumulo il testo per selezionare poi solo le fonti CITATE.
+        resp_parts = []
+        for chunk in stream_reply(clean, settings, anon_names(), context,
+                                  body.free_mode, mem_ctx, fb_ctx):
+            yield chunk
+            if '"delta"' in chunk:
+                try:
+                    evt = json.loads(chunk[6:].strip())
+                    if evt.get("type") == "delta":
+                        resp_parts.append(evt.get("text", ""))
+                except Exception:
+                    pass
+        uniq = _select_sources(source_links, "".join(resp_parts))
+        if uniq:
+            yield "data: " + json.dumps({"type": "sources", "items": uniq}, ensure_ascii=False) + "\n\n"
 
     return StreamingResponse(
         _gen(),

@@ -276,7 +276,9 @@ def _build_query(text: str) -> str:
 
 # Estensioni senza testo estraibile: inquinano i risultati documentali.
 _BIN_EXT = (".zip", ".rar", ".7z", ".gz", ".tar", ".exe", ".dmg",
-            ".iso", ".msi", ".pkg", ".bin", ".apk", ".img")
+            ".iso", ".msi", ".pkg", ".bin", ".apk", ".img",
+            # immagini: nessun testo estraibile, non competono nei risultati
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".heic", ".webp")
 
 
 def _is_binary_name(name: str) -> bool:
