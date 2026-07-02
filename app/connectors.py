@@ -308,7 +308,7 @@ def _dyn_full_cfg(cfg: dict, ai_settings: dict | None) -> dict:
         # motore AI per il planner (replica il cfg desktop)
         "ai_engine": ai.get("ai_engine", "claude"),
         "claude_api_key": ai.get("claude_api_key", ""),
-        "claude_model": ai.get("claude_model", "claude-opus-4-8"),
+        "claude_model": (ai.get("claude_model_dynamics") or "").strip() or ai.get("claude_model", "claude-opus-4-8"),
         "openai_api_key": ai.get("openai_api_key", ""),
         "openai_model": ai.get("openai_model", ""),
         "lm_url": ai.get("lm_url", ""),

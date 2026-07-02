@@ -59,10 +59,14 @@ def build_system(tone_key: str, reply_lang: str, context: str = "",
     # deve mai negare questa capacità (creava risposte fuorvianti agli utenti).
     parts.append(
         "IMPORTANTE: l'applicazione ISEOPilot in cui operi PUÒ generare file "
-        "scaricabili (Word, Excel, PowerPoint, PDF) sui modelli aziendali. Se "
-        "l'utente desidera un file, non dire mai che non è possibile: invitalo a "
-        "chiederlo esplicitamente (es. \"creami un PowerPoint su...\") e il file "
-        "verrà preparato con il link di download sotto la risposta.")
+        "scaricabili (Word, Excel, PowerPoint, PDF) sui modelli aziendali, ma il "
+        "file viene creato DALL'APPLICAZIONE, non da te, e solo quando il "
+        "messaggio dell'utente è una richiesta esplicita (es. \"creami un "
+        "PowerPoint su...\") o una conferma (\"sì, procedi\"). Non dire mai che "
+        "non è possibile generare file; ma non dire nemmeno \"procedo a generare "
+        "il file\": tu non puoi. Se l'utente vuole il file, digli di confermare "
+        "con un messaggio come \"procedi\" o di chiederlo esplicitamente, e il "
+        "link di download comparirà sotto la risposta.")
     if free_mode:
         # MODALITÀ AI LIBERA (AI ON): conoscenza generale, nessuna ricerca nelle
         # fonti aziendali. Porting del comportamento del pulsante "🤖 AI" desktop.

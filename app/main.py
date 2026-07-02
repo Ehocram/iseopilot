@@ -107,6 +107,18 @@ def _select_sources(source_links: list, resp_text: str) -> list:
     return uniq
 
 
+def _area_settings(base: dict, area_key: str) -> dict:
+    """Copia dei settings con il modello Claude dell'area applicato (se
+    impostato). Le aree: claude_model_dynamics, claude_model_rewrite,
+    claude_model_docgen. Se l'area è vuota resta il modello predefinito."""
+    m = (base.get(area_key) or "").strip()
+    if not m:
+        return base
+    s2 = dict(base)
+    s2["claude_model"] = m
+    return s2
+
+
 def _client_ip(request: Request) -> str:
     """IP reale del client. Dietro il reverse proxy (Caddy) l'IP diretto è quello
     del proxy: si legge il primo della catena X-Forwarded-For."""
@@ -173,6 +185,12 @@ def admin_settings() -> dict:
     return {
         "claude_api_key": store.get_setting("claude_api_key", ""),
         "claude_model": store.get_setting("claude_model", "claude-opus-4-8"),
+        # Modelli per area: il planner Dynamics e la generazione documenti
+        # rendono di più con il modello top; la riscrittura query è un compito
+        # minuscolo dove il modello economico basta e avanza.
+        "claude_model_dynamics": store.get_setting("claude_model_dynamics", "claude-fable-5"),
+        "claude_model_rewrite": store.get_setting("claude_model_rewrite", "claude-haiku-4-5-20251001"),
+        "claude_model_docgen": store.get_setting("claude_model_docgen", "claude-fable-5"),
         "claude_anonymize": store.get_setting("claude_anonymize", "1") == "1",
         "lm_url": store.get_setting("lm_url", ""),
         "lm_model": store.get_setting("lm_model", ""),
@@ -311,7 +329,15 @@ def api_chat(request: Request, body: ChatRequest):
                 # la domanda in una query di ricerca con sinonimi e termini inglesi.
                 # Costa una piccola chiamata per messaggio; in caso di errore o
                 # timeout resta la query deterministica già costruita (mai bloccante).
-                if store.get_setting("search_ai_rewrite", "0") == "1":
+                # La riscrittura AI (sinonimi bilingue) aiuta SOLO le fonti che
+                # cercano in OR o per significato (Conoscenza, Cartelle). Su
+                # OneDrive/Graph i termini vengono messi in AND: un sinonimo
+                # assente nel documento lo fa sparire dai risultati (verificato
+                # nei log: 'biography' -> 0 risultati). Quindi: query riscritta
+                # per KB/cartelle, query DETERMINISTICA (stabile e riproducibile)
+                # per OneDrive e Dynamics.
+                search_q_ai = search_q
+                if src in ("kb", "folder") and store.get_setting("search_ai_rewrite", "0") == "1":
                     try:
                         from .orchestrator import complete as _complete
                         rq = _complete(
@@ -320,9 +346,9 @@ def api_chat(request: Request, body: ChatRequest):
                             "gli equivalenti sia in italiano sia in inglese (i documenti sono in "
                             "entrambe le lingue). Massimo 15 parole. Rispondi SOLO con la query, "
                             "senza commenti né punteggiatura finale.",
-                            search_q, settings, max_tokens=60, timeout=20).strip()
+                            search_q, _area_settings(settings, "claude_model_rewrite"), max_tokens=60, timeout=20).strip()
                         if rq and 2 <= len(rq.split()) <= 25:
-                            search_q = rq
+                            search_q_ai = rq
                     except Exception as e:
                         import sys
                         print(f"[search] riscrittura AI non disponibile, uso query deterministica: {str(e)[:120]}", file=sys.stderr)
@@ -330,9 +356,9 @@ def api_chat(request: Request, body: ChatRequest):
                 # dell'utente decide DOVE cercare; niente ricerche a tappeto.
                 parts = []
                 if src == "kb":
-                    parts.append(knowledge.retrieve(dept, search_q, use_kb=True, use_folder=False))
+                    parts.append(knowledge.retrieve(dept, search_q_ai, use_kb=True, use_folder=False))
                 elif src == "folder":
-                    parts.append(knowledge.retrieve(dept, search_q, use_kb=False, use_folder=True))
+                    parts.append(knowledge.retrieve(dept, search_q_ai, use_kb=False, use_folder=True))
                 elif src == "onedrive":
                     od, od_links = connectors.search_with_links(uid, "onedrive", search_q, max_results=5)
                     if od.strip():
@@ -355,7 +381,7 @@ def api_chat(request: Request, body: ChatRequest):
         return context, source_links
 
     # ── Generazione documenti su richiesta (Word/Excel/PPT/PDF) ──
-    gen_fmt = docgen.detect_request(query)
+    gen_fmt = docgen.detect_request_with_history(query, clean[:-1])
 
     # Memoria conversazionale + esempi promossi (solo per la chat normale).
     mem_ctx, fb_ctx = "", ""
@@ -424,7 +450,7 @@ def api_chat(request: Request, body: ChatRequest):
             try:
                 yield "data: " + json.dumps({"type": "delta", "text": "Sto preparando il file…\n\n"}, ensure_ascii=False) + "\n\n"
                 path, fname = None, None
-                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, settings, hist_text)):
+                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, _area_settings(settings, "claude_model_docgen"), hist_text)):
                     if isinstance(item, tuple) and item[0] == "result":
                         path, fname = item[1]
                     else:
@@ -612,6 +638,9 @@ def admin_page(request: Request):
     return templates.TemplateResponse(request, "admin.html", _ctx(
         request, user,
         claude_model=store.get_setting("claude_model", "claude-opus-4-8"),
+        claude_model_dynamics=store.get_setting("claude_model_dynamics", "claude-fable-5"),
+        claude_model_rewrite=store.get_setting("claude_model_rewrite", "claude-haiku-4-5-20251001"),
+        claude_model_docgen=store.get_setting("claude_model_docgen", "claude-fable-5"),
         claude_key_set=store.has_secret("claude_api_key"),
         claude_anonymize=store.get_setting("claude_anonymize", "1") == "1",
         lm_url=store.get_setting("lm_url", ""),
@@ -646,6 +675,9 @@ def admin_save(
     request: Request,
     claude_api_key: str = Form(""),
     claude_model: str = Form("claude-opus-4-8"),
+    claude_model_dynamics: str = Form("claude-fable-5"),
+    claude_model_rewrite: str = Form("claude-haiku-4-5-20251001"),
+    claude_model_docgen: str = Form("claude-fable-5"),
     search_ai_rewrite: str = Form("0"),
     claude_anonymize: str = Form("0"),
     lm_url: str = Form(""),
@@ -668,6 +700,9 @@ def admin_save(
     if claude_api_key.strip():
         store.set_setting("claude_api_key", claude_api_key.strip(), secret=True)
     store.set_setting("claude_model", claude_model.strip() or "claude-opus-4-8")
+    store.set_setting("claude_model_dynamics", claude_model_dynamics.strip() or "claude-fable-5")
+    store.set_setting("claude_model_rewrite", claude_model_rewrite.strip() or "claude-haiku-4-5-20251001")
+    store.set_setting("claude_model_docgen", claude_model_docgen.strip() or "claude-fable-5")
     store.set_setting("search_ai_rewrite", "1" if search_ai_rewrite == "1" else "0")
     store.set_setting("claude_anonymize", "1" if claude_anonymize == "1" else "0")
     store.set_setting("lm_url", lm_url.strip())

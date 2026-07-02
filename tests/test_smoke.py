@@ -841,6 +841,44 @@ def test_account_requires_login():
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
 
 
+def test_area_models_admin_and_wiring():
+    from app import connectors
+    from app.main import _area_settings
+    # helper: l'area applica il suo modello, vuota = predefinito
+    base = {"claude_model": "claude-opus-4-8", "claude_model_rewrite": "claude-haiku-4-5-20251001",
+            "claude_model_docgen": ""}
+    assert _area_settings(base, "claude_model_rewrite")["claude_model"] == "claude-haiku-4-5-20251001"
+    assert _area_settings(base, "claude_model_docgen")["claude_model"] == "claude-opus-4-8"
+    # il planner Dynamics usa il modello dell'area (fallback al predefinito)
+    cfg = {"client_id": "x", "tenant_id": "y", "resource_url": "https://z"}
+    full = connectors._dyn_full_cfg(cfg, {"claude_model": "claude-opus-4-8",
+                                          "claude_model_dynamics": "claude-fable-5"})
+    assert full["claude_model"] == "claude-fable-5"
+    full2 = connectors._dyn_full_cfg(cfg, {"claude_model": "claude-opus-4-8"})
+    assert full2["claude_model"] == "claude-opus-4-8"
+    # la pagina admin mostra le tre tendine con il consigliato
+    store.create_user("areamdl@test", auth.hash_password("Password123"), "IT", is_admin=True)
+    c = fresh_client(); login(c, "areamdl@test", "Password123")
+    html = c.get("/admin").text
+    for fld in ("claude_model_dynamics", "claude_model_rewrite", "claude_model_docgen"):
+        assert f'name="{fld}"' in html
+    assert html.count("consigliato") >= 4
+
+
+def test_docgen_confirmation_inherits_format():
+    from app.docgen import detect_request_with_history as d
+    hist = [{"role": "user", "content": "mi generi un pptx sulla nis2?"},
+            {"role": "assistant", "content": "Ecco la struttura... procedo con la generazione del file PowerPoint?"}]
+    # la conferma eredita il formato dalla conversazione
+    assert d("sì procedi", hist) == "pptx"
+    assert d("ok vai", hist) == "pptx"
+    # senza storia documentale, la conferma NON genera nulla
+    assert d("sì procedi", []) is None
+    assert d("ok", [{"role": "assistant", "content": "la capitale è Roma"}]) is None
+    # un messaggio lungo non è una conferma
+    assert d("sì ma prima spiegami meglio il progetto e i vincoli", hist) is None
+
+
 def test_docgen_detect_conjugations():
     from app.docgen import detect_request
     # segnalazione utente reale: "mi generi un pptx..." non veniva rilevato

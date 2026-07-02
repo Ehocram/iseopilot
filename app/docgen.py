@@ -80,6 +80,50 @@ def detect_request(text: str) -> str | None:
     return None
 
 
+# Conferme brevi ("sì procedi", "ok vai", "genera pure"): non contengono né
+# formato né verbo, ma se la conversazione stava preparando un documento
+# devono far scattare la generazione ereditando il formato dai turni recenti.
+_CONFIRM_RE = re.compile(
+    r"^\s*(s[iì]|ok|okay|va\s+bene|perfetto|d'accordo|certo|esatto|conferm\w*|"
+    r"procedi(amo)?|vai|prosegui|genera(lo|la)?\s*pure|fallo|falla|crealo|creala|"
+    r"yes|sure|go\s+ahead|proceed|do\s+it|please\s+do)\b[\s!,.]*",
+    re.IGNORECASE)
+
+
+def detect_request_with_history(text: str, history: list | None = None) -> str | None:
+    """Come detect_request, ma se il messaggio è una CONFERMA breve eredita il
+    formato dai turni recenti della conversazione (utente o assistente)."""
+    fmt = detect_request(text)
+    if fmt:
+        return fmt
+    tl = (text or "").strip()
+    if not history or len(tl) > 60:
+        return None
+    m = _CONFIRM_RE.match(tl)
+    if not m:
+        return None
+    # la conferma deve essere (quasi) solo conferma: "sì ma prima spiegami…"
+    # non è un via libera alla generazione
+    rest = tl[m.end():].strip(" !,.?")
+    if rest and not _CONFIRM_RE.match(rest) and len(rest) > 12:
+        return None
+    # cerca il formato più recente citato in conversazione (ultimi 6 turni)
+    for m in reversed(list(history)[-6:]):
+        f = detect_request(str(m.get("content", "")))
+        if not f:
+            # anche un semplice riferimento al formato nel turno assistente
+            # ("procedo con la generazione del file PowerPoint") conta
+            c = str(m.get("content", "")).lower()
+            for kws, ff in ((_FMT_PPT, "pptx"), (_FMT_XLS, "xlsx"),
+                            (_FMT_WORD, "docx"), (_FMT_PDF, "pdf")):
+                if any(k in c for k in kws):
+                    f = ff
+                    break
+        if f:
+            return f
+    return None
+
+
 # ── 2) Generazione del contenuto strutturato (Claude → JSON) ─
 def _parse_json(raw: str) -> dict:
     raw = (raw or "").strip()

@@ -24,22 +24,57 @@
         </div>
         <div class="row2">
           <div class="field">
-            <label for="claude_model">Modello Claude</label>
+            <label for="claude_model">Modello Claude predefinito (chat e AI libera)</label>
             {% set known_models = ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] %}
             <select id="claude_model" name="claude_model">
+              <option value="claude-opus-4-8" {% if claude_model == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 — alta qualità · consigliato</option>
               <option value="claude-fable-5" {% if claude_model == 'claude-fable-5' %}selected{% endif %}>claude-fable-5 — massima qualità · costo più alto</option>
-              <option value="claude-opus-4-8" {% if claude_model == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 — alta qualità</option>
-              <option value="claude-sonnet-4-6" {% if claude_model == 'claude-sonnet-4-6' %}selected{% endif %}>claude-sonnet-4-6 — bilanciato · buon rapporto qualità/costo</option>
+              <option value="claude-sonnet-4-6" {% if claude_model == 'claude-sonnet-4-6' %}selected{% endif %}>claude-sonnet-4-6 — bilanciato</option>
               <option value="claude-haiku-4-5-20251001" {% if claude_model == 'claude-haiku-4-5-20251001' %}selected{% endif %}>claude-haiku-4-5 — veloce ed economico</option>
               {% if claude_model and claude_model not in known_models %}
               <option value="{{ claude_model }}" selected>{{ claude_model }} (attuale)</option>
               {% endif %}
             </select>
-            <div class="hint">Vale per <strong>tutti gli utenti</strong> e ha effetto immediato (chat, planner Dynamics, generazione documenti). Se i consumi crescono, passa a un modello più economico da qui.</div>
+            <div class="hint">Vale per <strong>tutti gli utenti</strong>: risposta in chat (Documentale e AI libera). Le aree qui sotto possono usare un modello diverso.</div>
           </div>
           <div class="field">
             <label for="lm_model">Modello LM Studio</label>
             <input type="text" id="lm_model" name="lm_model" value="{{ lm_model }}" placeholder="nome-modello-caricato">
+          </div>
+        </div>
+        <div class="field">
+          <label>Modelli per area (specializzazione qualità/costo)</label>
+          <div class="hint" style="margin-bottom:10px;">Ogni area usa il suo modello. Il <strong>planner Dynamics</strong> fa fino a 8 chiamate ragionate per domanda: è dove il modello migliore rende di più. La <strong>riscrittura query</strong> è un compito minuscolo: il modello economico basta. La <strong>generazione documenti</strong> è una chiamata sola dove la qualità si vede.</div>
+          <div class="row2">
+            <div class="field">
+              <label for="claude_model_dynamics">Planner Dynamics 365</label>
+              <select id="claude_model_dynamics" name="claude_model_dynamics">
+                <option value="claude-fable-5" {% if claude_model_dynamics == 'claude-fable-5' %}selected{% endif %}>claude-fable-5 — consigliato (ragionamento multi-step)</option>
+                <option value="claude-opus-4-8" {% if claude_model_dynamics == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 — alta qualità</option>
+                <option value="claude-sonnet-4-6" {% if claude_model_dynamics == 'claude-sonnet-4-6' %}selected{% endif %}>claude-sonnet-4-6 — bilanciato</option>
+                <option value="claude-haiku-4-5-20251001" {% if claude_model_dynamics == 'claude-haiku-4-5-20251001' %}selected{% endif %}>claude-haiku-4-5 — economico</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="claude_model_rewrite">Riscrittura query di ricerca</label>
+              <select id="claude_model_rewrite" name="claude_model_rewrite">
+                <option value="claude-haiku-4-5-20251001" {% if claude_model_rewrite == 'claude-haiku-4-5-20251001' %}selected{% endif %}>claude-haiku-4-5 — consigliato (compito piccolo, costi minimi)</option>
+                <option value="claude-sonnet-4-6" {% if claude_model_rewrite == 'claude-sonnet-4-6' %}selected{% endif %}>claude-sonnet-4-6 — bilanciato</option>
+                <option value="claude-opus-4-8" {% if claude_model_rewrite == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 — alta qualità</option>
+                <option value="claude-fable-5" {% if claude_model_rewrite == 'claude-fable-5' %}selected{% endif %}>claude-fable-5 — massima qualità</option>
+              </select>
+            </div>
+          </div>
+          <div class="row2">
+            <div class="field">
+              <label for="claude_model_docgen">Generazione documenti (Word/Excel/PPT/PDF)</label>
+              <select id="claude_model_docgen" name="claude_model_docgen">
+                <option value="claude-fable-5" {% if claude_model_docgen == 'claude-fable-5' %}selected{% endif %}>claude-fable-5 — consigliato (contenuti di qualità in una chiamata)</option>
+                <option value="claude-opus-4-8" {% if claude_model_docgen == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 — alta qualità</option>
+                <option value="claude-sonnet-4-6" {% if claude_model_docgen == 'claude-sonnet-4-6' %}selected{% endif %}>claude-sonnet-4-6 — bilanciato</option>
+                <option value="claude-haiku-4-5-20251001" {% if claude_model_docgen == 'claude-haiku-4-5-20251001' %}selected{% endif %}>claude-haiku-4-5 — economico</option>
+              </select>
+            </div>
           </div>
         </div>
         <div class="field">
@@ -94,7 +129,7 @@
             <input type="checkbox" id="search_ai_rewrite" name="search_ai_rewrite" value="1" {% if search_ai_rewrite %}checked{% endif %}>
             <label for="search_ai_rewrite">Riscrittura AI della query di ricerca</label>
           </div>
-          <div class="hint">Se attivo, prima di ogni ricerca il modello Claude riformula la domanda in parole chiave con sinonimi e termini inglesi: migliora il recupero su domande colloquiali. <strong>Costa una piccola chiamata API per messaggio</strong>; se la chiamata fallisce, la ricerca prosegue con la query standard. Spegnilo se vuoi contenere i consumi.</div>
+          <div class="hint">Se attivo, il modello Claude riformula la domanda in parole chiave con sinonimi bilingue <strong>per le ricerche su Conoscenza e Cartelle</strong> (dove i sinonimi allargano la ricerca). OneDrive e Dynamics usano sempre la query standard: sui loro motori i sinonimi restringono invece di allargare. <strong>Costa una piccola chiamata API per messaggio</strong>; se la chiamata fallisce, la ricerca prosegue con la query standard. Spegnilo se vuoi contenere i consumi.</div>
         </div>
         <div class="field">
           <div class="checkrow">
