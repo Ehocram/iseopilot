@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -197,8 +198,6 @@ def api_chat(request: Request, body: ChatRequest):
     # Recupero conoscenza secondo i TOGGLE dell'utente (Connessioni): conoscenza
     # ChromaDB del dipartimento e/o cartelle del dipartimento. Scoping per area.
     # In MODALITÀ AI LIBERA non si consulta alcuna fonte: risposta da conoscenza generale.
-    context = ""
-    source_links: list[dict] = []
     uid = user["username"]
     query = clean[-1]["content"] if clean else ""
 
@@ -214,111 +213,163 @@ def api_chat(request: Request, body: ChatRequest):
                 ab.append(f"[ALLEGATO: {name}]\n{text}")
         attach_block = "\n\n".join(ab)
 
-    if not body.free_mode:
-        try:
-            dept = user.get("department") or ""
-            use_kb = store.get_user_setting(uid, "use_kb", "1") == "1"
-            use_folder = store.get_user_setting(uid, "use_folder", "1") == "1"
-            # Query di ricerca arricchita per TUTTE le fonti (KB, cartelle,
-            # OneDrive, Dynamics): i follow-up ("e per il 2025?") ereditano il
-            # soggetto dal turno precedente, e la concept map desktop aggiunge
-            # il termine documentale ("quanti anni ha X" -> "anagrafica").
-            prev_user_q = ""
-            for m in reversed(clean[:-1]):
-                if m.get("role") == "user":
-                    prev_user_q = m.get("content", "")
-                    break
-            search_q = knowledge.enrich_query(query, prev_user_q)
-            # se ci sono allegati, arricchisci la query con le loro parole chiave
-            if attach_block:
-                try:
-                    from .engines.onedrive_search import _build_query as _kw
-                    akw = _kw(attach_block[:2000])
-                    if akw and akw.strip() and akw.strip() not in search_q:
-                        search_q = (search_q + " " + akw).strip()
-                except Exception:
-                    pass
-            # Riscrittura AI della query (opzione admin): il modello riformula
-            # la domanda in una query di ricerca con sinonimi e termini inglesi.
-            # Costa una piccola chiamata per messaggio; in caso di errore o
-            # timeout resta la query deterministica già costruita (mai bloccante).
-            if store.get_setting("search_ai_rewrite", "0") == "1":
-                try:
-                    from .orchestrator import complete as _complete
-                    rq = _complete(
-                        "Trasforma la domanda in una query di ricerca documentale efficace: "
-                        "parole chiave essenziali, nomi propri e sinonimi utili, includendo "
-                        "gli equivalenti sia in italiano sia in inglese (i documenti sono in "
-                        "entrambe le lingue). Massimo 15 parole. Rispondi SOLO con la query, "
-                        "senza commenti né punteggiatura finale.",
-                        search_q, settings, max_tokens=60, timeout=20).strip()
-                    if rq and 2 <= len(rq.split()) <= 25:
-                        search_q = rq
-                except Exception as e:
-                    import sys
-                    print(f"[search] riscrittura AI non disponibile, uso query deterministica: {str(e)[:120]}", file=sys.stderr)
-            parts = [knowledge.retrieve(dept, search_q, use_kb=use_kb, use_folder=use_folder)]
-            if store.get_user_setting(uid, "use_onedrive", "0") == "1" and connectors.is_connected(uid, "onedrive"):
-                od, od_links = connectors.search_with_links(uid, "onedrive", search_q, max_results=5)
-                if od.strip():
-                    parts.append("[OneDrive]\n" + od)
-                source_links.extend(od_links)
-            if store.get_user_setting(uid, "use_dynamics", "0") == "1" and connectors.is_connected(uid, "dynamics"):
-                dy, dy_links = connectors.search_with_links(uid, "dynamics", search_q, max_results=5, current_user_name=uid, ai_settings=settings)
-                if dy.strip():
-                    parts.append("[Dynamics 365]\n" + dy)
-                source_links.extend(dy_links)
-            context = "\n\n".join(p for p in parts if p.strip())[:8000]
-        except Exception:
-            context = ""
+    def _build_context() -> tuple[str, list]:
+        """Costruisce contesto e fonti secondo i toggle dell'utente. Viene
+        eseguito DENTRO il generatore di risposta (in un thread) così il primo
+        byte parte subito e la connessione non resta muta durante il retrieval
+        (planner Dynamics incluso): i proxy intermedi non vanno in timeout."""
+        context = ""
+        source_links: list[dict] = []
+        if not body.free_mode:
+            try:
+                dept = user.get("department") or ""
+                use_kb = store.get_user_setting(uid, "use_kb", "1") == "1"
+                use_folder = store.get_user_setting(uid, "use_folder", "1") == "1"
+                # Query di ricerca arricchita per TUTTE le fonti (KB, cartelle,
+                # OneDrive, Dynamics): i follow-up ("e per il 2025?") ereditano il
+                # soggetto dal turno precedente, e la concept map desktop aggiunge
+                # il termine documentale ("quanti anni ha X" -> "anagrafica").
+                prev_user_q = ""
+                for m in reversed(clean[:-1]):
+                    if m.get("role") == "user":
+                        prev_user_q = m.get("content", "")
+                        break
+                search_q = knowledge.enrich_query(query, prev_user_q)
+                # se ci sono allegati, arricchisci la query con le loro parole chiave
+                if attach_block:
+                    try:
+                        from .engines.onedrive_search import _build_query as _kw
+                        akw = _kw(attach_block[:2000])
+                        if akw and akw.strip() and akw.strip() not in search_q:
+                            search_q = (search_q + " " + akw).strip()
+                    except Exception:
+                        pass
+                # Riscrittura AI della query (opzione admin): il modello riformula
+                # la domanda in una query di ricerca con sinonimi e termini inglesi.
+                # Costa una piccola chiamata per messaggio; in caso di errore o
+                # timeout resta la query deterministica già costruita (mai bloccante).
+                if store.get_setting("search_ai_rewrite", "0") == "1":
+                    try:
+                        from .orchestrator import complete as _complete
+                        rq = _complete(
+                            "Trasforma la domanda in una query di ricerca documentale efficace: "
+                            "parole chiave essenziali, nomi propri e sinonimi utili, includendo "
+                            "gli equivalenti sia in italiano sia in inglese (i documenti sono in "
+                            "entrambe le lingue). Massimo 15 parole. Rispondi SOLO con la query, "
+                            "senza commenti né punteggiatura finale.",
+                            search_q, settings, max_tokens=60, timeout=20).strip()
+                        if rq and 2 <= len(rq.split()) <= 25:
+                            search_q = rq
+                    except Exception as e:
+                        import sys
+                        print(f"[search] riscrittura AI non disponibile, uso query deterministica: {str(e)[:120]}", file=sys.stderr)
+                parts = [knowledge.retrieve(dept, search_q, use_kb=use_kb, use_folder=use_folder)]
+                if store.get_user_setting(uid, "use_onedrive", "0") == "1" and connectors.is_connected(uid, "onedrive"):
+                    od, od_links = connectors.search_with_links(uid, "onedrive", search_q, max_results=5)
+                    if od.strip():
+                        parts.append("[OneDrive]\n" + od)
+                    source_links.extend(od_links)
+                if store.get_user_setting(uid, "use_dynamics", "0") == "1" and connectors.is_connected(uid, "dynamics"):
+                    dy, dy_links = connectors.search_with_links(uid, "dynamics", search_q, max_results=5, current_user_name=uid, ai_settings=settings)
+                    if dy.strip():
+                        parts.append("[Dynamics 365]\n" + dy)
+                    source_links.extend(dy_links)
+                # budget equo: nessuna fonte (OneDrive/Dynamics incluse) viene
+                # scartata in silenzio dal taglio in coda
+                context = knowledge._fit_budget([p for p in parts if p.strip()], 8000)
+            except Exception:
+                context = ""
 
-    # Gli allegati precedono il resto del contesto (massima priorità).
-    if attach_block:
-        context = (attach_block + ("\n\n" + context if context else ""))[:14000]
+        # Gli allegati precedono il resto del contesto (massima priorità).
+        if attach_block:
+            context = (attach_block + ("\n\n" + context if context else ""))[:14000]
+        return context, source_links
 
     # ── Generazione documenti su richiesta (Word/Excel/PPT/PDF) ──
-    # Funziona sia in Documentale sia in AI libera; il contenuto è prodotto da
-    # Claude e il file è costruito sui template ISEO (Excel da zero).
     gen_fmt = docgen.detect_request(query)
+
+    # Memoria conversazionale + esempi promossi (solo per la chat normale).
+    mem_ctx, fb_ctx = "", ""
+    if not gen_fmt:
+        try:
+            mem_ctx = memory.build_memory_context(uid, exclude_session=body.session_id)
+            fb_ctx = memory.build_feedback_context(uid)
+        except Exception:
+            mem_ctx, fb_ctx = "", ""
+
     if gen_fmt:
         _audit(request, uid, "generazione_documento", f"formato={gen_fmt}")
-        def gen_stream():
+    else:
+        _audit(request, uid, "chat",
+               f"modalita={'libera' if body.free_mode else 'documentale'}, "
+               f"allegati={len(body.attachments or [])}, motore={body.engine}")
+
+    _PING = "data: " + json.dumps({"type": "ping"}, ensure_ascii=False) + "\n\n"
+
+    def _in_thread_with_pings(fn):
+        """Esegue fn() in un thread e produce un ping SSE ogni 10 secondi finché
+        lavora: la connessione non resta mai muta, così gli apparati intermedi
+        (VPN, Application Proxy, proxy aziendali) non la chiudono per timeout.
+        L'eventuale eccezione del lavoro viene rilanciata nel generatore."""
+        res: dict = {}
+
+        def _w():
+            try:
+                res["v"] = fn()
+            except Exception as e:
+                res["e"] = e
+
+        th = threading.Thread(target=_w, daemon=True)
+        th.start()
+        while th.is_alive():
+            th.join(timeout=10.0)
+            if th.is_alive():
+                yield _PING
+        if "e" in res:
+            raise res["e"]
+        yield ("result", res.get("v"))
+
+    def _gen():
+        # Primo byte SUBITO: l'apparato di rete vede traffico immediato invece
+        # di una connessione in attesa (causa dei 504 delle pagine proxy).
+        yield _PING
+        context, source_links = "", []
+        try:
+            for item in _in_thread_with_pings(_build_context):
+                if isinstance(item, tuple) and item[0] == "result":
+                    context, source_links = item[1]
+                else:
+                    yield item
+        except Exception:
+            context, source_links = "", []
+
+        if gen_fmt:
             try:
                 yield "data: " + json.dumps({"type": "delta", "text": "Sto preparando il file…\n\n"}, ensure_ascii=False) + "\n\n"
-                path, fname = docgen.generate(gen_fmt, query, context, settings)
+                path, fname = None, None
+                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, settings)):
+                    if isinstance(item, tuple) and item[0] == "result":
+                        path, fname = item[1]
+                    else:
+                        yield item
                 token = connectors.register_download(uid, path, fname)
                 yield "data: " + json.dumps({"type": "delta", "text": f"Ho preparato **{fname}**. Puoi scaricarlo qui sotto."}, ensure_ascii=False) + "\n\n"
                 yield "data: " + json.dumps({"type": "sources", "items": [{"name": fname, "url": "/download/" + token, "kind": "download"}]}, ensure_ascii=False) + "\n\n"
             except Exception as e:
                 yield "data: " + json.dumps({"type": "error", "text": "Generazione non riuscita: " + str(e)[:200]}, ensure_ascii=False) + "\n\n"
-        return StreamingResponse(gen_stream(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+            return
 
-    # Memoria conversazionale + esempi promossi (pollice su) dell'utente: danno
-    # continuità tra sessioni e qualità. La sessione corrente è esclusa dalla
-    # memoria per non duplicare la conversazione in corso.
-    try:
-        mem_ctx = memory.build_memory_context(uid, exclude_session=body.session_id)
-        fb_ctx = memory.build_feedback_context(uid)
-    except Exception:
-        mem_ctx, fb_ctx = "", ""
-
-    _audit(request, uid, "chat",
-           f"modalita={'libera' if body.free_mode else 'documentale'}, "
-           f"allegati={len(body.attachments or [])}, motore={body.engine}")
-
-    def _gen():
         # Risposta in streaming (i link NON passano da Claude/anonimizzazione).
         yield from stream_reply(clean, settings, anon_names(), context,
                                 body.free_mode, mem_ctx, fb_ctx)
         if source_links:
             # dedup mantenendo l'ordine di rilevanza
             seen, uniq = set(), []
-            for s in source_links:
-                key = s.get("url", "")
+            for so in source_links:
+                key = so.get("url", "")
                 if key and key not in seen:
                     seen.add(key)
-                    uniq.append(s)
+                    uniq.append(so)
             if uniq:
                 yield "data: " + json.dumps({"type": "sources", "items": uniq}, ensure_ascii=False) + "\n\n"
 

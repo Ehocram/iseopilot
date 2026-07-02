@@ -238,7 +238,15 @@
       });
 
       if (!resp.ok) {
-        const detail = await resp.text();
+        var detail = "";
+        try { detail = await resp.text(); } catch (e2) {}
+        var looksHtml = /^\s*</.test(detail) || detail.indexOf("<!DOCTYPE") !== -1 || detail.toLowerCase().indexOf("<html") !== -1;
+        if (looksHtml) {
+          // pagina di cortesia di un apparato di rete (proxy/VPN): mai mostrarla grezza
+          detail = I18N.proxyErr || "risposta da un apparato di rete (proxy/VPN), non da ISEOPilot: la richiesta è stata interrotta prima di arrivare. Riprova; se persiste avvisa l'amministratore.";
+        } else {
+          detail = (detail || "").slice(0, 300);
+        }
         m.bubble.innerHTML = renderMarkdownish("⚠️ Errore " + resp.status + ": " + detail);
         setBusy(false);
         return;

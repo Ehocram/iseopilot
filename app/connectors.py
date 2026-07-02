@@ -56,6 +56,16 @@ def _dyn_log(msg: str):
         pass
 
 
+def _od_log_bridge(msg: str) -> None:
+    """Instrada il log diagnostico del modulo OneDrive (query Graph, esiti,
+    eccezioni) nel log unico dei connettori, leggibile da Admin. Sostituisce il
+    file separato del desktop, che era spento di default."""
+    _dyn_log("[onedrive] " + str(msg))
+
+
+onedrive_search._odlog = _od_log_bridge
+
+
 def dyn_log_tail(n: int = 80) -> str:
     try:
         if not DYN_LOG.is_file():
@@ -324,6 +334,8 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
             if conn == "onedrive":
                 prev = onedrive_search.TOKEN_FILE
                 onedrive_search.TOKEN_FILE = user_token
+                _dyn_log(f"[onedrive] search avviata | query={query[:100]!r} | "
+                         f"token_file_esiste={user_token.is_file()}")
                 try:
                     od = onedrive_search.OneDriveSearch({
                         "od_client_id": cfg["client_id"],
@@ -332,6 +344,7 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
                     text = od.search(query, max_results=max_results) or ""
                     links = [{"name": n, "url": u}
                              for (n, u) in getattr(od, "last_links", []) if u]
+                    _dyn_log(f"[onedrive] search conclusa | caratteri={len(text)} | link={len(links)}")
                     return text, links
                 finally:
                     onedrive_search.TOKEN_FILE = prev

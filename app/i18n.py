@@ -196,6 +196,8 @@ PAIRS = {
     "Data/ora (UTC)": "Date/time (UTC)",
     "Dettaglio": "Detail",
     "Nessun evento nel periodo selezionato.": "No events in the selected period.",
+    "risposta da un apparato di rete (proxy/VPN), non da ISEOPilot: la richiesta è stata interrotta prima di arrivare. Riprova; se persiste avvisa l'amministratore.": "response from a network appliance (proxy/VPN), not from ISEOPilot: the request was cut off before arriving. Retry; if it persists contact the administrator.",
+    "Disconnettere questo account?": "Disconnect this account?",
     "AI libera": "Free AI",
     "Allega file (fino a 20)": "Attach files (up to 20)",
     "Estraggo il testo…": "Extracting text…",

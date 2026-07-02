@@ -231,7 +231,11 @@ def complete(system: str, user_text: str, settings: dict, max_tokens: int = 4000
                  "content-type": "application/json"},
         timeout=timeout)
     if resp.status_code != 200:
-        raise RuntimeError(f"Errore API Claude ({resp.status_code}): {resp.text[:200]}")
+        body = (resp.text or "").strip()
+        if body.startswith("<") or "<!DOCTYPE" in body[:200] or "<html" in body[:200].lower():
+            # pagina HTML di un apparato di rete (proxy/firewall), non dell'API
+            body = "risposta HTML da un apparato di rete (proxy/firewall) lungo il percorso verso l'API"
+        raise RuntimeError(f"Errore API Claude ({resp.status_code}): {body[:200]}")
     data = resp.json()
     return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
 

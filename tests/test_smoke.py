@@ -572,6 +572,56 @@ def test_dyn_report_served_to_owner_only():
     assert c.get("/dyn-report/nonexistent").status_code == 404
 
 
+def test_settings_no_nested_forms():
+    # I form annidati vengono scartati dal browser: il Disconnetti non deve
+    # essere un form dentro il form delle impostazioni.
+    store.create_user("nest@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client(); login(c, "nest@test", "Password123")
+    html = c.get("/settings").text
+    assert html.count("<form") == 1
+    # il logout connettore avviene via fetch POST (visibile solo se connesso:
+    # verifico il template sorgente)
+    tpl = open("templates/user.html").read()
+    assert tpl.count("<form") == 1
+    assert "/connect/onedrive/logout" in tpl and "fetch(" in tpl
+
+
+def test_onedrive_search_is_logged():
+    from app import connectors
+    # utente non connesso: nessuna eccezione e nessun risultato
+    txt, links = connectors.search_with_links("nolog@test", "onedrive", "prova")
+    assert txt == "" and links == []
+    # il ponte log del modulo OneDrive è instradato sul log unico
+    from app.engines import onedrive_search
+    onedrive_search._odlog("test ponte")
+    assert "[onedrive] test ponte" in connectors.dyn_log_tail(10)
+
+
+def test_chat_stream_first_byte_is_ping():
+    # Il primo evento SSE deve essere un ping immediato: tiene viva la
+    # connessione attraverso proxy/VPN durante il retrieval (fix errore 504).
+    store.create_user("ping@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client(); login(c, "ping@test", "Password123")
+    r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao, chi sei?"}],
+                                  "engine": "claude", "free_mode": True})
+    assert r.status_code == 200
+    body = r.text
+    first_evt = body.split("\n\n")[0]
+    assert '"type": "ping"' in first_evt
+    # senza chiave API lo stream prosegue con un errore pulito (non HTML)
+    assert "Chiave API Claude non configurata" in body
+
+
+def test_frontend_sanitizes_proxy_html_errors():
+    store.create_user("prx@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client(); login(c, "prx@test", "Password123")
+    js = c.get("/static/chat.js").text
+    # rileva pagine HTML degli apparati e non le mostra grezze
+    assert "DOCTYPE" in js and "proxyErr" in js
+    r = c.get("/")
+    assert "proxyErr" in r.text
+
+
 def test_english_search_support():
     from app import knowledge
     # follow-up in inglese: la domanda interrogativa breve eredita il soggetto

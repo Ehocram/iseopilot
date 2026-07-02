@@ -48,7 +48,7 @@
             <span>Cerca tra i tuoi documenti OneDrive con la tua identità.</span>
             <div class="conn-actions">
               {% if od_connected %}
-                <form method="post" action="/connect/onedrive/logout" style="display:inline;"><button type="submit" class="ghost">{{ t("Disconnetti") }}</button></form>
+                <button type="button" class="ghost" onclick="if(confirm('{{ t("Disconnettere questo account?") }}')){fetch('/connect/onedrive/logout',{method:'POST'}).then(function(){location.reload();});}">{{ t("Disconnetti") }}</button>
               {% elif od_configured %}
                 <button type="button" class="ghost connect-btn" data-conn="onedrive">{{ t("Connetti il mio account") }}</button>
               {% endif %}
@@ -67,7 +67,7 @@
             <span>Interrogazione in sola lettura con la tua identità.</span>
             <div class="conn-actions">
               {% if dyn_connected %}
-                <form method="post" action="/connect/dynamics/logout" style="display:inline;"><button type="submit" class="ghost">{{ t("Disconnetti") }}</button></form>
+                <button type="button" class="ghost" onclick="if(confirm('{{ t("Disconnettere questo account?") }}')){fetch('/connect/dynamics/logout',{method:'POST'}).then(function(){location.reload();});}">{{ t("Disconnetti") }}</button>
               {% elif dyn_configured %}
                 <button type="button" class="ghost connect-btn" data-conn="dynamics">{{ t("Connetti il mio account") }}</button>
               {% endif %}
