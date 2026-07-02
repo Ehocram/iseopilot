@@ -222,16 +222,24 @@ def _build_query(text: str) -> str:
     # Mappa concettuale — concetto della domanda -> termine presente nei documenti.
     concept_map = [
         (['anni', 'anno', 'nato', 'nata', 'nascita', 'eta', 'età', 'compleanno',
-          'quanti anni', 'data nascita', 'quand'], 'anagrafica'),
+          'quanti anni', 'data nascita', 'quand',
+          'how old', 'years old', 'born', 'birth', 'age of'], 'anagrafica'),
         (['risiede', 'abita', 'residente', 'residenza', 'indirizzo', 'dove vive',
-          'città', 'citta', 'comune', 'domicilio'], 'anagrafica'),
-        (['codice fiscale', 'partita iva', 'piva', 'cf '], 'anagrafica'),
+          'città', 'citta', 'comune', 'domicilio',
+          'address', 'lives in', 'resides'], 'anagrafica'),
+        (['codice fiscale', 'partita iva', 'piva', 'cf ',
+          'tax code', 'vat number', 'fiscal code'], 'anagrafica'),
         (['contratto', 'assunto', 'assunzione', 'stipendio', 'salario', 'ral',
-          'ferie', 'permessi', 'ccnl', 'busta paga'], 'contratto'),
-        (['fattura', 'invoice', 'pagamento', 'importo', 'bonifico'], 'fattura'),
-        (['vulnerabilit', 'cve', 'exploit', 'patch', 'pentest', 'remediation'], 'vulnerability'),
-        (['riunione', 'meeting', 'verbale', 'minuti riunione'], 'verbale'),
-        (['report', 'relazione', 'analisi', 'findings', 'risultati'], 'report'),
+          'ferie', 'permessi', 'ccnl', 'busta paga',
+          'contract', 'salary', 'hired', 'hiring', 'payslip', 'vacation'], 'contratto'),
+        (['fattura', 'invoice', 'pagamento', 'importo', 'bonifico',
+          'payment', 'bank transfer', 'amount due'], 'fattura'),
+        (['vulnerabilit', 'cve', 'exploit', 'patch', 'pentest', 'remediation',
+          'vulnerability'], 'vulnerability'),
+        (['riunione', 'meeting', 'verbale', 'minuti riunione',
+          'meeting minutes', 'minutes of'], 'verbale'),
+        (['report', 'relazione', 'analisi', 'findings', 'risultati',
+          'analysis', 'results'], 'report'),
     ]
 
     extra = []

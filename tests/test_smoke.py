@@ -572,6 +572,97 @@ def test_dyn_report_served_to_owner_only():
     assert c.get("/dyn-report/nonexistent").status_code == 404
 
 
+def test_english_search_support():
+    from app import knowledge
+    # follow-up in inglese: la domanda interrogativa breve eredita il soggetto
+    q = knowledge.enrich_query("what about 2026?", "show me the purchase requisitions issued by IT")
+    assert "requisitions" in q.lower() and "2026" in q
+    # concept map inglese: "how old" -> termine documentale "anagrafica"
+    q2 = knowledge.enrich_query("how old is paolo belloli?")
+    assert "anagrafica" in q2.lower()
+    # "IT" (reparto) NON è stopword: resta nella ricerca
+    from app.engines.folder_index import _STOP
+    assert "it" not in _STOP and "what" in _STOP
+
+
+def test_english_document_fts_search():
+    import tempfile, os
+    from app.engines import folder_index
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "backup_policy_en.txt"), "w") as f:
+        f.write("Backup policy: daily execution at 02:00 AM, retention 30 days, weekly restore test.")
+    folder_index.get_index(d).update()
+    t, _ = folder_index.search_folder(d, "what is the backup retention policy?")
+    assert "retention 30 days" in t
+
+
+def test_admin_model_dropdown_and_rewrite_toggle():
+    store.create_user("mdl@test", auth.hash_password("Password123"), "IT", is_admin=True)
+    c = fresh_client(); login(c, "mdl@test", "Password123")
+    r = c.get("/admin")
+    assert r.status_code == 200
+    # tendina modelli Claude con le opzioni correnti
+    assert '<select id="claude_model"' in r.text
+    for m in ("claude-fable-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"):
+        assert m in r.text
+    # toggle riscrittura AI presente
+    assert 'name="search_ai_rewrite"' in r.text
+    # il salvataggio del flag funziona a livello store
+    store.set_setting("search_ai_rewrite", "1")
+    assert store.get_setting("search_ai_rewrite", "0") == "1"
+    store.set_setting("search_ai_rewrite", "0")
+
+
+def test_folder_snippet_centers_on_match():
+    import tempfile, os
+    from app.engines import folder_index
+    d = tempfile.mkdtemp()
+    # chunk lungo: il termine cercato sta OLTRE i primi 1200 caratteri
+    filler = "parola comune riempitivo testo generico documento aziendale " * 40
+    testo = filler + " Il codice segreto del progetto ORIONE è 7742. " + filler
+    with open(os.path.join(d, "lungo.txt"), "w") as f:
+        f.write(testo)
+    folder_index.get_index(d).update()
+    t, _ = folder_index.search_folder(d, "codice progetto ORIONE")
+    # con lo snippet mirato, la porzione mostrata contiene il passaggio giusto
+    assert "7742" in t
+
+
+def test_enrich_query_followup_and_concept():
+    from app import knowledge
+    # follow-up: la domanda anaforica eredita il soggetto dal turno precedente
+    q = knowledge.enrich_query("e nel 2025?", "mi dici le rda di paolo belloli?")
+    assert "belloli" in q.lower() and "2025" in q
+    # anche con pronome anaforico ("quelli") il soggetto viene ereditato
+    qa = knowledge.enrich_query("e quelli del 2026?", "mi dici le rda emesse dal reparto IT?")
+    assert "rda" in qa.lower() and "2026" in qa
+    # concept map: "quanti anni ha" aggiunge il termine documentale "anagrafica"
+    q2 = knowledge.enrich_query("quanti anni ha marco bonometti?")
+    assert "anagrafica" in q2.lower()
+    # domanda già ricca: non eredita dal turno precedente
+    q3 = knowledge.enrich_query("procedura backup server produzione", "altro tema")
+    assert "altro tema" not in q3
+
+
+def test_fit_budget_no_silent_drop():
+    from app import knowledge
+    a = "[Conoscenza]\n" + "A" * 5000
+    b = "[Cartella 1]\n" + "B" * 5000
+    c = "[Cartella 2]\n" + "C" * 5000
+    out = knowledge._fit_budget([a, b, c], 6000)
+    # tutte e tre le fonti sopravvivono al taglio (prima la terza spariva)
+    assert "[Conoscenza]" in out and "[Cartella 1]" in out and "[Cartella 2]" in out
+    assert len(out) <= 6000
+    # sotto budget: nessun taglio
+    assert knowledge._fit_budget(["x", "y"], 6000) == "x\n\ny"
+
+
+def test_kb_reembed_admin_only():
+    store.create_user("emb@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client(); login(c, "emb@test", "Password123")
+    assert c.post("/admin/kb/reembed").status_code == 403
+
+
 def test_audit_logging_and_query():
     from app import store
     store.audit_log("alice", "login", "", "10.0.0.5")

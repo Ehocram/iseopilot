@@ -219,16 +219,44 @@ def api_chat(request: Request, body: ChatRequest):
             dept = user.get("department") or ""
             use_kb = store.get_user_setting(uid, "use_kb", "1") == "1"
             use_folder = store.get_user_setting(uid, "use_folder", "1") == "1"
+            # Query di ricerca arricchita per TUTTE le fonti (KB, cartelle,
+            # OneDrive, Dynamics): i follow-up ("e per il 2025?") ereditano il
+            # soggetto dal turno precedente, e la concept map desktop aggiunge
+            # il termine documentale ("quanti anni ha X" -> "anagrafica").
+            prev_user_q = ""
+            for m in reversed(clean[:-1]):
+                if m.get("role") == "user":
+                    prev_user_q = m.get("content", "")
+                    break
+            search_q = knowledge.enrich_query(query, prev_user_q)
             # se ci sono allegati, arricchisci la query con le loro parole chiave
-            search_q = query
             if attach_block:
                 try:
                     from .engines.onedrive_search import _build_query as _kw
                     akw = _kw(attach_block[:2000])
-                    if akw and akw.strip() and akw.strip() != query.strip():
-                        search_q = (query + " " + akw).strip()
+                    if akw and akw.strip() and akw.strip() not in search_q:
+                        search_q = (search_q + " " + akw).strip()
                 except Exception:
                     pass
+            # Riscrittura AI della query (opzione admin): il modello riformula
+            # la domanda in una query di ricerca con sinonimi e termini inglesi.
+            # Costa una piccola chiamata per messaggio; in caso di errore o
+            # timeout resta la query deterministica già costruita (mai bloccante).
+            if store.get_setting("search_ai_rewrite", "0") == "1":
+                try:
+                    from .orchestrator import complete as _complete
+                    rq = _complete(
+                        "Trasforma la domanda in una query di ricerca documentale efficace: "
+                        "parole chiave essenziali, nomi propri e sinonimi utili, includendo "
+                        "gli equivalenti sia in italiano sia in inglese (i documenti sono in "
+                        "entrambe le lingue). Massimo 15 parole. Rispondi SOLO con la query, "
+                        "senza commenti né punteggiatura finale.",
+                        search_q, settings, max_tokens=60, timeout=20).strip()
+                    if rq and 2 <= len(rq.split()) <= 25:
+                        search_q = rq
+                except Exception as e:
+                    import sys
+                    print(f"[search] riscrittura AI non disponibile, uso query deterministica: {str(e)[:120]}", file=sys.stderr)
             parts = [knowledge.retrieve(dept, search_q, use_kb=use_kb, use_folder=use_folder)]
             if store.get_user_setting(uid, "use_onedrive", "0") == "1" and connectors.is_connected(uid, "onedrive"):
                 od, od_links = connectors.search_with_links(uid, "onedrive", search_q, max_results=5)
@@ -459,6 +487,8 @@ def admin_page(request: Request):
         lm_model=store.get_setting("lm_model", ""),
         anon_dictionary=store.get_setting("anon_dictionary", ""),
         kb_embedding_model=store.get_setting("kb_embedding_model", "all-minilm-l6-v2"),
+        kb_reembed_status=store.get_setting("kb_reembed_status", ""),
+        search_ai_rewrite=store.get_setting("search_ai_rewrite", "0") == "1",
         kb_mode=store.get_setting("kb_mode", "local"),
         kb_host=store.get_setting("kb_host", "localhost"),
         kb_port=store.get_setting("kb_port", "8000"),
@@ -485,6 +515,7 @@ def admin_save(
     request: Request,
     claude_api_key: str = Form(""),
     claude_model: str = Form("claude-opus-4-8"),
+    search_ai_rewrite: str = Form("0"),
     claude_anonymize: str = Form("0"),
     lm_url: str = Form(""),
     lm_model: str = Form(""),
@@ -506,6 +537,7 @@ def admin_save(
     if claude_api_key.strip():
         store.set_setting("claude_api_key", claude_api_key.strip(), secret=True)
     store.set_setting("claude_model", claude_model.strip() or "claude-opus-4-8")
+    store.set_setting("search_ai_rewrite", "1" if search_ai_rewrite == "1" else "0")
     store.set_setting("claude_anonymize", "1" if claude_anonymize == "1" else "0")
     store.set_setting("lm_url", lm_url.strip())
     store.set_setting("lm_model", lm_model.strip())
@@ -1017,6 +1049,17 @@ def knowledge_folder_remove(request: Request, path: str = Form(...)):
     store.remove_department_folder(dept, path)
     _audit(request, user["username"], "cartella_rimossa", f"reparto={dept}, percorso={path}")
     return RedirectResponse(url="/knowledge?msg=Cartella+rimossa.", status_code=303)
+
+
+@app.post("/admin/kb/reembed")
+def admin_kb_reembed(request: Request):
+    user = auth.current_user(request)
+    if not user or not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    _audit(request, user["username"], "kb_reindicizzazione", "modello=multilingual")
+    knowledge.kb_reembed_async("multilingual")
+    return RedirectResponse(
+        url="/admin?saved=1", status_code=303)
 
 
 @app.post("/admin/dynamics/build-catalog")

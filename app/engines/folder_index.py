@@ -80,6 +80,12 @@ _STOP = {
     "the","an","is","are","was","were","been","have","has","had","of","to","for",
     "and","or","in","on","with","dammi","dimmi","parlami","mostrami","quale",
     "questo","questa","questi","queste",
+    # interrogative e funzionali inglesi (per utenti EN). NOTA: "it" è escluso
+    # di proposito: in ISEO "IT" è il nome del reparto e deve restare cercabile.
+    "what","which","who","whom","where","when","how","why","does","did","will",
+    "would","could","should","can","may","might","must","show","give","tell",
+    "list","find","please","about","from","that","this","these","those","there",
+    "here","your","our","their","them","all","any","some","much","many",
 }
 
 
@@ -393,8 +399,13 @@ class FolderIndex:
         try:
             conn = self._db()
             pool = max(top_k, 30) if rerank else top_k
+            # snippet(): estrae la finestra di testo ATTORNO ai termini trovati
+            # (colonna 3 = content). Senza, un chunk lungo verrebbe mostrato dai
+            # primi caratteri e il passaggio pertinente in coda andrebbe perso.
             rows = conn.execute(
-                "SELECT path, relpath, content, bm25(chunks) AS rank "
+                "SELECT path, relpath, content, "
+                "snippet(chunks, 3, '', '', ' … ', 64) AS snip, "
+                "bm25(chunks) AS rank "
                 "FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
                 (match, pool),
             ).fetchall()
@@ -410,9 +421,15 @@ class FolderIndex:
             rows = rows[:top_k]
 
         parts, sources, seen_src = [], [], set()
-        for path, relpath, content, _rank in rows:
-            snippet = (content or "").strip()[:max_chars_per_chunk]
-            parts.append(f"[Fonte: {relpath}]\n{snippet}")
+        for row in rows:
+            path, relpath, content = row[0], row[1], (row[2] or "").strip()
+            snip = (row[3] or "").strip() if len(row) > 3 else ""
+            if len(content) <= max_chars_per_chunk:
+                shown = content
+            else:
+                # chunk lungo: preferisci la finestra sui match; fallback all'inizio
+                shown = snip[:max_chars_per_chunk] if len(snip) > 40 else content[:max_chars_per_chunk]
+            parts.append(f"[Fonte: {relpath}]\n{shown}")
             if relpath not in seen_src:
                 seen_src.add(relpath)
                 sources.append((relpath, path))

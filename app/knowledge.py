@@ -200,12 +200,12 @@ def folder_count(path: str) -> int:
         return 0
 
 
-def folder_search(path: str, query: str, n: int = 4) -> tuple[str, list]:
+def folder_search(path: str, query: str, n: int = 4, rerank: bool = False) -> tuple[str, list]:
     p = (path or "").strip()
     if not p or not Path(p).exists():
         return "", []
     try:
-        return folder_index.search_folder(p, query, top_k=n, rerank=False)
+        return folder_index.search_folder(p, query, top_k=n, rerank=rerank)
     except Exception:
         return "", []
 
@@ -230,6 +230,90 @@ def dept_folders_reindex(dept: str) -> tuple[bool, str]:
 
 def dept_folders_count(dept: str) -> int:
     return sum(folder_count(p) for p in store.department_folders(dept))
+
+
+# ── Migrazione modello di embedding (re-indicizzazione KB) ──
+def _embedding_ok(model_alias: str) -> tuple[bool, str]:
+    """Verifica che il modello di embedding sia caricabile e funzionante PRIMA
+    di toccare i dati (al primo uso viene scaricato: serve accesso di rete)."""
+    try:
+        from .engines.vector_db import resolve_embedding_model
+        from chromadb.utils import embedding_functions
+        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=resolve_embedding_model(model_alias))
+        vec = ef(["testo di prova"])
+        return (bool(vec) and len(vec) == 1), "ok"
+    except Exception as e:
+        return False, str(e)[:300]
+
+
+def kb_reembed_all(new_model: str = "multilingual") -> tuple[int, list[str]]:
+    """Re-indicizza tutte le collezioni KB col nuovo modello di embedding.
+
+    Necessario quando si cambia modello: i vettori vecchi e le query nuove
+    vivrebbero in spazi diversi (silenziosamente, perché le dimensioni
+    coincidono) e la ricerca degraderebbe. Ricostruisce ogni documento dai
+    chunk già salvati in Chroma (metadata 'source') e lo re-ingerisce.
+    SICUREZZA: il modello nuovo è verificato PRIMA di cancellare qualsiasi
+    collezione; i dati sono letti in memoria prima della cancellazione."""
+    if not kb_available():
+        return 0, ["ChromaDB non installato sul server."]
+    ok, msg = _embedding_ok(new_model)
+    if not ok:
+        raise RuntimeError(
+            f"Modello '{new_model}' non caricabile ({msg}). Nessun dato toccato. "
+            "Verifica che il server possa raggiungere huggingface.co per il primo download.")
+    import chromadb
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    store.set_setting("kb_embedding_model", new_model)
+    done, esiti = 0, []
+    for dept in store.list_departments():
+        cname = store.collection_for_department(dept)
+        try:
+            col = client.get_collection(cname)
+        except Exception:
+            continue  # nessuna KB per questo reparto
+        try:
+            data = col.get(include=["documents", "metadatas"])
+        except Exception as e:
+            esiti.append(f"{dept}: ERRORE lettura ({str(e)[:80]})")
+            continue
+        by_file: dict[str, list] = {}
+        for doc, meta in zip(data.get("documents") or [], data.get("metadatas") or []):
+            src = (meta or {}).get("source", "documento")
+            by_file.setdefault(src, []).append(((meta or {}).get("chunk", 0), doc or ""))
+        if not by_file:
+            continue
+        # dati in memoria: ora si può ricreare la collezione col nuovo modello
+        try:
+            client.delete_collection(cname)
+        except Exception:
+            pass
+        ok_files = 0
+        for fname, chunks in by_file.items():
+            chunks.sort(key=lambda t: t[0])
+            text = "\n\n".join(c for _, c in chunks if c.strip())
+            good, _m = kb_ingest(dept, fname, text)  # usa il nuovo modello dal setting
+            if good:
+                ok_files += 1
+        done += 1
+        esiti.append(f"{dept}: {ok_files}/{len(by_file)} file re-indicizzati")
+    return done, esiti
+
+
+def kb_reembed_async(new_model: str = "multilingual") -> None:
+    """Lancia la re-indicizzazione in background e traccia l'esito in un
+    setting leggibile dalla pagina admin (fail loudly, mai in silenzio)."""
+    def _job():
+        store.set_setting("kb_reembed_status", "in corso… (al primo avvio scarica il modello)")
+        try:
+            n, esiti = kb_reembed_all(new_model)
+            store.set_setting("kb_reembed_status",
+                              f"completato ({n} reparti) — " + "; ".join(esiti[:8]) if esiti
+                              else "completato: nessuna KB da re-indicizzare")
+        except Exception as e:
+            store.set_setting("kb_reembed_status", "ERRORE: " + str(e)[:400])
+    threading.Thread(target=_job, daemon=True).start()
 
 
 # ── Indicizzazione automatica (come l'app desktop: all'avvio + on demand) ──
@@ -261,6 +345,57 @@ def reindex_all_async() -> None:
 
 
 # ── Recupero combinato per la chat (RAG) ────────────────────
+def enrich_query(query: str, prev_user_query: str = "") -> str:
+    """Arricchisce la domanda per la ricerca documentale (KB, cartelle, connettori).
+
+    1) Follow-up: se la domanda è breve o anaforica ("e per il 2025?"), eredita
+       i termini di contenuto del turno utente precedente, altrimenti la ricerca
+       non ha soggetto e non trova nulla.
+    2) Concept map (stessa dell'app desktop): traduce il concetto della domanda
+       nel termine documentale ("quanti anni ha X" -> aggiunge "anagrafica")."""
+    import re as _re
+    q = (query or "").strip()
+    # Parole di contenuto = tolte stopword e pronomi anaforici ("quelli",
+    # "questo"...): i pronomi sono il segnale del follow-up, non un soggetto.
+    _anaphoric = {"quello", "quella", "quelli", "quelle", "questo", "questa",
+                  "questi", "queste", "stesso", "stessa", "stessi", "stesse",
+                  "altro", "altra", "altri", "altre", "invece", "anche",
+                  "quindi", "allora", "prima", "dopo", "ancora", "pure",
+                  "that", "this", "those", "these", "same", "other", "ones"}
+    try:
+        from .engines.folder_index import _STOP as _stop
+    except Exception:
+        _stop = set()
+    content = [w for w in _re.findall(r"[A-Za-zÀ-ÿ0-9]{3,}", q.lower())
+               if w not in _stop and w not in _anaphoric]
+    if prev_user_query and len(content) < 2:
+        q = (prev_user_query.strip() + " " + q).strip()
+    try:
+        from .engines.onedrive_search import _build_query as _kw
+        extra = _kw(q)
+        if extra and extra.strip():
+            missing = [w for w in extra.split() if w.lower() not in q.lower()]
+            if missing:
+                q = q + " " + " ".join(missing)
+    except Exception:
+        pass
+    return q
+
+
+def _fit_budget(parts: list[str], max_chars: int) -> str:
+    """Distribuisce il budget di contesto tra le fonti invece di tagliare in
+    coda: prima ogni fonte riceve una quota equa, così nessuna cartella viene
+    scartata in silenzio solo perché arriva dopo la KB."""
+    if not parts:
+        return ""
+    joined = "\n\n".join(parts)
+    if len(joined) <= max_chars:
+        return joined
+    quota = max(700, max_chars // len(parts))
+    trimmed = [p[:quota] for p in parts]
+    return "\n\n".join(trimmed)[:max_chars]
+
+
 def retrieve(dept: str, query: str, use_kb: bool = True, use_folder: bool = True,
              max_chars: int = 6000) -> str:
     """Contesto combinato secondo i toggle dell'utente: conoscenza ChromaDB del
@@ -268,13 +403,14 @@ def retrieve(dept: str, query: str, use_kb: bool = True, use_folder: bool = True
     una sorgente, restituisce ciò che ha (la chat non deve fallire per il retrieval)."""
     parts = []
     if use_kb:
-        kb_text, _ = kb_search(dept, query, n=4)
+        kb_text, _ = kb_search(dept, query, n=5)
         if kb_text.strip():
             parts.append("[Conoscenza dipartimento — " + dept + "]\n" + kb_text)
     if use_folder:
         for p in store.department_folders(dept):
-            f_text, _ = folder_search(p, query, n=3)
+            # rerank semantico: riordina i candidati BM25 per pertinenza reale
+            # (fallback automatico all'ordine BM25 se il modello non è disponibile)
+            f_text, _ = folder_search(p, query, n=4, rerank=True)
             if f_text.strip():
                 parts.append("[Cartella: " + p + "]\n" + f_text)
-    ctx = "\n\n".join(parts)
-    return ctx[:max_chars]
+    return _fit_budget(parts, max_chars)
