@@ -586,6 +586,14 @@ def test_settings_no_nested_forms():
     assert "/connect/onedrive/logout" in tpl and "fetch(" in tpl
 
 
+def test_onedrive_binary_filter():
+    from app.engines.onedrive_search import _is_binary_name
+    assert _is_binary_name("ChatAssistant_v2.0_WINDOWS_fix-indicizzazione.zip")
+    assert _is_binary_name("setup.EXE") and _is_binary_name("backup.tar")
+    assert not _is_binary_name("anagrafica.docx")
+    assert not _is_binary_name("relazione.pdf") and not _is_binary_name("dati.xlsx")
+
+
 def test_onedrive_search_is_logged():
     from app import connectors
     # utente non connesso: nessuna eccezione e nessun risultato

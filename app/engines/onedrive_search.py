@@ -274,6 +274,15 @@ def _build_query(text: str) -> str:
     return ' '.join(result[:3]) if result else (text or "")[:50]
 
 
+# Estensioni senza testo estraibile: inquinano i risultati documentali.
+_BIN_EXT = (".zip", ".rar", ".7z", ".gz", ".tar", ".exe", ".dmg",
+            ".iso", ".msi", ".pkg", ".bin", ".apk", ".img")
+
+
+def _is_binary_name(name: str) -> bool:
+    return str(name or "").lower().endswith(_BIN_EXT)
+
+
 class OneDriveSearch:
     """Ricerca full-text in OneDrive tramite Microsoft Graph Search API."""
 
@@ -376,6 +385,15 @@ class OneDriveSearch:
                     "folder": folder, "drive_id": drive_id, "item_id": item_id,
                     "summary": summary,
                 })
+
+            # Filtro qualità: archivi e binari (zip, exe, dmg…) non hanno testo
+            # estraibile e tolgono posti ai documenti veri. Vengono scartati,
+            # ma SOLO se resta almeno un risultato documentale (mai zero
+            # risultati per colpa del filtro).
+            textual = [m for m in metas if not _is_binary_name(m.get("name"))]
+            if textual and len(textual) < len(metas):
+                _odlog(f"filtrati {len(metas) - len(textual)} file binari/archivio dai risultati")
+                metas = textual
 
             # ── 2) Scarica i contenuti IN PARALLELO (I/O-bound) ──
             contents = [""] * len(metas)
