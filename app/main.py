@@ -44,6 +44,15 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
+# Versione degli asset statici: cambia quando i file cambiano (deploy), così
+# il browser NON serve dalla cache un chat.js vecchio dopo un aggiornamento.
+try:
+    _static_dir = Path(__file__).resolve().parent.parent / "static"
+    ASSET_V = str(int(max(f.stat().st_mtime for f in _static_dir.glob("*") if f.is_file())))
+except Exception:
+    ASSET_V = "1"
+
+
 @app.on_event("startup")
 def _startup():
     store.init_db()
@@ -51,6 +60,15 @@ def _startup():
     # Come l'app desktop: indicizza le cartelle configurate all'avvio, in
     # background (anche le share di rete), così sono subito ricercabili.
     knowledge.reindex_all_async()
+    # Warm-up dell'indice semantico Dynamics (se il catalogo esiste): senza,
+    # il PRIMO utente del processo pagava 70-120s di costruzione embeddings.
+    def _warm_dyn():
+        try:
+            from .engines import dynamics_search as _ds
+            _ds.warm_semantic_index({})
+        except Exception:
+            pass
+    threading.Thread(target=_warm_dyn, daemon=True).start()
 
 
 def _ui_lang(request: Request, user: dict | None = None) -> str:
@@ -66,6 +84,7 @@ def _i18n_ctx(request: Request, user: dict | None = None) -> dict:
         "t": (lambda key: i18n.t(key, lang)),
         "ui_lang": lang,
         "next_path": request.url.path,
+        "asset_v": ASSET_V,
     }
 
 

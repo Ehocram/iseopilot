@@ -7,6 +7,7 @@ con autenticazione Microsoft OAuth2 Device Code Flow (come OneDrive).
 """
 import json
 import re
+import threading
 import time
 import datetime
 from urllib.parse import quote
@@ -607,6 +608,62 @@ class DynamicsTokenManager:
 
 
 # ── Ricerca OData su D365 F&O ────────────────────────────────
+# ── Indice semantico: CACHE DI PROCESSO (v2.0 web) ─────────────────────────
+# Sul web ogni ricerca crea una nuova istanza di DynamicsSearch: la cache
+# per-istanza veniva quindi ricostruita a ogni domanda (70-120 s su ~4700
+# entità, visibile nei log). Qui l'indice vive a livello di modulo: UNA
+# costruzione per processo, ricostruita solo se il catalogo cambia.
+_SEM_LOCK = threading.Lock()
+_SEM_MODEL = None
+_SEM_MATRIX = None
+_SEM_NAMES: list = []
+_SEM_SIG = None
+
+
+def _semantic_ensure(full_catalog: dict, cfg: dict | None = None):
+    """Costruisce (una volta per processo) l'indice embeddings delle entità.
+    Ritorna (names, matrix, model) oppure None se librerie/modello mancano."""
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return None
+    global _SEM_MODEL, _SEM_MATRIX, _SEM_NAMES, _SEM_SIG
+    names = list(full_catalog.keys())
+    if not names:
+        return None
+    sig = (len(names), hash(tuple(names)))
+    with _SEM_LOCK:
+        if _SEM_SIG != sig or _SEM_MATRIX is None:
+            if _SEM_MODEL is None:
+                model_name = (cfg or {}).get("dyn_semantic_model",
+                                             "paraphrase-multilingual-MiniLM-L12-v2")
+                try:
+                    from vector_db import resolve_embedding_model
+                    model_name = resolve_embedding_model(model_name)
+                except Exception:
+                    pass
+                try:
+                    _SEM_MODEL = SentenceTransformer(model_name)
+                except Exception:
+                    try:
+                        _SEM_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+                    except Exception as e:
+                        _dbg(f"semantic: modello non caricabile ({e})")
+                        return None
+            # Testo indicizzato: nome entità "spezzato" in parole + alcuni campi
+            docs = []
+            for n in names:
+                spez = _re_split_camel(n)
+                campi = " ".join((full_catalog[n].get("string") or [])[:8])
+                docs.append(f"{spez} {campi}")
+            _SEM_MATRIX = _SEM_MODEL.encode(docs, normalize_embeddings=True,
+                                            show_progress_bar=False)
+            _SEM_NAMES = names
+            _SEM_SIG = sig
+            _dbg(f"semantic: indice embeddings costruito su {len(names)} entità (cache di processo)")
+    return _SEM_NAMES, _SEM_MATRIX, _SEM_MODEL
+
+
 class DynamicsSearch:
     """Ricerca in sola lettura nei Data Entity di D365 F&O via OData."""
 
@@ -1374,49 +1431,14 @@ class DynamicsSearch:
         disponibili (in tal caso il chiamante resta sulla sola ricerca lessicale).
         L'indice è costruito UNA volta per istanza del catalogo e tenuto in cache."""
         try:
-            from sentence_transformers import SentenceTransformer
-            import numpy as np
-        except Exception:
-            return []  # libreria assente: il chiamante usa solo la ricerca lessicale
-        try:
-            names = list(full_catalog.keys())
-            if not names:
-                return []
-            # Cache dell'indice: ricostruito solo se cambia il set di entità
-            sig = (len(names), hash(tuple(names[:50])))
-            if getattr(self, "_emb_sig", None) != sig or getattr(self, "_emb_matrix", None) is None:
-                if getattr(self, "_emb_model", None) is None:
-                    # Modello MULTILINGUE: le domande sono in italiano, i nomi entità
-                    # in inglese — un modello multilingue allinea i due spazi molto
-                    # meglio di uno solo inglese. Indice in memoria: nessuna migrazione.
-                    # Se il modello è incluso nel bundle (.dmg) viene caricato dal
-                    # percorso locale (offline), altrimenti scaricato al primo uso.
-                    model_name = self.cfg.get("dyn_semantic_model",
-                                              "paraphrase-multilingual-MiniLM-L12-v2")
-                    try:
-                        from vector_db import resolve_embedding_model
-                        model_name = resolve_embedding_model(model_name)
-                    except Exception:
-                        pass
-                    try:
-                        self._emb_model = SentenceTransformer(model_name)
-                    except Exception:
-                        self._emb_model = SentenceTransformer("all-MiniLM-L6-v2")
-                # Testo indicizzato: nome entità "spezzato" in parole + alcuni campi
-                docs = []
-                for n in names:
-                    spez = _re_split_camel(n)
-                    campi = " ".join((full_catalog[n].get("string") or [])[:8])
-                    docs.append(f"{spez} {campi}")
-                self._emb_matrix = self._emb_model.encode(docs, normalize_embeddings=True,
-                                                          show_progress_bar=False)
-                self._emb_names = names
-                self._emb_sig = sig
-                _dbg(f"semantic: indice embeddings costruito su {len(names)} entità")
-            q = self._emb_model.encode([query], normalize_embeddings=True)[0]
-            sims = self._emb_matrix @ q  # cosine (vettori normalizzati)
+            res = _semantic_ensure(full_catalog, self.cfg)
+            if not res:
+                return []  # librerie/modello assenti: solo ricerca lessicale
+            names, matrix, model = res
+            q = model.encode([query], normalize_embeddings=True)[0]
+            sims = matrix @ q  # cosine (vettori normalizzati)
             idx = sims.argsort()[::-1][:top_k]
-            return [self._emb_names[i] for i in idx]
+            return [names[i] for i in idx]
         except Exception as e:
             _dbg(f"semantic: errore ({e}), uso solo ricerca lessicale")
             return []
@@ -3975,3 +3997,20 @@ def get_dyn(cfg: dict) -> DynamicsSearch:
     else:
         _dyn_instance.cfg = cfg
     return _dyn_instance
+
+
+def warm_semantic_index(cfg: dict | None = None) -> bool:
+    """Precostruisce l'indice semantico all'avvio del processo, se il catalogo
+    è già su disco: il PRIMO utente non paga i ~2 minuti di costruzione.
+    Non richiede credenziali (legge solo il catalogo locale)."""
+    try:
+        ds = DynamicsSearch(client_id="warmup")
+        ds.cfg = dict(cfg or {})
+        cat = ds.load_catalog()
+        if not cat:
+            _dbg("semantic warm-up: catalogo assente, salto")
+            return False
+        return _semantic_ensure(cat, cfg or {}) is not None
+    except Exception as e:
+        _dbg(f"semantic warm-up: non riuscito ({e})")
+        return False

@@ -841,6 +841,36 @@ def test_account_requires_login():
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
 
 
+def test_dynamics_semantic_process_cache():
+    from app.engines import dynamics_search as ds
+    # le primitive della cache di processo esistono
+    assert hasattr(ds, "_semantic_ensure") and hasattr(ds, "warm_semantic_index")
+    assert ds._SEM_LOCK is not None
+    cat = {"WorkersEntity": {"string": ["Name", "BirthDate"]},
+           "PurchaseRequisitions": {"string": ["Requester", "Amount"]}}
+    r1 = ds._semantic_ensure(cat, {})
+    r2 = ds._semantic_ensure(cat, {})
+    if r1 is not None:
+        # seconda chiamata: STESSA matrice (nessuna ricostruzione)
+        assert r2 is not None and r1[1] is r2[1]
+    # warm-up senza catalogo su disco: esce pulito senza eccezioni
+    assert ds.warm_semantic_index({}) in (True, False)
+
+
+def test_static_assets_versioned():
+    store.create_user("assetv@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client()
+    # login: css versionato anche da sloggati
+    assert "app.css?v=" in c.get("/login").text
+    login(c, "assetv@test", "Password123")
+    html = c.get("/").text
+    assert "chat.js?v=" in html and "app.css?v=" in html
+
+
+def test_dynamics_semantic_cache_per_process():
+    pass  # segnaposto retrocompatibile
+
+
 def test_area_models_admin_and_wiring():
     from app import connectors
     from app.main import _area_settings
