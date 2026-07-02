@@ -26,6 +26,16 @@
     </div>
 
     <div class="composer" id="composer">
+      <div class="src-picker" id="src-picker">
+        <span class="src-label">{{ t("Dove cercare?") }}</span>
+        <label class="src-pill"><input type="radio" name="datasource" value="kb" checked><span>{{ t("Conoscenza") }}</span></label>
+        <label class="src-pill {% if not src_folder_available %}off{% endif %}" {% if not src_folder_available %}title="{{ t('Nessuna cartella configurata per il tuo reparto: chiedi all\'amministratore.') }}"{% endif %}>
+          <input type="radio" name="datasource" value="folder" {% if not src_folder_available %}disabled{% endif %}><span>{{ t("Cartelle") }}</span></label>
+        <label class="src-pill {% if not src_onedrive_available %}off{% endif %}" {% if not src_onedrive_available %}title="{{ t('OneDrive non è connesso: collegalo dalla pagina Connessioni.') }}"{% endif %}>
+          <input type="radio" name="datasource" value="onedrive" {% if not src_onedrive_available %}disabled{% endif %}><span>OneDrive</span></label>
+        <label class="src-pill {% if not src_dynamics_available %}off{% endif %}" {% if not src_dynamics_available %}title="{{ t('Dynamics 365 non è connesso: collegalo dalla pagina Connessioni.') }}"{% endif %}>
+          <input type="radio" name="datasource" value="dynamics" {% if not src_dynamics_available %}disabled{% endif %}><span>Dynamics 365</span></label>
+      </div>
       <div class="attach-bar" id="attach-bar" hidden></div>
       <div class="row">
         <button class="attach-btn" id="attach-btn" title="{{ t('Allega file (fino a 20)') }}" type="button">📎</button>
@@ -70,6 +80,7 @@
     confirmDel: "{{ t('Eliminare questa conversazione?') }}",
     renamePrompt: "{{ t('Nuovo titolo della conversazione:') }}",
     you: "{{ t('Tu') }}", assistant: "{{ t('Assistente') }}", sources: "{{ t('Fonti') }}",
+    pickSource: "{{ t('Seleziona una fonte dati (Conoscenza, Cartelle, OneDrive o Dynamics 365) prima di inviare, oppure passa alla modalità AI libera.') }}",
     proxyErr: "{{ t('risposta da un apparato di rete (proxy/VPN), non da ISEOPilot: la richiesta è stata interrotta prima di arrivare. Riprova; se persiste avvisa l\'amministratore.') }}",
     attaching: "{{ t('Estraggo il testo…') }}",
     attachErr: "{{ t('Non leggibile') }}",

@@ -124,7 +124,7 @@ def test_chat_streams_error_when_unconfigured():
     store.create_user("chatuser@test", auth.hash_password("Password123"), "IT")
     c = fresh_client()
     login(c, "chatuser@test", "Password123")
-    r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}], "engine": "claude"})
+    r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}], "engine": "claude", "source": "kb"})
     assert r.status_code == 200
     assert "error" in r.text and "Claude" in r.text
 
@@ -586,6 +586,26 @@ def test_settings_no_nested_forms():
     assert "/connect/onedrive/logout" in tpl and "fetch(" in tpl
 
 
+def test_onedrive_rank_and_trim():
+    from app.engines.onedrive_search import _rank_and_trim
+    # scenario reale: mp4/pdf/xlsx davanti, anagrafica in coda al pool Graph
+    metas = [
+        {"name": "Pilota AI Iseo - Registrazione della riunione.mp4"},
+        {"name": "PANDIGITAL SRL_Cerved.pdf"},
+        {"name": "Budget 2026_V5.xlsx"},
+        {"name": "anagrafica.docx"},
+        {"name": "2.png"},
+    ]
+    out = _rank_and_trim(metas, '"anagrafica" "bonometti" "marco"'.split(), 5)
+    names = [m["name"] for m in out]
+    # mp4 e png filtrati; anagrafica in PRIMA posizione (match sul nome)
+    assert names[0] == "anagrafica.docx"
+    assert all(".mp4" not in n and ".png" not in n for n in names)
+    # se il pool contiene SOLO media, non si azzera (fallback)
+    only_media = [{"name": "a.mp4"}, {"name": "b.png"}]
+    assert len(_rank_and_trim(only_media, ["x"], 5)) == 2
+
+
 def test_select_sources_cited_and_dedup():
     from app.main import _select_sources
     links = [
@@ -612,6 +632,7 @@ def test_onedrive_binary_filter():
     assert _is_binary_name("ChatAssistant_v2.0_WINDOWS_fix-indicizzazione.zip")
     assert _is_binary_name("setup.EXE") and _is_binary_name("backup.tar")
     assert _is_binary_name("2.png") and _is_binary_name("foto.JPEG")
+    assert _is_binary_name("Registrazione della riunione.mp4")
     assert not _is_binary_name("anagrafica.docx")
     assert not _is_binary_name("relazione.pdf") and not _is_binary_name("dati.xlsx")
 
@@ -818,6 +839,65 @@ def test_account_requires_login():
     c = fresh_client()
     r = c.get("/account", follow_redirects=False)
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
+
+
+def test_docgen_detect_conjugations():
+    from app.docgen import detect_request
+    # segnalazione utente reale: "mi generi un pptx..." non veniva rilevato
+    assert detect_request("ciao mi generi un pptx sulla direttiva nis2 da presentare al ceo?") == "pptx"
+    assert detect_request("mi crei un excel dei costi?") == "xlsx"
+    assert detect_request("puoi farmi un word di sintesi?") == "docx"
+    assert detect_request("vorrei un pdf della policy") == "pdf"
+    # niente falsi positivi sulle richieste di spiegazione
+    assert detect_request("puoi spiegarmi come funziona excel?") is None
+    assert detect_request("cos'è un file pdf?") is None
+
+
+def test_pptx_template_no_marketing():
+    from pptx import Presentation
+    prs = Presentation("app/doc_templates/Presentation_template_1.pptx")
+    found = []
+    for master in prs.slide_masters:
+        for sh in master.shapes:
+            if sh.has_text_frame and "marketing" in (sh.text_frame.text or "").lower():
+                found.append("master")
+        for lay in master.slide_layouts:
+            for sh in lay.shapes:
+                if sh.has_text_frame and "marketing" in (sh.text_frame.text or "").lower():
+                    found.append("layout")
+    assert not found
+
+
+def test_chat_requires_single_source_documentale():
+    store.create_user("srcv@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client(); login(c, "srcv@test", "Password123")
+    # documentale SENZA fonte -> errore chiaro (validazione server)
+    r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}],
+                                  "free_mode": False})
+    assert r.status_code == 200 and "Seleziona una fonte dati" in r.text
+    # fonte non disponibile (onedrive non connesso) -> errore chiaro
+    r2 = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}],
+                                   "free_mode": False, "source": "onedrive"})
+    assert "OneDrive non" in r2.text
+    # fonte valida (kb) -> supera la validazione (poi manca la chiave API: errore diverso)
+    r3 = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}],
+                                   "free_mode": False, "source": "kb"})
+    assert "Seleziona una fonte" not in r3.text
+    # AI libera: nessuna fonte richiesta
+    r4 = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}],
+                                   "free_mode": True})
+    assert "Seleziona una fonte" not in r4.text
+
+
+def test_chat_page_has_source_picker():
+    store.create_user("srcp@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client(); login(c, "srcp@test", "Password123")
+    html = c.get("/").text
+    assert 'id="src-picker"' in html and 'name="datasource"' in html
+    # onedrive/dynamics non connessi per questo utente -> pill disabilitati
+    assert html.count("disabled") >= 2
+    js = c.get("/static/chat.js").text
+    assert "selectedSource" in js and "pickSource" in js
 
 
 def test_docgen_detect_format():

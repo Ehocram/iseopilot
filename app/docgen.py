@@ -33,15 +33,32 @@ _FMT_WORD = ("word", "documento word", ".docx", "in word", "un doc ")
 _FMT_XLS = ("excel", "foglio di calcolo", "foglio elettronico", "spreadsheet", ".xlsx", "in excel")
 _FMT_PPT = ("powerpoint", "power point", "presentazione", "slide", "slides", "ppt", ".pptx", "deck")
 _FMT_PDF = ("pdf", ".pdf", "in pdf")
-_GEN_VERBS = ("crea", "genera", "generami", "creami", "fammi", "produci", "prepara",
-              "preparami", "esporta", "scarica", "redigi", "stila", "buttami giù",
-              "create", "generate", "make", "export", "download", "prepare", "draft")
+# Verbi di generazione: forme FORTI (creazione esplicita, con le coniugazioni
+# reali: "mi generi", "mi crei", "fammi") e forme DEBOLI (cortesia/desiderio).
+# Le deboli valgono solo se la frase non è una richiesta di spiegazione
+# ("puoi spiegarmi come funziona Excel?" resta una chat, non genera file).
+_STRONG_VERB_RE = re.compile(
+    r"\b(crea(re|mi|temi)?|crei|genera(re|mi)?|generi|fammi|fai|fatemi|"
+    r"produci|produrre|produrmi|prepara(re|mi)?|prepari|esporta(re|mi)?|esporti|"
+    r"scarica(re|mi)?|scarichi|redigi|redigere|stila(re)?|stilami|"
+    r"realizza(re|mi)?|realizzi|costruisci(mi)?|costruire|buttami|"
+    r"create|generate|make|build|produce|export|download|prepare|draft)\b",
+    re.IGNORECASE)
+_WEAK_VERB_RE = re.compile(
+    r"\b(vorrei|voglio|desidero|mi\s+serve|servirebbe|avrei\s+bisogno|"
+    r"puoi|potresti|riesci|sapresti|"
+    r"can\s+you|could\s+you|i\s+need|i\s+want|i'd\s+like)\b",
+    re.IGNORECASE)
+_EXPLAIN_RE = re.compile(
+    r"\b(spiega|spiegami|spieghi|cos'?\s?è|cosa\s+è|come\s+funziona|"
+    r"come\s+si\s+usa|aiutami\s+a\s+capire|che\s+cos|differenza\s+tra|"
+    r"explain|what\s+is|how\s+does|how\s+to\s+use)\b",
+    re.IGNORECASE)
 
 
 def detect_request(text: str) -> str | None:
     """Ritorna il formato richiesto ('docx'|'xlsx'|'pptx'|'pdf') o None."""
     tl = (text or "").lower()
-    has_verb = any(v in tl for v in _GEN_VERBS)
     # l'ordine conta: pptx e xlsx prima di docx/pdf generici
     if any(k in tl for k in _FMT_PPT):
         fmt = "pptx"
@@ -53,8 +70,12 @@ def detect_request(text: str) -> str | None:
         fmt = "pdf"
     else:
         return None
-    # serve un verbo di generazione, OPPURE un'estensione esplicita
-    if has_verb or any(e in tl for e in (".docx", ".xlsx", ".pptx", ".pdf")):
+    # estensione esplicita: intento inequivocabile
+    if any(e in tl for e in (".docx", ".xlsx", ".pptx", ".pdf")):
+        return fmt
+    if _STRONG_VERB_RE.search(tl):
+        return fmt
+    if _WEAK_VERB_RE.search(tl) and not _EXPLAIN_RE.search(tl):
         return fmt
     return None
 
@@ -107,17 +128,21 @@ _SCHEMAS = {
 }
 
 
-def build_spec(fmt: str, user_request: str, context: str, settings: dict) -> dict:
+def build_spec(fmt: str, user_request: str, context: str, settings: dict,
+               history_text: str = "") -> dict:
     schema = _SCHEMAS["docx"] if fmt in ("docx", "pdf") else _SCHEMAS[fmt]
     lang = settings.get("reply_lang", "Italiano")
     system = (
         f"Sei un generatore di documenti aziendali ISEO. Rispondi nella lingua: {lang}. "
         "Produci ESCLUSIVAMENTE JSON valido secondo lo schema indicato, senza commenti, "
-        "senza markdown, senza testo aggiuntivo. Il contenuto deve essere reale e utile, "
-        "basato sul materiale fornito quando presente."
+        "senza markdown, senza testo aggiuntivo. Il contenuto deve essere reale, utile e "
+        "PERTINENTE alla richiesta specifica (mai generico), basato sul materiale e sulla "
+        "conversazione forniti quando presenti."
     )
     ctx = ("\n\n=== MATERIALE DI RIFERIMENTO ===\n" + context.strip()) if context and context.strip() else ""
-    user = f"{schema}\n\nRICHIESTA DELL'UTENTE:\n{user_request}{ctx}"
+    hist = ("\n\n=== CONVERSAZIONE PRECEDENTE (per capire cosa vuole davvero l'utente) ===\n"
+            + history_text.strip()) if history_text and history_text.strip() else ""
+    user = f"{schema}\n\nRICHIESTA DELL'UTENTE:\n{user_request}{hist}{ctx}"
     raw = orchestrator.complete(system, user, settings, max_tokens=4000)
     return _parse_json(raw)
 
@@ -340,7 +365,8 @@ def gen_pdf(spec: dict) -> tuple[str, str]:
 _BUILDERS = {"docx": gen_docx, "pptx": gen_pptx, "xlsx": gen_xlsx, "pdf": gen_pdf}
 
 
-def generate(fmt: str, user_request: str, context: str, settings: dict) -> tuple[str, str]:
+def generate(fmt: str, user_request: str, context: str, settings: dict,
+             history_text: str = "") -> tuple[str, str]:
     """Genera il file richiesto. Ritorna (path, filename_visibile)."""
-    spec = build_spec(fmt, user_request, context, settings)
+    spec = build_spec(fmt, user_request, context, settings, history_text)
     return _BUILDERS[fmt](spec)

@@ -278,11 +278,32 @@ def _build_query(text: str) -> str:
 _BIN_EXT = (".zip", ".rar", ".7z", ".gz", ".tar", ".exe", ".dmg",
             ".iso", ".msi", ".pkg", ".bin", ".apk", ".img",
             # immagini: nessun testo estraibile, non competono nei risultati
-            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".heic", ".webp")
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".heic", ".webp",
+            # audio/video (es. registrazioni Teams): i transcript indicizzati li
+            # fanno emergere, ma non sono fonti documentali consultabili
+            ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".m4a", ".mp3", ".wav")
 
 
 def _is_binary_name(name: str) -> bool:
     return str(name or "").lower().endswith(_BIN_EXT)
+
+
+def _rank_and_trim(metas: list, terms: list, max_results: int) -> list:
+    """Ordina e taglia i risultati Graph: via i file senza testo (se resta
+    altro), poi PRIORITÀ ai match sul NOME del file (deterministico: un file
+    che si chiama come il termine cercato batte un transcript che lo cita),
+    infine taglio a max_results."""
+    textual = [m for m in metas if not _is_binary_name(m.get("name"))]
+    if textual:
+        metas = textual
+    tl = [str(t).strip('"\'' ).lower() for t in terms if len(str(t).strip('"\'')) > 2]
+
+    def _key(m):
+        name = str(m.get("name", "")).lower()
+        return 0 if any(t in name for t in tl) else 1
+
+    metas = sorted(metas, key=_key)  # sort stabile: mantiene l'ordine Graph a parità
+    return metas[:max_results]
 
 
 class OneDriveSearch:
@@ -336,7 +357,7 @@ class OneDriveSearch:
                     "entityTypes": ["driveItem"],
                     "query": {"queryString": query_string},
                     "from": 0,
-                    "size": max_results,
+                    "size": min(max(max_results * 3, 10), 25),
                     "fields": ["id", "name", "webUrl", "lastModifiedDateTime",
                                "file", "parentReference", "summary"],
                 }]
@@ -388,14 +409,15 @@ class OneDriveSearch:
                     "summary": summary,
                 })
 
-            # Filtro qualità: archivi e binari (zip, exe, dmg…) non hanno testo
-            # estraibile e tolgono posti ai documenti veri. Vengono scartati,
-            # ma SOLO se resta almeno un risultato documentale (mai zero
-            # risultati per colpa del filtro).
-            textual = [m for m in metas if not _is_binary_name(m.get("name"))]
-            if textual and len(textual) < len(metas):
-                _odlog(f"filtrati {len(metas) - len(textual)} file binari/archivio dai risultati")
-                metas = textual
+            # Filtro qualità + ranking: via i file senza testo estraibile,
+            # priorità ai match sul NOME (es. 'anagrafica' nel nome del file
+            # batte una registrazione che cita la persona), taglio a
+            # max_results (dal Graph arriva un pool più ampio apposta).
+            before = len(metas)
+            metas = _rank_and_trim(metas, query_string.split(), max_results)
+            if len(metas) < before:
+                _odlog(f"ranking: {before} risultati Graph -> {len(metas)} mostrati "
+                       f"(filtrati binari/media, priorità ai match sul nome)")
 
             # ── 2) Scarica i contenuti IN PARALLELO (I/O-bound) ──
             contents = [""] * len(metas)

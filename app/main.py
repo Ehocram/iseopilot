@@ -190,8 +190,12 @@ def chat_page(request: Request):
     user = auth.current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
+    dept = user.get("department") or ""
     return templates.TemplateResponse(request, "chat.html", _ctx(
         request, user, tones=list(TONES.keys()), langs=list(LANG_INSTR.keys()),
+        src_folder_available=bool(store.department_folders(dept)),
+        src_onedrive_available=connectors.is_connected(user["username"], "onedrive"),
+        src_dynamics_available=connectors.is_connected(user["username"], "dynamics"),
     ))
 
 
@@ -203,6 +207,7 @@ class ChatRequest(BaseModel):
     free_mode: bool = False
     session_id: str | None = None
     attachments: list[dict] = []
+    source: str | None = None  # 'kb' | 'folder' | 'onedrive' | 'dynamics' (documentale)
 
 
 @app.post("/api/chat")
@@ -243,6 +248,36 @@ def api_chat(request: Request, body: ChatRequest):
                 ab.append(f"[ALLEGATO: {name}]\n{text}")
         attach_block = "\n\n".join(ab)
 
+    # ── FONTE DATI (documentale): UNA sola per domanda, obbligatoria ──
+    # Il popup lato client avvisa, ma la validazione vera è qui (client
+    # vecchi in cache o chiamate dirette non possono aggirarla).
+    src = (body.source or "").strip().lower()
+    if not body.free_mode:
+        _dept0 = user.get("department") or ""
+        _available = {
+            "kb": True,
+            "folder": bool(store.department_folders(_dept0)),
+            "onedrive": connectors.is_connected(uid, "onedrive"),
+            "dynamics": connectors.is_connected(uid, "dynamics"),
+        }
+        _err_msg = ""
+        if src not in _available:
+            _err_msg = ("Seleziona una fonte dati (Conoscenza, Cartelle, OneDrive o "
+                        "Dynamics 365) per la ricerca documentale, oppure passa alla "
+                        "modalità AI libera.")
+        elif not _available[src]:
+            _err_msg = {
+                "folder": "Nessuna cartella è configurata per il tuo reparto: chiedi all'amministratore.",
+                "onedrive": "OneDrive non è connesso: collegalo dalla pagina Connessioni.",
+                "dynamics": "Dynamics 365 non è connesso: collegalo dalla pagina Connessioni.",
+            }.get(src, "Fonte dati non disponibile.")
+        if _err_msg:
+            _msg = _err_msg
+            def _src_err():
+                yield "data: " + json.dumps({"type": "error", "text": _msg}, ensure_ascii=False) + "\n\n"
+            return StreamingResponse(_src_err(), media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     def _build_context() -> tuple[str, list]:
         """Costruisce contesto e fonti secondo i toggle dell'utente. Viene
         eseguito DENTRO il generatore di risposta (in un thread) così il primo
@@ -253,8 +288,6 @@ def api_chat(request: Request, body: ChatRequest):
         if not body.free_mode:
             try:
                 dept = user.get("department") or ""
-                use_kb = store.get_user_setting(uid, "use_kb", "1") == "1"
-                use_folder = store.get_user_setting(uid, "use_folder", "1") == "1"
                 # Query di ricerca arricchita per TUTTE le fonti (KB, cartelle,
                 # OneDrive, Dynamics): i follow-up ("e per il 2025?") ereditano il
                 # soggetto dal turno precedente, e la concept map desktop aggiunge
@@ -293,13 +326,19 @@ def api_chat(request: Request, body: ChatRequest):
                     except Exception as e:
                         import sys
                         print(f"[search] riscrittura AI non disponibile, uso query deterministica: {str(e)[:120]}", file=sys.stderr)
-                parts = [knowledge.retrieve(dept, search_q, use_kb=use_kb, use_folder=use_folder)]
-                if store.get_user_setting(uid, "use_onedrive", "0") == "1" and connectors.is_connected(uid, "onedrive"):
+                # FONTE SINGOLA per domanda (flag sotto la chat): la scelta
+                # dell'utente decide DOVE cercare; niente ricerche a tappeto.
+                parts = []
+                if src == "kb":
+                    parts.append(knowledge.retrieve(dept, search_q, use_kb=True, use_folder=False))
+                elif src == "folder":
+                    parts.append(knowledge.retrieve(dept, search_q, use_kb=False, use_folder=True))
+                elif src == "onedrive":
                     od, od_links = connectors.search_with_links(uid, "onedrive", search_q, max_results=5)
                     if od.strip():
                         parts.append("[OneDrive]\n" + od)
                     source_links.extend(od_links)
-                if store.get_user_setting(uid, "use_dynamics", "0") == "1" and connectors.is_connected(uid, "dynamics"):
+                elif src == "dynamics":
                     dy, dy_links = connectors.search_with_links(uid, "dynamics", search_q, max_results=5, current_user_name=uid, ai_settings=settings)
                     if dy.strip():
                         parts.append("[Dynamics 365]\n" + dy)
@@ -327,12 +366,20 @@ def api_chat(request: Request, body: ChatRequest):
         except Exception:
             mem_ctx, fb_ctx = "", ""
 
+    hist_text = ""
     if gen_fmt:
-        _audit(request, uid, "generazione_documento", f"formato={gen_fmt}")
+        _turns = []
+        for m in clean[:-1][-6:]:
+            _role = "Utente" if m.get("role") == "user" else "Assistente"
+            _turns.append(f"{_role}: {str(m.get('content', ''))[:800]}")
+        hist_text = "\n".join(_turns)
+
+    if gen_fmt:
+        _audit(request, uid, "generazione_documento", f"formato={gen_fmt}, fonte={src or '-'}")
     else:
         _audit(request, uid, "chat",
                f"modalita={'libera' if body.free_mode else 'documentale'}, "
-               f"allegati={len(body.attachments or [])}, motore={body.engine}")
+               f"fonte={src or '-'}, allegati={len(body.attachments or [])}, motore={body.engine}")
 
     _PING = "data: " + json.dumps({"type": "ping"}, ensure_ascii=False) + "\n\n"
 
@@ -377,7 +424,7 @@ def api_chat(request: Request, body: ChatRequest):
             try:
                 yield "data: " + json.dumps({"type": "delta", "text": "Sto preparando il file…\n\n"}, ensure_ascii=False) + "\n\n"
                 path, fname = None, None
-                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, settings)):
+                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, settings, hist_text)):
                     if isinstance(item, tuple) and item[0] == "result":
                         path, fname = item[1]
                     else:

@@ -110,6 +110,13 @@
     const free = modeSel && modeSel.value === "free";
     const el = document.getElementById("st-mode");
     if (el) el.textContent = free ? "AI libera" : "Documentale";
+    // i flag "Dove cercare?" esistono solo in Documentale
+    var picker = document.getElementById("src-picker");
+    if (picker) picker.style.display = free ? "none" : "flex";
+  }
+  function selectedSource() {
+    var r = document.querySelector('input[name="datasource"]:checked');
+    return r ? r.value : "";
   }
   engineSel.addEventListener("change", refreshStatus);
   if (modeSel) modeSel.addEventListener("change", refreshMode);
@@ -211,6 +218,11 @@
   async function send() {
     const text = inputEl.value.trim();
     if (!text) return;
+    // In Documentale serve UNA fonte dati selezionata: popup e stop.
+    if (modeSel && modeSel.value !== "free" && !selectedSource()) {
+      alert(I18N.pickSource || "Seleziona una fonte dati (Conoscenza, Cartelle, OneDrive o Dynamics 365) prima di inviare, oppure passa alla modalità AI libera.");
+      return;
+    }
 
     addMessage("user", text);
     history.push({ role: "user", content: text });
@@ -231,6 +243,7 @@
           tone: toneSel.value,
           reply_lang: langSel.value,
           free_mode: modeSel && modeSel.value === "free",
+          source: selectedSource(),
           session_id: sessionId,
           attachments: attachments.filter(function(a){return a.text;})
                                   .map(function(a){return {name:a.name, text:a.text};}),

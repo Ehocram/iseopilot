@@ -55,6 +55,14 @@ def build_system(tone_key: str, reply_lang: str, context: str = "",
         parts.append(li)
     # Evita che Claude aggiunga note di anonimizzazione: le gestiamo noi a valle.
     parts.append("Non aggiungere note o avvisi sull'anonimizzazione dei dati.")
+    # Il modello vive dentro ISEOPilot, che SA generare file scaricabili: non
+    # deve mai negare questa capacità (creava risposte fuorvianti agli utenti).
+    parts.append(
+        "IMPORTANTE: l'applicazione ISEOPilot in cui operi PUÒ generare file "
+        "scaricabili (Word, Excel, PowerPoint, PDF) sui modelli aziendali. Se "
+        "l'utente desidera un file, non dire mai che non è possibile: invitalo a "
+        "chiederlo esplicitamente (es. \"creami un PowerPoint su...\") e il file "
+        "verrà preparato con il link di download sotto la risposta.")
     if free_mode:
         # MODALITÀ AI LIBERA (AI ON): conoscenza generale, nessuna ricerca nelle
         # fonti aziendali. Porting del comportamento del pulsante "🤖 AI" desktop.
