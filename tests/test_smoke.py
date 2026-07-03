@@ -811,6 +811,30 @@ def test_login_writes_audit():
     assert len(rows) >= 1
 
 
+def test_kb_upload_reports_reasons():
+    from unittest.mock import patch
+    from app import knowledge as kn
+    store.create_user("kbup@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "kbup@test", "Password123!")
+    # ingest che fallisce con un motivo: il motivo DEVE arrivare all'utente
+    with patch.object(kn, "kb_available", return_value=True), \
+         patch.object(kn, "extract_text", return_value="testo di prova"), \
+         patch.object(kn, "kb_ingest", return_value=(False, "Errore indicizzazione: conflitto embedding")):
+        r = c.post("/knowledge/upload",
+                   files=[("files", ("GPO 19.11 Password policy (IT).pdf", b"%PDF-1.4 fake", "application/pdf"))],
+                   follow_redirects=False)
+    loc = r.headers.get("location", "")
+    assert "Errore+indicizzazione" in loc and "conflitto+embedding" in loc
+    # PDF senza testo estraibile: suggerimento "PDF scansionato"
+    with patch.object(kn, "kb_available", return_value=True), \
+         patch.object(kn, "extract_text", return_value=""), \
+         patch.object(kn, "kb_ingest", return_value=(False, "Nessun testo estraibile")):
+        r2 = c.post("/knowledge/upload",
+                    files=[("files", ("GPO scan.pdf", b"%PDF-1.4 fake", "application/pdf"))],
+                    follow_redirects=False)
+    assert "PDF+scansionato" in r2.headers.get("location", "")
+
+
 def test_password_policy():
     from app.auth import validate_password
     # conformi

@@ -1070,14 +1070,28 @@ def knowledge_upload(request: Request, files: list[UploadFile] = File(...)):
             if done:
                 ok_count += 1
             else:
-                fail.append(f.filename)
-        except Exception:
-            fail.append(f.filename)
+                # FAIL LOUDLY: il motivo va mostrato, mai solo il nome del file
+                reason = (_msg or "motivo sconosciuto").strip()
+                if not (text or "").strip() and ext == ".pdf":
+                    reason = ("nessun testo estraibile: probabile PDF scansionato "
+                              "(solo immagini, servirebbe OCR)")
+                fail.append(f"{f.filename} ({reason})")
+                import sys
+                print(f"[kb-upload] KO {f.filename}: {reason}", file=sys.stderr)
+        except Exception as e:
+            fail.append(f"{f.filename} (errore: {str(e)[:120]})")
+            import sys
+            print(f"[kb-upload] ECCEZIONE {f.filename}: {e}", file=sys.stderr)
     msg = f"{ok_count}+file+indicizzati+nella+collezione+del+dipartimento."
-    _audit(request, user["username"], "upload_conoscenza", f"reparto={dept}, file_ok={ok_count}, falliti={len(fail)}")
+    _audit(request, user["username"], "upload_conoscenza",
+           f"reparto={dept}, file_ok={ok_count}, falliti={len(fail)}"
+           + (f", motivi={'; '.join(fail[:3])[:300]}" if fail else ""))
     if fail:
+        elenco = "; ".join(fail)
+        if len(elenco) > 800:
+            elenco = elenco[:800] + f"… (+{len(fail)} file)"
         return RedirectResponse(
-            url=f"/knowledge?msg={msg}&err=" + "+".join(("Non+caricati:", *fail))[:300],
+            url="/knowledge?msg=" + msg + "&err=" + ("Non caricati: " + elenco).replace(" ", "+"),
             status_code=303)
     return RedirectResponse(url=f"/knowledge?msg={msg}", status_code=303)
 
