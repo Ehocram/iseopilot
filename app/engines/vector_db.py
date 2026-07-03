@@ -110,8 +110,12 @@ class VectorDBManager:
             # quando real_model è un percorso assoluto del bundle.
             import os as _os
             model_ident = _os.path.basename(real_model.rstrip("/")) if ("/" in real_model or "\\" in real_model) else real_model
-            model_tag = re.sub(r"[^a-z0-9]+", "_", model_ident.lower()).strip("_")[:24]
-            coll_name_eff = f"{coll_name}__{model_tag}"
+            # NB: il taglio a 24 caratteri può lasciare un "_" finale (successo
+            # col modello multilingue: 'paraphrase_multilingual_') e ChromaDB
+            # esige nomi che iniziano e finiscono con [a-zA-Z0-9]. Strip DOPO
+            # il taglio + cintura finale sull'intero nome.
+            model_tag = re.sub(r"[^a-z0-9]+", "_", model_ident.lower()).strip("_")[:24].strip("_")
+            coll_name_eff = f"{coll_name}__{model_tag}".strip("._-") or "kb_default"
 
             # ── Cache client ────────────────────────────────
             if mode == "local":
@@ -192,7 +196,13 @@ class VectorDBManager:
                     self._collection.delete(ids=existing["ids"])
             except Exception:
                 pass
-            ids   = [f"{filename}__chunk_{i}" for i in range(len(chunks))]
+            # ID Chroma-safe: dal nome file grezzo (spazi, parentesi, unicode)
+            # a uno slug [a-zA-Z0-9._-] + hash breve per unicità. Il nome
+            # ORIGINALE resta nel metadata 'source' (visualizzazione e delete).
+            import hashlib as _hl
+            _base = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)[:180].strip("._-") or "doc"
+            _sid = f"{_base}-{_hl.md5(filename.encode('utf-8')).hexdigest()[:8]}"
+            ids   = [f"{_sid}__chunk_{i}" for i in range(len(chunks))]
             metas = [{"source": filename, "chunk": i,
                       "date": datetime.datetime.now().isoformat()} for i in range(len(chunks))]
             self._collection.add(documents=chunks, ids=ids, metadatas=metas)

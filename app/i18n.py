@@ -210,6 +210,7 @@ PAIRS = {
     "Sto preparando il file…": "Preparing the file…",
     "La password non rispetta i requisiti: almeno 12 caratteri, una lettera maiuscola e un carattere speciale.": "The password does not meet the requirements: at least 12 characters, one uppercase letter and one special character.",
     "Almeno 12 caratteri, con almeno una lettera maiuscola e un carattere speciale (es. ! ? @ # - _).": "At least 12 characters, with at least one uppercase letter and one special character (e.g. ! ? @ # - _).",
+    "Caricamento": "Uploading",
     "AI libera": "Free AI",
     "Allega file (fino a 20)": "Attach files (up to 20)",
     "Estraggo il testo…": "Extracting text…",

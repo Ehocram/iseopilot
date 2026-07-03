@@ -811,6 +811,44 @@ def test_login_writes_audit():
     assert len(rows) >= 1
 
 
+def test_chroma_collection_name_valid_with_multilingual():
+    import re as _re
+    # riproduzione ESATTA del bug: tag del modello multilingue troncato a 24
+    # lasciava un underscore finale -> nome collezione rifiutato da Chroma
+    model_ident = "paraphrase-multilingual-MiniLM-L12-v2"
+    tag = _re.sub(r"[^a-z0-9]+", "_", model_ident.lower()).strip("_")[:24].strip("_")
+    name = f"kb_infosec__{tag}"
+    assert _re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,510}[a-zA-Z0-9]", name), name
+    assert not name.endswith("_")
+    # anche il vecchio modello resta valido e stabile (nessuna migrazione)
+    tag2 = _re.sub(r"[^a-z0-9]+", "_", "all-minilm-l6-v2".lower()).strip("_")[:24].strip("_")
+    assert tag2 == "all_minilm_l6_v2"
+
+
+def test_chroma_safe_document_ids():
+    import re as _re, hashlib
+    fname = "GDOC 19.3.1 List of Legal, Regulatory (EN).pdf"
+    base = _re.sub(r"[^a-zA-Z0-9._-]", "_", fname)[:180].strip("._-") or "doc"
+    sid = f"{base}-{hashlib.md5(fname.encode()).hexdigest()[:8]}__chunk_0"
+    assert _re.fullmatch(r"[a-zA-Z0-9._-]+", sid), sid
+
+
+def test_kb_upload_ajax_batch_mode():
+    from unittest.mock import patch
+    from app import knowledge as kn
+    store.create_user("kbaj@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "kbaj@test", "Password123!")
+    with patch.object(kn, "kb_available", return_value=True), \
+         patch.object(kn, "extract_text", return_value="testo"), \
+         patch.object(kn, "kb_ingest", return_value=(True, "ok")):
+        r = c.post("/knowledge/upload?ajax=1",
+                   files=[("files", ("GPO 19.1 policy (EN).pdf", b"%PDF fake", "application/pdf"))])
+    assert r.status_code == 200 and r.json()["ok"] == 1 and r.json()["fail"] == []
+    # la pagina contiene la logica dei lotti
+    html = c.get("/knowledge").text
+    assert "ajax=1" in html and "BATCH" in html
+
+
 def test_kb_upload_reports_reasons():
     from unittest.mock import patch
     from app import knowledge as kn

@@ -1086,6 +1086,11 @@ def knowledge_upload(request: Request, files: list[UploadFile] = File(...)):
     _audit(request, user["username"], "upload_conoscenza",
            f"reparto={dept}, file_ok={ok_count}, falliti={len(fail)}"
            + (f", motivi={'; '.join(fail[:3])[:300]}" if fail else ""))
+    # Modalità AJAX (caricamento a LOTTI dal browser): risposta JSON per lotto.
+    # Nata per l'Application Proxy, che rifiuta i POST multipart molto grandi
+    # (upload di intere cartelle): il client spezza in richieste piccole.
+    if request.query_params.get("ajax") == "1":
+        return JSONResponse({"ok": ok_count, "fail": fail})
     if fail:
         elenco = "; ".join(fail)
         if len(elenco) > 800:

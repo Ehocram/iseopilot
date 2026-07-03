@@ -109,6 +109,43 @@
     const list = document.getElementById("dzlist");
     const drop = document.getElementById("drop");
     if (!input) return;
+
+    // ── Upload a LOTTI ──────────────────────────────────────
+    // L'Application Proxy rifiuta i POST multipart molto grandi (upload di
+    // intere cartelle → ERR_ACCESS_DENIED). Sopra la soglia, il form viene
+    // intercettato e i file partono a lotti di 4 con avanzamento visibile.
+    const BATCH = 4;
+    const form = document.getElementById("upform");
+    if (form) form.addEventListener("submit", async function (ev) {
+      const files = Array.from(input.files || []);
+      if (files.length <= BATCH) return; // pochi file: invio classico
+      ev.preventDefault();
+      const btn = form.querySelector("button[type=submit]");
+      if (btn) btn.disabled = true;
+      let ok = 0; let fail = [];
+      try {
+        for (let i = 0; i < files.length; i += BATCH) {
+          const fd = new FormData();
+          files.slice(i, i + BATCH).forEach(function (f) { fd.append("files", f, f.name); });
+          if (btn) btn.textContent = "{{ t('Caricamento') }} " + Math.min(i + BATCH, files.length) + "/" + files.length + "…";
+          const r = await fetch("/knowledge/upload?ajax=1", { method: "POST", body: fd });
+          if (!r.ok) { fail.push("(lotto " + (Math.floor(i / BATCH) + 1) + ": HTTP " + r.status + ")"); continue; }
+          const j = await r.json();
+          ok += (j.ok || 0);
+          (j.fail || []).forEach(function (x) { fail.push(x); });
+        }
+      } catch (e) {
+        fail.push("(interrotto: " + (e && e.message ? e.message : "errore di rete") + ")");
+      }
+      let url = "/knowledge?msg=" + encodeURIComponent(ok + " file indicizzati nella collezione del dipartimento.");
+      if (fail.length) {
+        let elenco = fail.join("; ");
+        if (elenco.length > 800) elenco = elenco.slice(0, 800) + "… (+" + fail.length + " file)";
+        url += "&err=" + encodeURIComponent("Non caricati: " + elenco);
+      }
+      location.href = url;
+    });
+
     function render() {
       const files = Array.from(input.files || []);
       list.innerHTML = files.slice(0, 30).map(f => "<span class='chip'>" + f.name + "</span>").join("");
