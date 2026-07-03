@@ -952,6 +952,64 @@ def test_account_requires_login():
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
 
 
+def test_attach_relevant_slice_finds_deep_excel_row():
+    from app.main import _build_attach_block
+    # Excel simulato: 3000 righe, il valore cercato sta alla riga 2500 —
+    # ben oltre qualunque quota di testa
+    rows = ["Fornitore;Articolo;Importo"]
+    rows += [f"Fornitore{i};ART-{i};{i}.00" for i in range(1, 3000)]
+    rows[2500] = "PANDIGITAL SRL;ART-SPECIALE;12.345,67"
+    text = chr(10).join(rows)
+    block = _build_attach_block([{"name": "listino.xlsx", "text": text}],
+                                query="qual è l'importo di PANDIGITAL per ART-SPECIALE?")
+    # la riga profonda È nel contesto, con intestazioni e selezione dichiarata
+    assert "12.345,67" in block and "Fornitore;Articolo;Importo" in block
+    assert "righe pertinenti" in block
+    # domanda senza corrispondenze: fallback alla testa, troncamento dichiarato
+    block2 = _build_attach_block([{"name": "listino.xlsx", "text": text}],
+                                 query="riassumi il documento")
+    assert "TRONCATO" in block2
+
+
+def test_attach_block_fair_budget_and_truncation():
+    from app.main import _build_attach_block, ATTACH_TOTAL_BUDGET
+    big = "X" * 30000
+    atts = [{"name": "listino.xlsx", "text": big},
+            {"name": "offerta.pdf", "text": big},
+            {"name": "contratto.docx", "text": big}]
+    block = _build_attach_block(atts)
+    # TUTTI i file presenti (prima il taglio a 14k totali faceva sparire il 2° e 3°)
+    for n in ("listino.xlsx", "offerta.pdf", "contratto.docx"):
+        assert n in block
+    assert len(block) <= ATTACH_TOTAL_BUDGET + 2000
+    # troncamento DICHIARATO al modello
+    assert "TRONCATO" in block and "testo troncato" in block
+    # file piccolo: intatto, nessun marcatore
+    block2 = _build_attach_block([{"name": "nota.txt", "text": "valore: 42"}])
+    assert "valore: 42" in block2 and "TRONCATO" not in block2
+
+
+def test_api_attach_reports_real_length():
+    from unittest.mock import patch
+    from app import knowledge as kn
+    store.create_user("att2@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "att2@test", "Password123!")
+    with patch.object(kn, "extract_attachment_text", return_value="Y" * 50000):
+        r = c.post("/api/attach", files=[("files", ("relazione.pdf", b"fake", "application/pdf"))])
+    a = r.json()["attachments"][0]
+    # chars dichiara la lunghezza REALE, il testo viaggia entro il budget per-file
+    assert a["ok"] and a["chars"] == 50000 and len(a["text"]) == 30000
+    # i TABELLARI hanno budget dedicato ampio (200k): l'Excel non perde le righe
+    with patch.object(kn, "extract_attachment_text", return_value="Z" * 300000):
+        r2 = c.post("/api/attach", files=[("files", ("listino.xlsx", b"fake", "application/vnd.ms-excel"))])
+    a2 = r2.json()["attachments"][0]
+    assert a2["ok"] and a2["chars"] == 300000 and len(a2["text"]) == 200000
+
+
+def test_attach_block_fair_budget_placeholder():
+    pass
+
+
 def test_chat_stream_status_indicator():
     store.create_user("stat@test", auth.hash_password("Password123"), "IT")
     c = fresh_client(); login(c, "stat@test", "Password123")

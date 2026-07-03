@@ -96,6 +96,87 @@ def _ctx(request: Request, user: dict, **extra) -> dict:
     return base
 
 
+# Budget del contesto allegati: con Claude (200k token) i vecchi tagli a
+# 12-14k caratteri TOTALI facevano sparire i file oltre il primo. Ora: budget
+# ampio, ripartito EQUAMENTE tra i file, con troncamenti DICHIARATI al modello.
+ATTACH_TOTAL_BUDGET = 60000
+ATTACH_MIN_PER_FILE = 4000
+
+
+def _relevant_slice(text: str, query: str, quota: int) -> tuple[str, bool]:
+    """Se il testo supera la quota, seleziona INTESTAZIONI + RIGHE PERTINENTI
+    alla domanda (stessa filosofia dello snippet FTS: la finestra intorno a
+    ciò che cerchi, non le prime righe alla cieca). Pensato per gli Excel:
+    'estrai il valore di X' trova la riga di X anche se è la n. 2500.
+    Ritorna (testo, selezionato_per_pertinenza)."""
+    if len(text) <= quota:
+        return text, False
+    import re as _re
+    try:
+        from .engines.folder_index import _STOP as _stop
+    except Exception:
+        _stop = set()
+    terms = [w for w in _re.findall(r"[a-zà-ÿ0-9]{3,}", (query or "").lower())
+             if w not in _stop]
+    lines = text.splitlines()
+    head = lines[:15]  # intestazioni: contesto delle colonne
+    if terms:
+        # PUNTEGGIO: righe che matchano PIÙ termini distinti prima (la riga
+        # giusta di un Excel matcha nome+articolo+campo; un termine corto e
+        # generico da solo non basta a riempire la quota)
+        scored = []
+        for idx, ln in enumerate(lines[15:], start=15):
+            ll = ln.lower()
+            score = sum(1 for t in terms if t in ll)
+            if score > 0:
+                scored.append((-score, idx, ln))
+        scored.sort()
+        _marker = "[…righe non pertinenti alla domanda omesse…]"
+        picked_idx, used = [], sum(len(l) + 1 for l in head) + len(_marker) + 2
+        for _neg, idx, ln in scored:
+            if used + len(ln) + 1 > quota:
+                break
+            picked_idx.append((idx, ln))
+            used += len(ln) + 1
+        if picked_idx:
+            picked_idx.sort()  # ordine originale del file per coerenza
+            body = ("\n".join(head) + "\n" + _marker + "\n"
+                    + "\n".join(ln for _i, ln in picked_idx))
+            return body, True
+    return text[:quota], False
+
+
+def _build_attach_block(attachments: list, query: str = "") -> str:
+    """Blocco [ALLEGATO ...] per il contesto: budget equo tra i file, selezione
+    per pertinenza sui file grandi e troncamenti DICHIARATI, così il modello lo
+    dice all'utente invece di 'non trovare' un valore tagliato via."""
+    items = []
+    for a in (attachments or [])[:20]:
+        name = str(a.get("name", "allegato"))
+        text = str(a.get("text", ""))
+        if text.strip():
+            items.append((name, text))
+    if not items:
+        return ""
+    quota = max(ATTACH_MIN_PER_FILE, ATTACH_TOTAL_BUDGET // len(items))
+    parts = []
+    for i, (name, text) in enumerate(items, 1):
+        shown, by_rel = _relevant_slice(text, query, quota)
+        cut = len(text) > quota
+        header = f"[ALLEGATO {i}/{len(items)}: {name} — {len(text)} caratteri"
+        if by_rel:
+            header += ", mostrate intestazioni e righe pertinenti alla domanda]"
+            tail = "\n[selezione per pertinenza: se un dato manca, chiedi all'utente termini più specifici]"
+        elif cut:
+            header += f", TRONCATO ai primi {quota}]"
+            tail = "\n[…testo troncato: segnala all'utente che il file è più lungo…]"
+        else:
+            header += "]"
+            tail = ""
+        parts.append(f"{header}\n{shown}{tail}")
+    return "\n\n".join(parts)[:ATTACH_TOTAL_BUDGET + 2000]
+
+
 def _select_sources(source_links: list, resp_text: str) -> list:
     """Sceglie le fonti da mostrare sotto la risposta.
 
@@ -280,15 +361,7 @@ def api_chat(request: Request, body: ChatRequest):
 
     # Allegati della conversazione: hanno priorità e valgono SEMPRE, anche in AI
     # libera (l'utente allega un file e chiede sintesi/elaborazione).
-    attach_block = ""
-    if body.attachments:
-        ab = []
-        for a in body.attachments[:20]:
-            name = str(a.get("name", "allegato"))
-            text = str(a.get("text", ""))[:12000]
-            if text.strip():
-                ab.append(f"[ALLEGATO: {name}]\n{text}")
-        attach_block = "\n\n".join(ab)
+    attach_block = _build_attach_block(body.attachments, query)
 
     # ── FONTE DATI (documentale): UNA sola per domanda, obbligatoria ──
     # Il popup lato client avvisa, ma la validazione vera è qui (client
@@ -400,8 +473,10 @@ def api_chat(request: Request, body: ChatRequest):
                 context = ""
 
         # Gli allegati precedono il resto del contesto (massima priorità).
+        # NB: niente taglio cieco del totale — il blocco allegati ha già il suo
+        # budget equo e il retrieval il proprio; sommarli è sostenibile.
         if attach_block:
-            context = (attach_block + ("\n\n" + context if context else ""))[:14000]
+            context = attach_block + ("\n\n" + context if context else "")
         return context, source_links
 
     # ── Generazione documenti su richiesta (Word/Excel/PPT/PDF) ──
@@ -429,7 +504,7 @@ def api_chat(request: Request, body: ChatRequest):
     else:
         _audit(request, uid, "chat",
                f"modalita={'libera' if body.free_mode else 'documentale'}, "
-               f"fonte={src or '-'}, allegati={len(body.attachments or [])}, motore={body.engine}")
+               f"fonte={src or '-'}, allegati={len(body.attachments or [])} ({len(attach_block)} car.), motore={body.engine}")
 
     _PING = "data: " + json.dumps({"type": "ping"}, ensure_ascii=False) + "\n\n"
 
@@ -540,11 +615,19 @@ async def api_attach(request: Request, files: list[UploadFile] = File(...)):
                 out.append({"name": f.filename, "ok": False, "error": "File troppo grande (max 25 MB)"})
                 continue
             text = knowledge.extract_attachment_text(f.filename or "", raw)
+            import sys
             if not text.strip():
+                print(f"[attach] {user['username']}: {f.filename} ({len(raw)} byte) -> NESSUN TESTO", file=sys.stderr)
                 out.append({"name": f.filename, "ok": False, "error": "Nessun testo estraibile"})
                 continue
+            print(f"[attach] {user['username']}: {f.filename} ({len(raw)} byte) -> {len(text)} caratteri estratti", file=sys.stderr)
+            # chars = lunghezza REALE; text limitato al budget per-file (il
+            # blocco allegati dichiara al modello gli eventuali troncamenti).
+            # I TABELLARI (Excel/CSV) esplodono in testo: budget dedicato ampio,
+            # la selezione per pertinenza avviene poi al momento della domanda.
+            _cap = 200_000 if ext in (".xlsx", ".xls", ".csv") else 30_000
             out.append({"name": f.filename, "ok": True,
-                        "chars": len(text), "text": text[:14000]})
+                        "chars": len(text), "text": text[:_cap]})
         except Exception as e:
             out.append({"name": f.filename, "ok": False, "error": str(e)[:120]})
     return {"attachments": out}
