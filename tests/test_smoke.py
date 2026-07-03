@@ -952,19 +952,54 @@ def test_account_requires_login():
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
 
 
+def test_attach_counting_contract_zbook():
+    """Regressione del caso reale: 'quanti HP ZBook?' su un report asset —
+    TUTTE le righe corrispondenti nel contesto e conteggio dichiarato."""
+    import io, random
+    import openpyxl
+    from app import knowledge
+    from app.main import _build_attach_block
+    random.seed(7)
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "REPORT ASSETS"
+    ws.append(["Asset Tag", "Modello", "Marca", "Serial #", "Stato"])
+    zrows = set(random.sample(range(2, 800), 15))
+    for i in range(2, 802):
+        if i in zrows:
+            ws.append([f"ASSET-{i:05d}", "HP ZBook Power G7", "HEWLETT PACKARD", f"5CD{i:07d}", "attivo"])
+        else:
+            ws.append([f"ASSET-{i:05d}", "Latitude 5440", "DELL", f"SN{i:08d}", "attivo"])
+    buf = io.BytesIO(); wb.save(buf)
+    text = knowledge.extract_attachment_text("report.xlsx", buf.getvalue())
+    assert text.lower().count("zbook") == 15  # estrazione integrale
+    block = _build_attach_block([{"name": "report.xlsx", "text": text, "chars": len(text)}],
+                                query="quanti dispositivi hp zbook abbiamo?")
+    # se il testo entra in quota va incluso per intero; in ogni caso i 15 zbook ci sono
+    assert block.lower().count("zbook") >= 15
+    # testo PARZIALE dichiarato quando i caratteri reali superano il testo disponibile
+    block2 = _build_attach_block([{"name": "report.xlsx", "text": text[:5000], "chars": len(text)}],
+                                 query="quanti hp zbook?")
+    assert "PARZIALE" in block2
+    # guardia anti-termini generici: 'asset' matcha ogni riga e NON deve
+    # inondare la selezione — le righe zbook restano tutte incluse
+    big = "\n".join([text] * 4)  # ben oltre la quota: forza la selezione
+    block3 = _build_attach_block([{"name": "report.xlsx", "text": big, "chars": len(big)}],
+                                 query="quanti asset hp zbook risultano nel report?")
+    assert "RIGHE CORRISPONDENTI" in block3 and block3.lower().count("zbook") >= 45
+
+
 def test_attach_relevant_slice_finds_deep_excel_row():
     from app.main import _build_attach_block
     # Excel simulato: 3000 righe, il valore cercato sta alla riga 2500 —
     # ben oltre qualunque quota di testa
     rows = ["Fornitore;Articolo;Importo"]
-    rows += [f"Fornitore{i};ART-{i};{i}.00" for i in range(1, 3000)]
-    rows[2500] = "PANDIGITAL SRL;ART-SPECIALE;12.345,67"
+    rows += [f"Fornitore{i};ART-{i};{i}.00" for i in range(1, 6000)]
+    rows[4500] = "PANDIGITAL SRL;ART-SPECIALE;12.345,67"
     text = chr(10).join(rows)
     block = _build_attach_block([{"name": "listino.xlsx", "text": text}],
                                 query="qual è l'importo di PANDIGITAL per ART-SPECIALE?")
     # la riga profonda È nel contesto, con intestazioni e selezione dichiarata
     assert "12.345,67" in block and "Fornitore;Articolo;Importo" in block
-    assert "righe pertinenti" in block
+    assert "RIGHE CORRISPONDENTI" in block
     # domanda senza corrispondenze: fallback alla testa, troncamento dichiarato
     block2 = _build_attach_block([{"name": "listino.xlsx", "text": text}],
                                  query="riassumi il documento")
@@ -973,7 +1008,7 @@ def test_attach_relevant_slice_finds_deep_excel_row():
 
 def test_attach_block_fair_budget_and_truncation():
     from app.main import _build_attach_block, ATTACH_TOTAL_BUDGET
-    big = "X" * 30000
+    big = "X" * 60000
     atts = [{"name": "listino.xlsx", "text": big},
             {"name": "offerta.pdf", "text": big},
             {"name": "contratto.docx", "text": big}]
@@ -981,7 +1016,7 @@ def test_attach_block_fair_budget_and_truncation():
     # TUTTI i file presenti (prima il taglio a 14k totali faceva sparire il 2° e 3°)
     for n in ("listino.xlsx", "offerta.pdf", "contratto.docx"):
         assert n in block
-    assert len(block) <= ATTACH_TOTAL_BUDGET + 2000
+    assert len(block) <= ATTACH_TOTAL_BUDGET + 4000
     # troncamento DICHIARATO al modello
     assert "TRONCATO" in block and "testo troncato" in block
     # file piccolo: intatto, nessun marcatore
@@ -1000,10 +1035,10 @@ def test_api_attach_reports_real_length():
     # chars dichiara la lunghezza REALE, il testo viaggia entro il budget per-file
     assert a["ok"] and a["chars"] == 50000 and len(a["text"]) == 30000
     # i TABELLARI hanno budget dedicato ampio (200k): l'Excel non perde le righe
-    with patch.object(kn, "extract_attachment_text", return_value="Z" * 300000):
+    with patch.object(kn, "extract_attachment_text", return_value="Z" * 700000):
         r2 = c.post("/api/attach", files=[("files", ("listino.xlsx", b"fake", "application/vnd.ms-excel"))])
     a2 = r2.json()["attachments"][0]
-    assert a2["ok"] and a2["chars"] == 300000 and len(a2["text"]) == 200000
+    assert a2["ok"] and a2["chars"] == 700000 and len(a2["text"]) == 600000
 
 
 def test_attach_block_fair_budget_placeholder():

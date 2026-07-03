@@ -99,18 +99,18 @@ def _ctx(request: Request, user: dict, **extra) -> dict:
 # Budget del contesto allegati: con Claude (200k token) i vecchi tagli a
 # 12-14k caratteri TOTALI facevano sparire i file oltre il primo. Ora: budget
 # ampio, ripartito EQUAMENTE tra i file, con troncamenti DICHIARATI al modello.
-ATTACH_TOTAL_BUDGET = 60000
-ATTACH_MIN_PER_FILE = 4000
+ATTACH_TOTAL_BUDGET = 120000
+ATTACH_MIN_PER_FILE = 6000
 
 
-def _relevant_slice(text: str, query: str, quota: int) -> tuple[str, bool]:
+def _relevant_slice(text: str, query: str, quota: int):
     """Se il testo supera la quota, seleziona INTESTAZIONI + RIGHE PERTINENTI
-    alla domanda (stessa filosofia dello snippet FTS: la finestra intorno a
-    ciò che cerchi, non le prime righe alla cieca). Pensato per gli Excel:
-    'estrai il valore di X' trova la riga di X anche se è la n. 2500.
-    Ritorna (testo, selezionato_per_pertinenza)."""
+    alla domanda (stessa filosofia dello snippet FTS). Pensato per gli Excel:
+    'quanti X ci sono?' deve vedere TUTTE le righe di X, e il conteggio viene
+    dichiarato nell'intestazione del blocco (contratto dei conteggi).
+    Ritorna (testo, per_pertinenza, righe_trovate, righe_incluse, termini)."""
     if len(text) <= quota:
-        return text, False
+        return text, False, 0, 0, []
     import re as _re
     try:
         from .engines.folder_index import _STOP as _stop
@@ -121,15 +121,20 @@ def _relevant_slice(text: str, query: str, quota: int) -> tuple[str, bool]:
     lines = text.splitlines()
     head = lines[:15]  # intestazioni: contesto delle colonne
     if terms:
-        # PUNTEGGIO: righe che matchano PIÙ termini distinti prima (la riga
-        # giusta di un Excel matcha nome+articolo+campo; un termine corto e
-        # generico da solo non basta a riempire la quota)
+        # GUARDIA anti-termini generici: un termine che matcha oltre metà del
+        # file (es. 'asset' in ogni riga di un report asset) non discrimina e
+        # inonderebbe la quota: viene scartato dal punteggio.
+        low_lines = [ln.lower() for ln in lines[15:]]
+        soglia = max(50, len(low_lines) // 2)
+        terms = [t for t in terms
+                 if sum(1 for ll in low_lines if t in ll) <= soglia]
+    if terms:
         scored = []
-        for idx, ln in enumerate(lines[15:], start=15):
-            ll = ln.lower()
+        for idx, ll in enumerate(low_lines, start=15):
             score = sum(1 for t in terms if t in ll)
             if score > 0:
-                scored.append((-score, idx, ln))
+                scored.append((-score, idx, lines[idx]))
+        matched = len(scored)
         scored.sort()
         _marker = "[…righe non pertinenti alla domanda omesse…]"
         picked_idx, used = [], sum(len(l) + 1 for l in head) + len(_marker) + 2
@@ -142,39 +147,54 @@ def _relevant_slice(text: str, query: str, quota: int) -> tuple[str, bool]:
             picked_idx.sort()  # ordine originale del file per coerenza
             body = ("\n".join(head) + "\n" + _marker + "\n"
                     + "\n".join(ln for _i, ln in picked_idx))
-            return body, True
-    return text[:quota], False
+            return body, True, matched, len(picked_idx), terms
+    return text[:quota], False, 0, 0, []
 
 
 def _build_attach_block(attachments: list, query: str = "") -> str:
     """Blocco [ALLEGATO ...] per il contesto: budget equo tra i file, selezione
-    per pertinenza sui file grandi e troncamenti DICHIARATI, così il modello lo
-    dice all'utente invece di 'non trovare' un valore tagliato via."""
+    per pertinenza sui file grandi, CONTEGGI DICHIARATI (calcolati da noi, non
+    stimati dal modello) e ogni troncamento esplicitato. È il contratto che
+    rende gli allegati affidabili come in un prompt diretto."""
+    import sys
     items = []
     for a in (attachments or [])[:20]:
         name = str(a.get("name", "allegato"))
         text = str(a.get("text", ""))
+        chars_reali = int(a.get("chars") or len(text))
         if text.strip():
-            items.append((name, text))
+            items.append((name, text, chars_reali))
     if not items:
         return ""
     quota = max(ATTACH_MIN_PER_FILE, ATTACH_TOTAL_BUDGET // len(items))
     parts = []
-    for i, (name, text) in enumerate(items, 1):
-        shown, by_rel = _relevant_slice(text, query, quota)
+    for i, (name, text, chars_reali) in enumerate(items, 1):
+        shown, by_rel, matched, included, terms = _relevant_slice(text, query, quota)
         cut = len(text) > quota
+        parziale = chars_reali > len(text)
         header = f"[ALLEGATO {i}/{len(items)}: {name} — {len(text)} caratteri"
+        if parziale:
+            header += (f" su {chars_reali} ORIGINALI (testo PARZIALE: eventuali "
+                       "conteggi vanno dichiarati come parziali)")
+        tail = ""
         if by_rel:
-            header += ", mostrate intestazioni e righe pertinenti alla domanda]"
-            tail = "\n[selezione per pertinenza: se un dato manca, chiedi all'utente termini più specifici]"
+            t_str = ", ".join(terms[:6])
+            copertura = "TUTTE incluse" if included >= matched else f"incluse le prime {included}"
+            header += (f"; RIGHE CORRISPONDENTI ALLA DOMANDA: {matched} "
+                       f"(termini: {t_str}), {copertura}]")
+            tail = ("\n[selezione per pertinenza: per i conteggi usa il numero "
+                    "di righe corrispondenti dichiarato sopra; se un dato manca, "
+                    "chiedi all'utente termini più specifici]")
         elif cut:
-            header += f", TRONCATO ai primi {quota}]"
+            header += f"; TRONCATO ai primi {quota} caratteri]"
             tail = "\n[…testo troncato: segnala all'utente che il file è più lungo…]"
         else:
             header += "]"
-            tail = ""
         parts.append(f"{header}\n{shown}{tail}")
-    return "\n\n".join(parts)[:ATTACH_TOTAL_BUDGET + 2000]
+        print(f"[attach-ctx] {name}: testo={len(text)} reali={chars_reali} "
+              f"pertinenza={'sì' if by_rel else 'no'} trovate={matched} incluse={included} "
+              f"termini={terms[:6]}", file=sys.stderr)
+    return "\n\n".join(parts)[:ATTACH_TOTAL_BUDGET + 4000]
 
 
 def _select_sources(source_links: list, resp_text: str) -> list:
@@ -625,7 +645,7 @@ async def api_attach(request: Request, files: list[UploadFile] = File(...)):
             # blocco allegati dichiara al modello gli eventuali troncamenti).
             # I TABELLARI (Excel/CSV) esplodono in testo: budget dedicato ampio,
             # la selezione per pertinenza avviene poi al momento della domanda.
-            _cap = 200_000 if ext in (".xlsx", ".xls", ".csv") else 30_000
+            _cap = 600_000 if ext in (".xlsx", ".xls", ".xlsm", ".csv") else 30_000
             out.append({"name": f.filename, "ok": True,
                         "chars": len(text), "text": text[:_cap]})
         except Exception as e:

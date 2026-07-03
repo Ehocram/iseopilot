@@ -113,12 +113,49 @@ def _extract_pptx_text(raw: bytes) -> str:
         return ""
 
 
+# Tetto di sicurezza per gli ALLEGATI di chat: molto ampio (2M caratteri).
+# NB: l'estrattore delle cartelle ha un tetto a 400k pensato per l'INDICE FTS;
+# per gli allegati serve fedeltà totale ("quanti X ci sono?" deve contare
+# TUTTE le righe), quindi i tabellari hanno un percorso dedicato senza quel tetto.
+ATTACHMENT_MAX_CHARS = 2_000_000
+
+
+def _extract_xlsx_full(raw: bytes) -> str:
+    """Excel per allegati: TUTTI i fogli, TUTTE le righe (riga per riga,
+    tab-separate), senza il tetto da indicizzazione."""
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+    lines, tot = [], 0
+    for ws in wb.worksheets:
+        lines.append(f"[Foglio: {ws.title}]")
+        for row in ws.iter_rows(values_only=True):
+            ln = "\t".join(str(c) if c is not None else "" for c in row)
+            lines.append(ln)
+            tot += len(ln) + 1
+            if tot > ATTACHMENT_MAX_CHARS:
+                lines.append("[…estrazione interrotta al tetto di sicurezza…]")
+                return "\n".join(lines)
+    return "\n".join(lines)
+
+
 def extract_attachment_text(filename: str, raw: bytes) -> str:
     """Estrae il testo da un allegato di chat. Come extract_text ma include
-    anche le presentazioni PowerPoint."""
+    anche le presentazioni PowerPoint e, per i tabellari, l'estrazione
+    integrale (fedeltà da prompt: i conteggi devono tornare)."""
     ext = Path(filename).suffix.lower()
     if ext in {".pptx", ".ppt"}:
         return _extract_pptx_text(raw)
+    if ext in {".xlsx", ".xlsm"}:
+        try:
+            return _extract_xlsx_full(raw)
+        except Exception:
+            pass  # ripiego sul percorso standard
+    if ext == ".csv":
+        try:
+            return raw.decode("utf-8", errors="replace")[:ATTACHMENT_MAX_CHARS]
+        except Exception:
+            pass
     if ext in ALLOWED_UPLOAD_EXT:
         return extract_text(filename, raw)
     return ""
