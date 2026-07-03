@@ -45,10 +45,10 @@
         <tbody>
         {% for d in kb_docs %}
           <tr>
-            <td class="u-name">{{ d }}</td>
+            <td class="u-name">{{ d.name }} <span class="dim" style="font-size:11px;">· {{ d.chunks }} {{ t("blocchi") }}</span></td>
             <td style="text-align:right;">
               <form method="post" action="/knowledge/delete" class="inline-form" style="justify-content:flex-end;">
-                <input type="hidden" name="filename" value="{{ d }}">
+                <input type="hidden" name="filename" value="{{ d.name }}">
                 <button type="submit" class="ghost">{{ t("Rimuovi") }}</button>
               </form>
             </td>
@@ -103,31 +103,96 @@
 </div>
 
 <script>
-  // Anteprima dei file scelti + drag&drop (no upload via JS: invio form classico).
+  // Selezione file + drag&drop con ATTRAVERSAMENTO CARTELLE.
+  // Una cartella trascinata su un input file diventa un finto-file directory:
+  // al submit Chrome non riesce a leggerla (ERR_ACCESS_DENIED locale). Qui le
+  // cartelle vengono attraversate e si raccolgono i FILE VERI. Tutti gli
+  // upload viaggiano a lotti via fetch: richieste piccole (Application Proxy
+  // friendly) ed errori mostrati in pagina, mai schermate grigie.
   (function () {
     const input = document.getElementById("filein");
     const list = document.getElementById("dzlist");
     const drop = document.getElementById("drop");
-    if (!input) return;
-
-    // ── Upload a LOTTI ──────────────────────────────────────
-    // L'Application Proxy rifiuta i POST multipart molto grandi (upload di
-    // intere cartelle → ERR_ACCESS_DENIED). Sopra la soglia, il form viene
-    // intercettato e i file partono a lotti di 4 con avanzamento visibile.
-    const BATCH = 4;
     const form = document.getElementById("upform");
-    if (form) form.addEventListener("submit", async function (ev) {
-      const files = Array.from(input.files || []);
-      if (files.length <= BATCH) return; // pochi file: invio classico
+    if (!input || !form) return;
+
+    const BATCH = 4;
+    let pickedFiles = [];  // unica fonte di verità (picker o drop)
+    const ALLOWED = ("{{ allowed_ext }}").split(",").map(function (x) { return x.trim().toLowerCase(); }).filter(Boolean);
+    function isAllowed(name) {
+      const n = (name || "").toLowerCase();
+      return ALLOWED.some(function (e) { return e && n.endsWith(e); });
+    }
+
+    function render() {
+      list.innerHTML = pickedFiles.slice(0, 30).map(function (f) { return "<span class='chip'>" + f.name + "</span>"; }).join("");
+      if (pickedFiles.length > 30) list.innerHTML += "<span class='chip'>+" + (pickedFiles.length - 30) + " altri</span>";
+      if (!pickedFiles.length) list.innerHTML = "";
+    }
+
+    input.addEventListener("change", function () {
+      pickedFiles = Array.from(input.files || []).filter(function (f) { return isAllowed(f.name); });
+      render();
+    });
+
+    // ── Attraversamento ricorsivo delle cartelle trascinate ──
+    function readAllEntries(reader) {
+      return new Promise(function (resolve) {
+        const out = [];
+        (function loop() {
+          reader.readEntries(function (batch) {
+            if (!batch.length) return resolve(out);
+            out.push.apply(out, batch);
+            loop();  // readEntries va richiamata finché non torna vuota
+          }, function () { resolve(out); });
+        })();
+      });
+    }
+    async function collectEntry(entry, acc) {
+      if (!entry) return;
+      if (entry.isFile) {
+        await new Promise(function (resolve) {
+          entry.file(function (f) { if (isAllowed(f.name)) acc.push(f); resolve(); }, resolve);
+        });
+      } else if (entry.isDirectory) {
+        const children = await readAllEntries(entry.createReader());
+        for (const ch of children) await collectEntry(ch, acc);
+      }
+    }
+
+    ["dragover", "dragenter"].forEach(function (e) { drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.add("over"); }); });
+    ["dragleave", "drop"].forEach(function (e) { drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.remove("over"); }); });
+    drop.addEventListener("drop", async function (ev) {
       ev.preventDefault();
+      const items = ev.dataTransfer && ev.dataTransfer.items;
+      const acc = [];
+      if (items && items.length && items[0].webkitGetAsEntry) {
+        const entries = [];
+        for (const it of items) { const en = it.webkitGetAsEntry && it.webkitGetAsEntry(); if (en) entries.push(en); }
+        for (const en of entries) await collectEntry(en, acc);
+      } else if (ev.dataTransfer && ev.dataTransfer.files.length) {
+        Array.from(ev.dataTransfer.files).forEach(function (f) { if (isAllowed(f.name)) acc.push(f); });
+      }
+      pickedFiles = acc;
+      render();
+    });
+
+    // ── Invio: SEMPRE a lotti via fetch (anche un solo file) ──
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      if (!pickedFiles.length) {
+        alert("{{ t('Seleziona almeno un file (o trascina una cartella).') }}");
+        return;
+      }
       const btn = form.querySelector("button[type=submit]");
+      const label = btn ? btn.textContent : "";
       if (btn) btn.disabled = true;
       let ok = 0; let fail = [];
       try {
-        for (let i = 0; i < files.length; i += BATCH) {
+        for (let i = 0; i < pickedFiles.length; i += BATCH) {
           const fd = new FormData();
-          files.slice(i, i + BATCH).forEach(function (f) { fd.append("files", f, f.name); });
-          if (btn) btn.textContent = "{{ t('Caricamento') }} " + Math.min(i + BATCH, files.length) + "/" + files.length + "…";
+          pickedFiles.slice(i, i + BATCH).forEach(function (f) { fd.append("files", f, f.name); });
+          if (btn) btn.textContent = "{{ t('Caricamento') }} " + Math.min(i + BATCH, pickedFiles.length) + "/" + pickedFiles.length + "…";
           const r = await fetch("/knowledge/upload?ajax=1", { method: "POST", body: fd });
           if (!r.ok) { fail.push("(lotto " + (Math.floor(i / BATCH) + 1) + ": HTTP " + r.status + ")"); continue; }
           const j = await r.json();
@@ -135,8 +200,9 @@
           (j.fail || []).forEach(function (x) { fail.push(x); });
         }
       } catch (e) {
-        fail.push("(interrotto: " + (e && e.message ? e.message : "errore di rete") + ")");
+        fail.push("(interrotto: " + (e && e.message ? e.message : "errore di rete") + " — {{ t('se persiste, ricarica la pagina e ripeti l\'accesso') }})");
       }
+      if (btn) { btn.disabled = false; btn.textContent = label; }
       let url = "/knowledge?msg=" + encodeURIComponent(ok + " file indicizzati nella collezione del dipartimento.");
       if (fail.length) {
         let elenco = fail.join("; ");
@@ -145,16 +211,6 @@
       }
       location.href = url;
     });
-
-    function render() {
-      const files = Array.from(input.files || []);
-      list.innerHTML = files.slice(0, 30).map(f => "<span class='chip'>" + f.name + "</span>").join("");
-      if (files.length > 30) list.innerHTML += "<span class='chip'>+" + (files.length - 30) + " altri</span>";
-    }
-    input.addEventListener("change", render);
-    ["dragover", "dragenter"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
-    ["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
-    drop.addEventListener("drop", ev => { if (ev.dataTransfer && ev.dataTransfer.files.length) { input.files = ev.dataTransfer.files; render(); } });
   })();
 </script>
 {% endblock %}

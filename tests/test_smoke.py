@@ -833,6 +833,33 @@ def test_chroma_safe_document_ids():
     assert _re.fullmatch(r"[a-zA-Z0-9._-]+", sid), sid
 
 
+def test_knowledge_delete_uses_name_and_reports_reason():
+    from unittest.mock import patch
+    from app import knowledge as kn
+    store.create_user("kbdel@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "kbdel@test", "Password123!")
+    # il template usa d.name (mai la repr del dict) nel form di rimozione
+    tpl = open("templates/knowledge.html").read()
+    assert 'value="{{ d.name }}"' in tpl and 'value="{{ d }}"' not in tpl
+    # il motivo del fallimento arriva all'utente
+    with patch.object(kn, "kb_delete", return_value=(False, "Documento non trovato")):
+        r = c.post("/knowledge/delete", data={"filename": "x.pdf"}, follow_redirects=False)
+    assert "Documento+non+trovato" in r.headers.get("location", "")
+    with patch.object(kn, "kb_delete", return_value=(True, "ok")):
+        r2 = c.post("/knowledge/delete", data={"filename": "x.pdf"}, follow_redirects=False)
+    assert "Rimosso" in r2.headers.get("location", "")
+
+
+def test_knowledge_folder_drop_traversal():
+    store.create_user("kbdz@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "kbdz@test", "Password123!")
+    html = c.get("/knowledge").text
+    # attraversamento cartelle + upload sempre a lotti; mai il finto-file directory
+    assert "webkitGetAsEntry" in html and "collectEntry" in html
+    assert "input.files = ev.dataTransfer.files" not in html
+    assert "ajax=1" in html
+
+
 def test_kb_upload_ajax_batch_mode():
     from unittest.mock import patch
     from app import knowledge as kn

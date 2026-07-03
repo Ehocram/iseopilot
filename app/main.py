@@ -1108,9 +1108,13 @@ def knowledge_delete(request: Request, filename: str = Form(...)):
         return RedirectResponse(url="/login", status_code=303)
     dept = user.get("department") or ""
     ok, _msg = knowledge.kb_delete(dept, filename)
+    _audit(request, user["username"], "kb_rimozione_documento", f"file={filename[:120]}, esito={'ok' if ok else 'ko'}")
     if ok:
         return RedirectResponse(url=f"/knowledge?msg=Rimosso+{filename}.", status_code=303)
-    return RedirectResponse(url="/knowledge?err=Errore+rimozione.", status_code=303)
+    # FAIL LOUDLY: il motivo, non un errore generico
+    return RedirectResponse(
+        url="/knowledge?err=" + ("Errore rimozione: " + (_msg or "motivo sconosciuto")).replace(" ", "+"),
+        status_code=303)
 
 
 @app.post("/knowledge/reindex")
