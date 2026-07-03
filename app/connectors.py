@@ -309,6 +309,9 @@ def _dyn_full_cfg(cfg: dict, ai_settings: dict | None) -> dict:
         "ai_engine": ai.get("ai_engine", "claude"),
         "claude_api_key": ai.get("claude_api_key", ""),
         "claude_model": (ai.get("claude_model_dynamics") or "").strip() or ai.get("claude_model", "claude-opus-4-8"),
+        # se il modello dell'area fallisce (es. non abilitato per la chiave),
+        # il planner ripiega automaticamente sul modello base
+        "claude_model_fallback": ai.get("claude_model", "claude-opus-4-8"),
         "openai_api_key": ai.get("openai_api_key", ""),
         "openai_model": ai.get("openai_model", ""),
         "lm_url": ai.get("lm_url", ""),
@@ -357,7 +360,7 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
                 _ai = ai_settings or {}
                 _dyn_log(f"planner AI | motore={_ai.get('ai_engine','(assente)')} | "
                          f"chiave_claude={'presente' if _ai.get('claude_api_key') else 'ASSENTE'} | "
-                         f"modello={_ai.get('claude_model','(default)')}")
+                         f"modello_planner={(_ai.get('claude_model_dynamics') or '').strip() or _ai.get('claude_model','(default)')}")
                 if not cfg.get("resource_url"):
                     _dyn_log("ERRORE: resource_url VUOTO — il token non può avere lo "
                              "scope Dynamics. Configura l'URL istanza in Admin e RICONNETTI.")

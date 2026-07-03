@@ -841,6 +841,31 @@ def test_account_requires_login():
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
 
 
+def test_dynamics_ask_ai_parses_text_blocks_and_fallback():
+    from unittest.mock import patch, MagicMock
+    from app.engines.dynamics_search import DynamicsSearch
+    ds = DynamicsSearch({"ai_engine": "claude", "claude_api_key": "k",
+                         "claude_model": "claude-fable-5",
+                         "claude_model_fallback": "claude-opus-4-8"})
+    # risposta con blocco di RAGIONAMENTO prima del testo (stile Fable 5):
+    # prima falliva con KeyError 'text', ora estrae il blocco text
+    ok = MagicMock(status_code=200)
+    ok.json.return_value = {"content": [
+        {"type": "thinking", "thinking": "ragiono..."},
+        {"type": "text", "text": "PIANO OK"}]}
+    with patch("requests.post", return_value=ok):
+        assert ds._ask_ai("sys", "user") == "PIANO OK"
+    # modello d'area non disponibile (404) -> ripiega sul modello base
+    ko = MagicMock(status_code=404, text='{"error":"model not found"}')
+    calls = []
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json["model"])
+        return ko if json["model"] == "claude-fable-5" else ok
+    with patch("requests.post", side_effect=_fake_post):
+        assert ds._ask_ai("sys", "user") == "PIANO OK"
+    assert calls == ["claude-fable-5", "claude-opus-4-8"]
+
+
 def test_dynamics_semantic_process_cache():
     from app.engines import dynamics_search as ds
     # le primitive della cache di processo esistono

@@ -2833,29 +2833,49 @@ class DynamicsSearch:
             if engine == "claude":
                 key = self.cfg.get("claude_api_key", "")
                 model = self.cfg.get("claude_model", "claude-sonnet-4-6")
+                # Fallback: se il modello dell'area fallisce (es. non abilitato
+                # per la chiave), si ritenta col modello base configurato.
+                fallback = (self.cfg.get("claude_model_fallback") or "").strip()
                 if not key:
                     return ""
-                for tentativo in range(MAX_RETRY):
-                    r = req.post("https://api.anthropic.com/v1/messages",
-                        headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                                 "Content-Type": "application/json"},
-                        json={"model": model, "max_tokens": max_tokens,
-                              "system": system_prompt,
-                              "messages": [{"role": "user", "content": user_prompt}]},
-                        timeout=45)
-                    if r.status_code in RETRY_STATUS and tentativo < MAX_RETRY - 1:
-                        attesa = 3 * (tentativo + 1)  # 3s, poi 6s
-                        _dbg(f"dynamic: AI claude HTTP {r.status_code} (sovraccarico), "
-                             f"ritento tra {attesa}s ({tentativo+1}/{MAX_RETRY-1})")
-                        _time.sleep(attesa)
-                        continue
-                    if r.status_code != 200:
-                        _dbg(f"dynamic: AI claude HTTP {r.status_code}")
-                        if r.status_code in RETRY_STATUS:
-                            self._ai_overloaded = True
-                        return ""
-                    data = r.json()
-                    return data["content"][0]["text"].strip() if "content" in data else ""
+
+                def _claude_text(data: dict) -> str:
+                    """Estrae il testo dai blocchi 'text'. I modelli più recenti
+                    (es. Fable 5) possono anteporre blocchi di ragionamento:
+                    prendere content[0]['text'] alla cieca falliva con KeyError."""
+                    return "".join(b.get("text", "") for b in (data.get("content") or [])
+                                   if isinstance(b, dict) and b.get("type") == "text").strip()
+
+                def _call(model_name: str) -> str | None:
+                    for tentativo in range(MAX_RETRY):
+                        r = req.post("https://api.anthropic.com/v1/messages",
+                            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                                     "Content-Type": "application/json"},
+                            json={"model": model_name, "max_tokens": max_tokens,
+                                  "system": system_prompt,
+                                  "messages": [{"role": "user", "content": user_prompt}]},
+                            timeout=45)
+                        if r.status_code in RETRY_STATUS and tentativo < MAX_RETRY - 1:
+                            attesa = 3 * (tentativo + 1)  # 3s, poi 6s
+                            _dbg(f"dynamic: AI claude HTTP {r.status_code} (sovraccarico), "
+                                 f"ritento tra {attesa}s ({tentativo+1}/{MAX_RETRY-1})")
+                            _time.sleep(attesa)
+                            continue
+                        if r.status_code != 200:
+                            _dbg(f"dynamic: AI claude HTTP {r.status_code} "
+                                 f"[{model_name}]: {r.text[:200]}")
+                            if r.status_code in RETRY_STATUS:
+                                self._ai_overloaded = True
+                            return None
+                        return _claude_text(r.json())
+                    return None
+
+                out = _call(model)
+                if not out and fallback and fallback != model:
+                    _dbg(f"dynamic: modello '{model}' senza risposta, "
+                         f"ripiego sul modello base '{fallback}'")
+                    out = _call(fallback)
+                return out or ""
                 return ""
             elif engine == "openai":
                 key = self.cfg.get("openai_api_key", "")
@@ -4004,8 +4024,7 @@ def warm_semantic_index(cfg: dict | None = None) -> bool:
     è già su disco: il PRIMO utente non paga i ~2 minuti di costruzione.
     Non richiede credenziali (legge solo il catalogo locale)."""
     try:
-        ds = DynamicsSearch(client_id="warmup")
-        ds.cfg = dict(cfg or {})
+        ds = DynamicsSearch(dict(cfg or {}))
         cat = ds.load_catalog()
         if not cat:
             _dbg("semantic warm-up: catalogo assente, salto")
