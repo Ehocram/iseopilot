@@ -279,7 +279,15 @@
           if (!line.startsWith("data:")) continue;
           let evt;
           try { evt = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
-          if (evt.type === "delta") {
+          if (evt.type === "status") {
+            // indicatore di attesa: sostituito dal testo al primo token
+            if (!acc) {
+              m.bubble.innerHTML = '<div class="search-ind"><div class="si-text">' +
+                escapeHtml(evt.text || "") +
+                '</div><div class="si-bar"><div class="si-fill"></div></div></div>';
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+          } else if (evt.type === "delta") {
             acc += evt.text;
             m.bubble.innerHTML = renderMarkdownish(acc);
             messagesEl.scrollTop = messagesEl.scrollHeight;

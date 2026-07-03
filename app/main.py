@@ -110,13 +110,17 @@ def _select_sources(source_links: list, resp_text: str) -> list:
     cited, others = [], []
     for s in source_links:
         name = str(s.get("name", "")).strip()
+        stem = name.rsplit(".", 1)[0].lower() if "." in name else name.lower()
         if s.get("kind") in ("report", "download"):
             cited.append(s)
-        elif name and name.lower() in low:
+        elif name and (name.lower() in low or (len(stem) > 4 and stem in low)):
+            # citato col nome completo O senza estensione ("anagrafica")
             cited.append(s)
         else:
             others.append(s)
-    chosen = cited if any(s.get("kind") not in ("report", "download") for s in cited) else (cited + others)
+    # fallback prudente ma non invadente: se il modello non ha citato nessun
+    # file, mostra solo i primi 3 (i risultati sono già ordinati per rilevanza)
+    chosen = cited if any(s.get("kind") not in ("report", "download") for s in cited) else (cited + others[:3])
     seen, uniq = set(), []
     for s in chosen:
         key = (str(s.get("name", "")).lower() or s.get("url", ""), s.get("kind", ""))
@@ -271,6 +275,7 @@ def api_chat(request: Request, body: ChatRequest):
     # ChromaDB del dipartimento e/o cartelle del dipartimento. Scoping per area.
     # In MODALITÀ AI LIBERA non si consulta alcuna fonte: risposta da conoscenza generale.
     uid = user["username"]
+    _lang = _ui_lang(request, user)
     query = clean[-1]["content"] if clean else ""
 
     # Allegati della conversazione: hanno priorità e valgono SEMPRE, anche in AI
@@ -455,6 +460,15 @@ def api_chat(request: Request, body: ChatRequest):
         # Primo byte SUBITO: l'apparato di rete vede traffico immediato invece
         # di una connessione in attesa (causa dei 504 delle pagine proxy).
         yield _PING
+        # Indicatore di attesa: la ricerca documentale può richiedere tempo
+        # (planner Dynamics in testa) — l'utente vede subito cosa sta accadendo.
+        if not body.free_mode and not gen_fmt:
+            _lbl = {"kb": i18n.t("Conoscenza", _lang), "folder": i18n.t("Cartelle", _lang),
+                    "onedrive": "OneDrive", "dynamics": "Dynamics 365"}.get(src, "")
+            yield "data: " + json.dumps({"type": "status", "text":
+                i18n.t("Ricerca in corso su", _lang) + " " + _lbl + "… " +
+                i18n.t("l'operazione può richiedere qualche istante.", _lang)},
+                ensure_ascii=False) + "\n\n"
         context, source_links = "", []
         try:
             for item in _in_thread_with_pings(_build_context):
@@ -467,7 +481,10 @@ def api_chat(request: Request, body: ChatRequest):
 
         if gen_fmt:
             try:
-                yield "data: " + json.dumps({"type": "delta", "text": "Sto preparando il file…\n\n"}, ensure_ascii=False) + "\n\n"
+                yield "data: " + json.dumps({"type": "status", "text":
+                    i18n.t("Sto preparando il file…", _lang) + " " +
+                    i18n.t("l'operazione può richiedere qualche istante.", _lang)},
+                    ensure_ascii=False) + "\n\n"
                 path, fname = None, None
                 for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, _area_settings(settings, "claude_model_docgen"), hist_text)):
                     if isinstance(item, tuple) and item[0] == "result":

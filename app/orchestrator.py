@@ -81,8 +81,11 @@ def build_system(tone_key: str, reply_lang: str, context: str = "",
     elif context and context.strip():
         parts.append(
             "Usa il CONTESTO seguente, recuperato dalla base di conoscenza aziendale, "
-            "SOLO se pertinente alla domanda. Cita le fonti tra parentesi quadre, es. "
-            "[Fonte: nome_file]. Se il contesto non è pertinente, ignoralo e rispondi "
+            "SOLO se pertinente alla domanda. Cita SEMPRE le fonti col NOME ESATTO del "
+            "file tra parentesi quadre, es. [Fonte: anagrafica.docx] — MAI nomi generici "
+            "come [Fonte: OneDrive] o [Fonte: contesto aziendale]: il nome del file serve "
+            "all'applicazione per mostrare all'utente solo i documenti davvero usati. "
+            "Se il contesto non è pertinente, ignoralo e rispondi "
             "con le tue conoscenze.\n\n=== CONTESTO ===\n" + context.strip() +
             "\n=== FINE CONTESTO ==="
         )

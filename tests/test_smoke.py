@@ -624,7 +624,11 @@ def test_select_sources_cited_and_dedup():
     # nessuna citazione -> fallback: tutte, ma deduplicate per nome
     out2 = _select_sources(links, "risposta senza citazioni")
     names2 = [s["name"] for s in out2]
-    assert names2.count("DetACN_PiattaformaNIS.pdf") == 1 and len(out2) == 4
+    # fallback prudente: dedup e MASSIMO 3 file oltre al report
+    assert names2.count("DetACN_PiattaformaNIS.pdf") == 1 and len(out2) <= 4
+    # citazione SENZA estensione ("anagrafica") aggancia comunque il file
+    out3 = _select_sources(links, "il dato è in anagrafica, sezione 2")
+    assert [s["name"] for s in out3 if s.get("kind") != "report"] == ["anagrafica.docx"]
 
 
 def test_onedrive_binary_filter():
@@ -839,6 +843,22 @@ def test_account_requires_login():
     c = fresh_client()
     r = c.get("/account", follow_redirects=False)
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
+
+
+def test_chat_stream_status_indicator():
+    store.create_user("stat@test", auth.hash_password("Password123"), "IT")
+    c = fresh_client(); login(c, "stat@test", "Password123")
+    r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}],
+                                  "free_mode": False, "source": "kb"})
+    body = r.text
+    # dopo il ping arriva lo stato "Ricerca in corso su Conoscenza…"
+    assert '"type": "status"' in body and "Ricerca in corso su" in body
+    js = c.get("/static/chat.js").text
+    assert "search-ind" in js and 'evt.type === "status"' in js
+    # in AI libera nessuno stato di ricerca
+    r2 = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}],
+                                   "free_mode": True})
+    assert "Ricerca in corso su" not in r2.text
 
 
 def test_dynamics_ask_ai_parses_text_blocks_and_fallback():
