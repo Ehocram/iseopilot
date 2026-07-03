@@ -50,7 +50,12 @@ def _dbg(msg):
 
 
 # ── Dove vive l'indice (stesso albero degli altri dati utente) ──
-INDEX_DIR = Path.home() / "Documents" / "ChatAssistant" / "folder_index"
+# Sede dell'indice: nel volume dati dell'app se presente (APP_DATA_DIR, come
+# sul server: sopravvive ai deploy, niente re-indicizzazioni DFS a ogni build),
+# altrimenti nella posizione desktop storica.
+INDEX_DIR = (Path(os.environ["APP_DATA_DIR"]) / "folder_index"
+             if os.environ.get("APP_DATA_DIR")
+             else Path.home() / "Documents" / "ChatAssistant" / "folder_index")
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 # Estensioni indicizzate (le immagini si saltano: niente da cercare nel testo)

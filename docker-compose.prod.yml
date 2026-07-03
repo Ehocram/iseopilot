@@ -18,6 +18,7 @@ services:
       - .env
     volumes:
       - iseopilot_data:/data        # DB SQLite, token per-utente, catalogo Dynamics
+      - /mnt/dfs:/mnt/dfs:ro          # cartelle DFS aziendali (mount CIFS host, SOLA LETTURA)
     networks:
       - proxy-net                   # condivisa col Caddy di Flusso-AI
       - internal                    # privata (per eventuali servizi futuri)
