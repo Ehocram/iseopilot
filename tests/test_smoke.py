@@ -952,6 +952,37 @@ def test_account_requires_login():
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
 
 
+def test_attach_store_full_relevance_beyond_old_caps():
+    """Il caso del report reale: file oltre ogni vecchio cap — il deposito
+    server-side rende visibili TUTTE le righe alla selezione per pertinenza."""
+    from app.main import _attach_save, _build_attach_block
+    # 25 marcatori sparsi in ~1,1M di caratteri, molti OLTRE il vecchio 600k
+    filler = "riga di riempimento senza nulla di interessante " * 5
+    rows = [f"ASSET-{i:05d}\t{filler}" for i in range(4500)]
+    import random; random.seed(3)
+    for i in random.sample(range(100, 4400), 25):
+        rows[i] = f"ASSET-{i:05d}\tHP ZBook Power G8\t5CD{i:07d}\tattivo"
+    text = "\n".join(rows)
+    assert len(text) > 900_000
+    aid = _attach_save("storeuser@test", text)
+    block = _build_attach_block([{"id": aid, "name": "report.xlsx", "chars": len(text)}],
+                                query="quanti hp zbook ci sono nel report?",
+                                uid="storeuser@test")
+    assert block.lower().count("zbook") >= 25
+    assert "RIGHE CORRISPONDENTI ALLA DOMANDA: 25" in block
+    assert "TUTTE incluse" in block and "PARZIALE" not in block
+
+
+def test_attach_purge_removes_old_files():
+    import os, time
+    from app.main import _attach_save, _attach_load, _attach_purge_old, _attach_user_dir
+    aid = _attach_save("purge@test", "vecchio contenuto")
+    f = _attach_user_dir("purge@test") / f"{aid}.txt"
+    os.utime(f, (time.time() - 90000, time.time() - 90000))  # 25 ore fa
+    _attach_purge_old()
+    assert _attach_load("purge@test", aid) == ""
+
+
 def test_attach_counting_contract_zbook():
     """Regressione del caso reale: 'quanti HP ZBook?' su un report asset —
     TUTTE le righe corrispondenti nel contesto e conteggio dichiarato."""
@@ -1029,16 +1060,21 @@ def test_api_attach_reports_real_length():
     from app import knowledge as kn
     store.create_user("att2@test", auth.hash_password("Password123!"), "IT")
     c = fresh_client(); login(c, "att2@test", "Password123!")
+    from app.main import _attach_load
     with patch.object(kn, "extract_attachment_text", return_value="Y" * 50000):
         r = c.post("/api/attach", files=[("files", ("relazione.pdf", b"fake", "application/pdf"))])
     a = r.json()["attachments"][0]
-    # chars dichiara la lunghezza REALE, il testo viaggia entro il budget per-file
-    assert a["ok"] and a["chars"] == 50000 and len(a["text"]) == 30000
-    # i TABELLARI hanno budget dedicato ampio (200k): l'Excel non perde le righe
+    # al client SOLO id+chars: il testo integrale vive nel deposito server-side
+    assert a["ok"] and a["chars"] == 50000 and "text" not in a and a.get("id")
+    assert len(_attach_load("att2@test", a["id"])) == 50000
+    # nessun taglio pre-domanda nemmeno sui file enormi
     with patch.object(kn, "extract_attachment_text", return_value="Z" * 700000):
         r2 = c.post("/api/attach", files=[("files", ("listino.xlsx", b"fake", "application/vnd.ms-excel"))])
     a2 = r2.json()["attachments"][0]
-    assert a2["ok"] and a2["chars"] == 700000 and len(a2["text"]) == 600000
+    assert a2["ok"] and a2["chars"] == 700000
+    assert len(_attach_load("att2@test", a2["id"])) == 700000
+    # SEGREGAZIONE: un altro utente non legge gli allegati altrui
+    assert _attach_load("intruso@test", a2["id"]) == ""
 
 
 def test_attach_block_fair_budget_placeholder():
@@ -1261,7 +1297,9 @@ def test_attachment_extraction_endpoint():
     r = c.post("/api/attach", files={"files": ("nota.txt", io.BytesIO(b"Policy change management: approvazione obbligatoria."), "text/plain")})
     assert r.status_code == 200
     a = r.json()["attachments"][0]
-    assert a["ok"] and "change management" in a["text"]
+    from app.main import _attach_load
+    assert a["ok"] and a.get("id") and "text" not in a
+    assert "change management" in _attach_load("att@test", a["id"])
     # tipo non supportato
     r2 = c.post("/api/attach", files={"files": ("x.exe", io.BytesIO(b"MZ"), "application/octet-stream")})
     assert r2.json()["attachments"][0]["ok"] is False

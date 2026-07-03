@@ -134,7 +134,7 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
         out_msgs = list(messages)
 
     needs_restore = bool(anon.get_map())
-    payload = {"model": model, "max_tokens": 1500, "system": system,
+    payload = {"model": model, "max_tokens": 8000, "system": system,
                "messages": out_msgs, "stream": True}
 
     try:

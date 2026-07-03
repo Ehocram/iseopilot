@@ -7,6 +7,7 @@ Tutte le pagine sono protette dal login, tranne /login e /healthz.
 from __future__ import annotations
 
 import json
+import re
 import os
 import threading
 from pathlib import Path
@@ -69,6 +70,7 @@ def _startup():
         except Exception:
             pass
     threading.Thread(target=_warm_dyn, daemon=True).start()
+    threading.Thread(target=_attach_purge_old, daemon=True).start()
 
 
 def _ui_lang(request: Request, user: dict | None = None) -> str:
@@ -101,6 +103,54 @@ def _ctx(request: Request, user: dict, **extra) -> dict:
 # ampio, ripartito EQUAMENTE tra i file, con troncamenti DICHIARATI al modello.
 ATTACH_TOTAL_BUDGET = 120000
 ATTACH_MIN_PER_FILE = 6000
+
+# ── Deposito allegati SERVER-SIDE ───────────────────────────
+# Il testo estratto vive INTEGRALE sul server (per-utente, TTL 24h): il client
+# riceve solo un id. Così la selezione per pertinenza avviene sul file INTERO
+# al momento della domanda — nessun taglio cieco prima di conoscerla — e il
+# client non rispedisce megabyte di testo a ogni messaggio (App Proxy incluso).
+ATTACH_DIR = Path(os.environ.get("APP_DATA_DIR", "/data")) / "attach_cache"
+ATTACH_TTL_SECONDS = 24 * 3600
+
+
+def _attach_user_dir(uid: str) -> Path:
+    safe = re.sub(r"[^a-zA-Z0-9._-]", "_", uid or "")[:64] or "u"
+    d = ATTACH_DIR / safe
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _attach_save(uid: str, text: str) -> str:
+    import uuid
+    aid = uuid.uuid4().hex
+    (_attach_user_dir(uid) / f"{aid}.txt").write_text(text, encoding="utf-8")
+    return aid
+
+
+def _attach_load(uid: str, aid: str) -> str:
+    """Carica il testo di un allegato. L'id è vincolato all'UTENTE della
+    sessione: nessun accesso cross-utente, id solo esadecimale."""
+    if not re.fullmatch(r"[0-9a-f]{32}", str(aid or "")):
+        return ""
+    try:
+        return (_attach_user_dir(uid) / f"{aid}.txt").read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def _attach_purge_old() -> None:
+    """Pulizia del deposito: via i testi più vecchi del TTL."""
+    import time as _t
+    try:
+        now = _t.time()
+        for f in ATTACH_DIR.rglob("*.txt"):
+            try:
+                if now - f.stat().st_mtime > ATTACH_TTL_SECONDS:
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _relevant_slice(text: str, query: str, quota: int):
@@ -151,7 +201,7 @@ def _relevant_slice(text: str, query: str, quota: int):
     return text[:quota], False, 0, 0, []
 
 
-def _build_attach_block(attachments: list, query: str = "") -> str:
+def _build_attach_block(attachments: list, query: str = "", uid: str = "") -> str:
     """Blocco [ALLEGATO ...] per il contesto: budget equo tra i file, selezione
     per pertinenza sui file grandi, CONTEGGI DICHIARATI (calcolati da noi, non
     stimati dal modello) e ogni troncamento esplicitato. È il contratto che
@@ -160,7 +210,9 @@ def _build_attach_block(attachments: list, query: str = "") -> str:
     items = []
     for a in (attachments or [])[:20]:
         name = str(a.get("name", "allegato"))
-        text = str(a.get("text", ""))
+        text = str(a.get("text", "") or "")
+        if not text and a.get("id") and uid:
+            text = _attach_load(uid, str(a.get("id")))
         chars_reali = int(a.get("chars") or len(text))
         if text.strip():
             items.append((name, text, chars_reali))
@@ -381,7 +433,7 @@ def api_chat(request: Request, body: ChatRequest):
 
     # Allegati della conversazione: hanno priorità e valgono SEMPRE, anche in AI
     # libera (l'utente allega un file e chiede sintesi/elaborazione).
-    attach_block = _build_attach_block(body.attachments, query)
+    attach_block = _build_attach_block(body.attachments, query, uid)
 
     # ── FONTE DATI (documentale): UNA sola per domanda, obbligatoria ──
     # Il popup lato client avvisa, ma la validazione vera è qui (client
@@ -641,13 +693,12 @@ async def api_attach(request: Request, files: list[UploadFile] = File(...)):
                 out.append({"name": f.filename, "ok": False, "error": "Nessun testo estraibile"})
                 continue
             print(f"[attach] {user['username']}: {f.filename} ({len(raw)} byte) -> {len(text)} caratteri estratti", file=sys.stderr)
-            # chars = lunghezza REALE; text limitato al budget per-file (il
-            # blocco allegati dichiara al modello gli eventuali troncamenti).
-            # I TABELLARI (Excel/CSV) esplodono in testo: budget dedicato ampio,
-            # la selezione per pertinenza avviene poi al momento della domanda.
-            _cap = 600_000 if ext in (".xlsx", ".xls", ".xlsm", ".csv") else 30_000
-            out.append({"name": f.filename, "ok": True,
-                        "chars": len(text), "text": text[:_cap]})
+            # Testo INTEGRALE nel deposito server-side; al client va solo l'id.
+            # La selezione per pertinenza avverrà sul testo INTERO quando la
+            # domanda esiste — mai più tagli ciechi pre-domanda.
+            aid = _attach_save(user["username"], text[:knowledge.ATTACHMENT_MAX_CHARS])
+            out.append({"id": aid, "name": f.filename, "ok": True,
+                        "chars": len(text)})
         except Exception as e:
             out.append({"name": f.filename, "ok": False, "error": str(e)[:120]})
     return {"attachments": out}

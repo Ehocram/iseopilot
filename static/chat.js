@@ -77,7 +77,7 @@
       var data = await r.json();
       (data.attachments || []).forEach(function (res, i) {
         var slot = base + i;
-        if (res.ok) attachments[slot] = { name: res.name, text: res.text, chars: res.chars };
+        if (res.ok) attachments[slot] = { id: res.id, name: res.name, chars: res.chars };
         else attachments[slot] = { name: res.name, error: res.error || (I18N.attachErr || "errore") };
       });
     } catch (e) {
