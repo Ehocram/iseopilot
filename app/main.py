@@ -786,8 +786,9 @@ def users_create(
     if not user or not user["is_admin"]:
         raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
     uname = new_username.strip()
-    if len(new_password) < 8:
-        return RedirectResponse(url="/admin/users?err=La+password+deve+avere+almeno+8+caratteri.", status_code=303)
+    _perr = auth.validate_password(new_password)
+    if _perr:
+        return RedirectResponse(url="/admin/users?err=" + _perr.replace(" ", "+"), status_code=303)
     if not store.department_exists(new_department):
         return RedirectResponse(url="/admin/users?err=Dipartimento+non+valido.", status_code=303)
     ok = store.create_user(uname, auth.hash_password(new_password), new_department,
@@ -828,8 +829,9 @@ def users_update(
 
     pwd_hash = None
     if reset_password.strip():
-        if len(reset_password) < 8:
-            return RedirectResponse(url="/admin/users?err=La+nuova+password+deve+avere+almeno+8+caratteri.", status_code=303)
+        _perr = auth.validate_password(reset_password)
+        if _perr:
+            return RedirectResponse(url="/admin/users?err=" + _perr.replace(" ", "+"), status_code=303)
         pwd_hash = auth.hash_password(reset_password)
 
     store.update_user(username, department=department, is_admin=want_admin,
@@ -1129,8 +1131,8 @@ def account_password(request: Request,
     if not auth.authenticate(user["username"], current_password):
         return RedirectResponse(url="/account?err=current", status_code=303)
     # 2) validazione della nuova password
-    if len(new_password) < 8:
-        return RedirectResponse(url="/account?err=short", status_code=303)
+    if auth.validate_password(new_password):
+        return RedirectResponse(url="/account?err=policy", status_code=303)
     if new_password != confirm_password:
         return RedirectResponse(url="/account?err=match", status_code=303)
     if new_password == current_password:

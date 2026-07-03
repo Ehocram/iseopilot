@@ -93,3 +93,29 @@ def bootstrap_admin() -> None:
     if not store.department_exists(dept):
         store.add_department(dept)
     store.create_user(user, hash_password(pwd), dept, is_admin=True)
+
+
+# ── Politica password ISEOPilot ─────────────────────────────
+# Minimo 12 caratteri, almeno una lettera maiuscola e almeno un carattere
+# speciale. Unica funzione per TUTTI i punti in cui nasce una password
+# (self-service, creazione utente, reset admin): una sola verità.
+import re as _re
+
+PASSWORD_POLICY_HINT = ("Almeno 12 caratteri, con almeno una lettera maiuscola "
+                        "e un carattere speciale (es. ! ? @ # - _).")
+
+
+def validate_password(pwd: str) -> str | None:
+    """Ritorna il messaggio d'errore se la password non rispetta la politica,
+    None se è conforme."""
+    p = pwd or ""
+    problemi = []
+    if len(p) < 12:
+        problemi.append("almeno 12 caratteri")
+    if not _re.search(r"[A-Z]", p):
+        problemi.append("una lettera maiuscola")
+    if not _re.search(r"[^A-Za-z0-9]", p):
+        problemi.append("un carattere speciale")
+    if problemi:
+        return "La password deve contenere " + ", ".join(problemi) + "."
+    return None

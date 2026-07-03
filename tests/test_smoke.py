@@ -811,6 +811,24 @@ def test_login_writes_audit():
     assert len(rows) >= 1
 
 
+def test_password_policy():
+    from app.auth import validate_password
+    # conformi
+    assert validate_password("Sicurezza2026!") is None
+    assert validate_password("Engineer@23482") is None
+    # violazioni: corta, senza maiuscola, senza carattere speciale
+    assert "12 caratteri" in validate_password("Corta!A")
+    assert "maiuscola" in validate_password("tuttominuscolo-123")
+    assert "speciale" in validate_password("SoloLettereENumeri12")
+    # creazione utente admin: password non conforme rifiutata
+    store.create_user("padm@test", auth.hash_password("Password123!"), "IT", is_admin=True)
+    c = fresh_client(); login(c, "padm@test", "Password123!")
+    r = c.post("/admin/users", data={"new_username": "nuovo@test", "new_password": "corta",
+                                     "new_department": "IT", "new_is_admin": "0"},
+               follow_redirects=False)
+    assert "12+caratteri" in r.headers.get("location", "")
+
+
 def test_account_change_password():
     store.create_user("acct@test", auth.hash_password("OldPassw0rd"), "IT")
     c = fresh_client()
@@ -819,24 +837,24 @@ def test_account_change_password():
     assert c.get("/account").status_code == 200
     # password attuale sbagliata -> errore
     r = c.post("/account/password", data={"current_password": "WRONG",
-        "new_password": "NewPassw0rd", "confirm_password": "NewPassw0rd"},
+        "new_password": "NuovaPassw0rd!", "confirm_password": "NuovaPassw0rd!"},
         follow_redirects=False)
     assert "err=current" in r.headers.get("location", "")
     # nuova troppo corta
     r = c.post("/account/password", data={"current_password": "OldPassw0rd",
         "new_password": "short", "confirm_password": "short"}, follow_redirects=False)
-    assert "err=short" in r.headers.get("location", "")
+    assert "err=policy" in r.headers.get("location", "")
     # conferma non combacia
     r = c.post("/account/password", data={"current_password": "OldPassw0rd",
-        "new_password": "NewPassw0rd", "confirm_password": "Diversa123"}, follow_redirects=False)
+        "new_password": "NuovaPassw0rd!", "confirm_password": "Diversa123!X"}, follow_redirects=False)
     assert "err=match" in r.headers.get("location", "")
     # cambio valido
     r = c.post("/account/password", data={"current_password": "OldPassw0rd",
-        "new_password": "NewPassw0rd", "confirm_password": "NewPassw0rd"}, follow_redirects=False)
+        "new_password": "NuovaPassw0rd!", "confirm_password": "NuovaPassw0rd!"}, follow_redirects=False)
     assert "ok=1" in r.headers.get("location", "")
     # la vecchia non funziona più, la nuova sì
     assert auth.authenticate("acct@test", "OldPassw0rd") is None
-    assert auth.authenticate("acct@test", "NewPassw0rd") is not None
+    assert auth.authenticate("acct@test", "NuovaPassw0rd!") is not None
 
 
 def test_account_requires_login():
