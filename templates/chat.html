@@ -28,18 +28,19 @@
     <div class="composer" id="composer">
       <div class="src-picker" id="src-picker">
         <span class="src-label">{{ t("Dove cercare?") }}</span>
-        <label class="src-pill"><input type="radio" name="datasource" value="kb" checked><span>{{ t("Conoscenza") }}</span></label>
+        <label class="src-pill"><input type="radio" name="datasource" value="kb" {% if pref_source == 'kb' %}checked{% endif %}><span>{{ t("Conoscenza") }}</span></label>
         <label class="src-pill {% if not src_folder_available %}off{% endif %}" {% if not src_folder_available %}title="{{ t('Nessuna cartella configurata per il tuo reparto: chiedi all\'amministratore.') }}"{% endif %}>
-          <input type="radio" name="datasource" value="folder" {% if not src_folder_available %}disabled{% endif %}><span>{{ t("Cartelle") }}</span></label>
+          <input type="radio" name="datasource" value="folder" {% if pref_source == 'folder' %}checked{% endif %} {% if not src_folder_available %}disabled{% endif %}><span>{{ t("Cartelle") }}</span></label>
         <label class="src-pill {% if not src_onedrive_available %}off{% endif %}" {% if not src_onedrive_available %}title="{{ t('OneDrive non è connesso: collegalo dalla pagina Connessioni.') }}"{% endif %}>
-          <input type="radio" name="datasource" value="onedrive" {% if not src_onedrive_available %}disabled{% endif %}><span>OneDrive</span></label>
+          <input type="radio" name="datasource" value="onedrive" {% if pref_source == 'onedrive' %}checked{% endif %} {% if not src_onedrive_available %}disabled{% endif %}><span>OneDrive</span></label>
         <label class="src-pill {% if not src_dynamics_available %}off{% endif %}" {% if not src_dynamics_available %}title="{{ t('Dynamics 365 non è connesso: collegalo dalla pagina Connessioni.') }}"{% endif %}>
-          <input type="radio" name="datasource" value="dynamics" {% if not src_dynamics_available %}disabled{% endif %}><span>Dynamics 365</span></label>
+          <input type="radio" name="datasource" value="dynamics" {% if pref_source == 'dynamics' %}checked{% endif %} {% if not src_dynamics_available %}disabled{% endif %}><span>Dynamics 365</span></label>
       </div>
       <div class="attach-bar" id="attach-bar" hidden></div>
+      <div class="img-hint" id="img-hint" hidden>{{ t("Nota: le immagini allegate non passano dall'anonimizzazione e vengono inviate a Claude così come sono.") }}</div>
       <div class="row">
         <button class="attach-btn" id="attach-btn" title="{{ t('Allega file (fino a 20)') }}" type="button">📎</button>
-        <input type="file" id="attach-input" multiple accept=".txt,.md,.csv,.json,.xml,.py,.pdf,.docx,.xlsx,.xls,.pptx,.ppt" hidden>
+        <input type="file" id="attach-input" multiple accept=".txt,.md,.csv,.json,.xml,.py,.pdf,.docx,.xlsx,.xls,.pptx,.ppt,.png,.jpg,.jpeg,.webp,.gif" hidden>
         <textarea id="input" placeholder="{{ t('Scrivi la tua domanda…  (Invio per inviare · Maiusc+Invio per andare a capo)') }}"></textarea>
         <button class="send" id="send">{{ t("Invia") }}</button>
       </div>
@@ -47,24 +48,24 @@
         <div class="ctl">
           <label for="engine">{{ t("Motore AI") }}</label>
           <select id="engine">
-            <option value="claude">Claude</option>
-            <option value="lmstudio">LM Studio ({{ t("locale") }})</option>
+            <option value="claude" {% if pref_engine == 'claude' %}selected{% endif %}>Claude</option>
+            <option value="lmstudio" {% if pref_engine == 'lmstudio' %}selected{% endif %}>LM Studio ({{ t("locale") }})</option>
           </select>
         </div>
         <div class="ctl">
           <label for="mode">{{ t("Modalità") }}</label>
           <select id="mode" title="{{ t('Documentale: cerca nelle fonti. AI libera: conoscenza generale, senza cercare nei documenti.') }}">
-            <option value="kb">{{ t("Documentale") }}</option>
-            <option value="free">{{ t("AI libera") }}</option>
+            <option value="kb" {% if pref_mode == 'kb' %}selected{% endif %}>{{ t("Documentale") }}</option>
+            <option value="free" {% if pref_mode == 'free' %}selected{% endif %}>{{ t("AI libera") }}</option>
           </select>
         </div>
         <div class="ctl">
           <label for="tone">{{ t("Tono") }}</label>
-          <select id="tone">{% for tn in tones %}<option value="{{ tn }}">{{ tn }}</option>{% endfor %}</select>
+          <select id="tone">{% for tn in tones %}<option value="{{ tn }}" {% if tn == pref_tone %}selected{% endif %}>{{ tn }}</option>{% endfor %}</select>
         </div>
         <div class="ctl">
           <label for="lang">{{ t("Lingua risposta") }}</label>
-          <select id="lang">{% for l in langs %}<option value="{{ l }}" {% if l == 'Italiano' %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+          <select id="lang">{% for l in langs %}<option value="{{ l }}" {% if l == pref_lang %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
         </div>
       </div>
     </div>

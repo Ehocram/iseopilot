@@ -138,6 +138,15 @@ def _attach_load(uid: str, aid: str) -> str:
         return ""
 
 
+def _attach_load_image(uid: str, aid: str):
+    """Ritorna (media_type, base64) se l'id punta a un'immagine del deposito."""
+    t = _attach_load(uid, aid)
+    if t.startswith("IMG:"):
+        head, _, b64 = t.partition("\n")
+        return head[4:] or "image/jpeg", b64
+    return None
+
+
 def _attach_purge_old() -> None:
     """Pulizia del deposito: via i testi più vecchi del TTL."""
     import time as _t
@@ -213,6 +222,8 @@ def _build_attach_block(attachments: list, query: str = "", uid: str = "") -> st
         text = str(a.get("text", "") or "")
         if not text and a.get("id") and uid:
             text = _attach_load(uid, str(a.get("id")))
+            if text.startswith("IMG:"):
+                text = ""  # le immagini viaggiano come blocchi visione, non testo
         chars_reali = int(a.get("chars") or len(text))
         if text.strip():
             items.append((name, text, chars_reali))
@@ -385,11 +396,26 @@ def chat_page(request: Request):
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     dept = user.get("department") or ""
+    uid = user["username"]
+    _fold = bool(store.department_folders(dept))
+    _od = connectors.is_connected(uid, "onedrive")
+    _dy = connectors.is_connected(uid, "dynamics")
+    _avail = {"kb": True, "folder": _fold, "onedrive": _od, "dynamics": _dy}
+    pref_tone = store.get_user_setting(uid, "pref_tone", "Aziendale formale")
+    pref_lang = store.get_user_setting(uid, "pref_lang", "Italiano")
+    pref_source = store.get_user_setting(uid, "pref_source", "kb")
+    if not _avail.get(pref_source, False):
+        pref_source = "kb"  # la fonte preferita non è (più) disponibile
     return templates.TemplateResponse(request, "chat.html", _ctx(
         request, user, tones=list(TONES.keys()), langs=list(LANG_INSTR.keys()),
-        src_folder_available=bool(store.department_folders(dept)),
-        src_onedrive_available=connectors.is_connected(user["username"], "onedrive"),
-        src_dynamics_available=connectors.is_connected(user["username"], "dynamics"),
+        src_folder_available=_fold,
+        src_onedrive_available=_od,
+        src_dynamics_available=_dy,
+        pref_engine=store.get_user_setting(uid, "pref_engine", "claude"),
+        pref_mode=store.get_user_setting(uid, "pref_mode", "kb"),
+        pref_tone=pref_tone if pref_tone in TONES else "Aziendale formale",
+        pref_lang=pref_lang if pref_lang in LANG_INSTR else "Italiano",
+        pref_source=pref_source,
     ))
 
 
@@ -434,6 +460,22 @@ def api_chat(request: Request, body: ChatRequest):
     # Allegati della conversazione: hanno priorità e valgono SEMPRE, anche in AI
     # libera (l'utente allega un file e chiede sintesi/elaborazione).
     attach_block = _build_attach_block(body.attachments, query, uid)
+
+    # Immagini allegate → blocchi visione Claude (max 5 per domanda)
+    images = []
+    for a in (body.attachments or [])[:20]:
+        if a.get("kind") == "image" and a.get("id"):
+            im = _attach_load_image(uid, str(a.get("id")))
+            if im:
+                images.append(im)
+    images = images[:5]
+    if images and (body.engine or "claude") != "claude":
+        def _img_err():
+            yield "data: " + json.dumps({"type": "error", "text":
+                "Le immagini allegate sono supportate solo con il motore Claude: "
+                "seleziona Claude oppure rimuovi le immagini."}, ensure_ascii=False) + "\n\n"
+        return StreamingResponse(_img_err(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     # ── FONTE DATI (documentale): UNA sola per domanda, obbligatoria ──
     # Il popup lato client avvisa, ma la validazione vera è qui (client
@@ -576,7 +618,7 @@ def api_chat(request: Request, body: ChatRequest):
     else:
         _audit(request, uid, "chat",
                f"modalita={'libera' if body.free_mode else 'documentale'}, "
-               f"fonte={src or '-'}, allegati={len(body.attachments or [])} ({len(attach_block)} car.), motore={body.engine}")
+               f"fonte={src or '-'}, allegati={len(body.attachments or [])} ({len(attach_block)} car., img={len(images)}), motore={body.engine}")
 
     _PING = "data: " + json.dumps({"type": "ping"}, ensure_ascii=False) + "\n\n"
 
@@ -649,7 +691,7 @@ def api_chat(request: Request, body: ChatRequest):
         # Accumulo il testo per selezionare poi solo le fonti CITATE.
         resp_parts = []
         for chunk in stream_reply(clean, settings, anon_names(), context,
-                                  body.free_mode, mem_ctx, fb_ctx):
+                                  body.free_mode, mem_ctx, fb_ctx, images=images):
             yield chunk
             if '"delta"' in chunk:
                 try:
@@ -669,14 +711,78 @@ def api_chat(request: Request, body: ChatRequest):
     )
 
 
+class PrefsBody(BaseModel):
+    engine: str | None = None
+    mode: str | None = None
+    tone: str | None = None
+    lang: str | None = None
+    source: str | None = None
+
+
+@app.post("/api/prefs")
+async def api_prefs(request: Request, body: PrefsBody):
+    """Preferenze del composer, PER UTENTE: motore, modalità, tono, lingua e
+    fonte dati. Salvate a ogni cambio, applicate a ogni apertura della chat
+    (su qualunque postazione: vivono lato server, non nel browser)."""
+    user = auth.current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sessione scaduta.")
+    uid = user["username"]
+    if body.engine in ("claude", "lmstudio"):
+        store.set_user_setting(uid, "pref_engine", body.engine)
+    if body.mode in ("kb", "free"):
+        store.set_user_setting(uid, "pref_mode", body.mode)
+    if body.tone in TONES:
+        store.set_user_setting(uid, "pref_tone", body.tone)
+    if body.lang in LANG_INSTR:
+        store.set_user_setting(uid, "pref_lang", body.lang)
+    if body.source in ("kb", "folder", "onedrive", "dynamics"):
+        store.set_user_setting(uid, "pref_source", body.source)
+    return {"ok": True}
+
+
 @app.post("/api/attach")
 async def api_attach(request: Request, files: list[UploadFile] = File(...)):
     user = auth.current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Sessione scaduta.")
+    IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
     out = []
     for f in files[:20]:
         ext = Path(f.filename or "").suffix.lower()
+        if ext in IMG_EXT:
+            # IMMAGINI → visione Claude. Ridimensionate e ricodificate JPEG,
+            # poi nel deposito per-utente come base64. NB dichiarato in UI:
+            # le immagini NON passano dall'anonimizzatore.
+            try:
+                raw = await f.read()
+                if len(raw) > 15 * 1024 * 1024:
+                    out.append({"name": f.filename, "ok": False, "error": "Immagine troppo grande (max 15 MB)"})
+                    continue
+                import base64
+                import io as _io
+                from PIL import Image as _PILImage
+                im = _PILImage.open(_io.BytesIO(raw)); im.load()
+                if im.mode != "RGB":
+                    bg = _PILImage.new("RGB", im.size, (255, 255, 255))
+                    try:
+                        bg.paste(im, mask=im.getchannel("A"))
+                    except Exception:
+                        bg.paste(im.convert("RGB"))
+                    im = bg
+                lato = max(im.size)
+                if lato > 1568:
+                    r = 1568 / lato
+                    im = im.resize((int(im.width * r), int(im.height * r)), _PILImage.LANCZOS)
+                buf = _io.BytesIO(); im.save(buf, "JPEG", quality=85)
+                b64 = base64.b64encode(buf.getvalue()).decode()
+                aid = _attach_save(user["username"], "IMG:image/jpeg\n" + b64)
+                import sys
+                print(f"[attach] {user['username']}: {f.filename} -> immagine {im.width}x{im.height}, {len(buf.getvalue())//1024} KB", file=sys.stderr)
+                out.append({"id": aid, "name": f.filename, "ok": True, "kind": "image", "chars": 0})
+            except Exception as e:
+                out.append({"name": f.filename, "ok": False, "error": f"Immagine non leggibile: {str(e)[:80]}"})
+            continue
         if ext not in knowledge.ALLOWED_ATTACH_EXT:
             out.append({"name": f.filename, "ok": False,
                         "error": "Tipo non supportato"})

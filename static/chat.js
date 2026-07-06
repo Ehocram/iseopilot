@@ -41,6 +41,8 @@
   }
   function renderChips() {
     attachBar.innerHTML = "";
+    var imgHint = document.getElementById("img-hint");
+    if (imgHint) imgHint.hidden = !attachments.some(function (a) { return a.kind === "image" && !a.error; });
     if (!attachments.length) { attachBar.hidden = true; return; }
     attachBar.hidden = false;
     attachments.forEach(function (a, idx) {
@@ -48,6 +50,7 @@
       chip.className = "chip" + (a.error ? " err" : "");
       var label = document.createElement("span");
       label.className = "chip-name";
+      if (a.kind === "image") label.textContent = "\uD83D\uDDBC "; // 🖼
       label.textContent = "📄 " + a.name + (a.error ? " — " + a.error : " · " + (a.chars || 0) + " char");
       var x = document.createElement("button");
       x.className = "chip-x"; x.type = "button"; x.textContent = "×";
@@ -77,7 +80,7 @@
       var data = await r.json();
       (data.attachments || []).forEach(function (res, i) {
         var slot = base + i;
-        if (res.ok) attachments[slot] = { id: res.id, name: res.name, chars: res.chars };
+        if (res.ok) attachments[slot] = { id: res.id, name: res.name, chars: res.chars, kind: res.kind };
         else attachments[slot] = { name: res.name, error: res.error || (I18N.attachErr || "errore") };
       });
     } catch (e) {
@@ -98,6 +101,38 @@
       if (e.dataTransfer && e.dataTransfer.files) handleFiles(e.dataTransfer.files);
     });
   }
+  // ── Incolla immagini (screenshot + Ctrl/Cmd+V) ───────────
+  if (inputEl) inputEl.addEventListener("paste", function (e) {
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    var files = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it.kind === "file" && it.type.indexOf("image/") === 0) {
+        var f = it.getAsFile();
+        if (f) files.push(new File([f], "screenshot-" + Date.now() + "." + (it.type.split("/")[1] || "png"), { type: it.type }));
+      }
+    }
+    if (files.length) { e.preventDefault(); handleFiles(files); }
+  });
+  // ── Preferenze del composer: salvate a ogni cambio, per utente ──
+  function savePrefs() {
+    try {
+      fetch("/api/prefs", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          engine: engineSel ? engineSel.value : null,
+          mode: modeSel ? modeSel.value : null,
+          tone: toneSel ? toneSel.value : null,
+          lang: langSel ? langSel.value : null,
+          source: selectedSource() || null,
+        }) }).catch(function () {});
+    } catch (e) {}
+  }
+  [engineSel, modeSel, toneSel, langSel].forEach(function (el) {
+    if (el) el.addEventListener("change", savePrefs);
+  });
+  document.querySelectorAll('input[name="datasource"]').forEach(function (r) {
+    r.addEventListener("change", savePrefs);
+  });
 
   // ── Barra di stato ──────────────────────────────────────
   function refreshStatus() {
@@ -245,7 +280,7 @@
           free_mode: modeSel && modeSel.value === "free",
           source: selectedSource(),
           session_id: sessionId,
-          attachments: attachments.filter(function(a){return a.text;})
+          attachments: attachments.filter(function(a){return (a.id || a.text) && !a.error;})
                                   .map(function(a){return {name:a.name, text:a.text};}),
         }),
       });

@@ -952,6 +952,85 @@ def test_account_requires_login():
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
 
 
+def test_prefs_persist_per_user():
+    store.create_user("prefs@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "prefs@test", "Password123!")
+    r = c.post("/api/prefs", json={"engine": "lmstudio", "mode": "free",
+                                   "tone": "Tecnico", "lang": "Inglese", "source": "kb"})
+    assert r.status_code == 200 and r.json()["ok"]
+    html = c.get("/").text
+    assert 'value="lmstudio" selected' in html
+    assert 'value="free" selected' in html
+    assert 'value="Tecnico" selected' in html
+    assert 'value="Inglese" selected' in html
+    # valore non ammesso: ignorato, la pagina resta coerente
+    c.post("/api/prefs", json={"tone": "NonEsiste"})
+    assert 'value="Tecnico" selected' in c.get("/").text
+    # fonte preferita non disponibile (onedrive non connesso) -> fallback su kb
+    c.post("/api/prefs", json={"source": "onedrive"})
+    html2 = c.get("/").text
+    assert 'value="kb" checked' in html2 and 'value="onedrive" checked' not in html2
+
+
+def test_attach_image_pipeline():
+    import io
+    from PIL import Image
+    from app.main import _attach_load, _build_attach_block
+    store.create_user("img@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "img@test", "Password123!")
+    im = Image.new("RGB", (3000, 1200), (10, 10, 10))
+    buf = io.BytesIO(); im.save(buf, "PNG")
+    r = c.post("/api/attach", files=[("files", ("screen.png", buf.getvalue(), "image/png"))])
+    a = r.json()["attachments"][0]
+    assert a["ok"] and a["kind"] == "image" and a.get("id")
+    stored = _attach_load("img@test", a["id"])
+    assert stored.startswith("IMG:image/jpeg")
+    import base64
+    img2 = Image.open(io.BytesIO(base64.b64decode(stored.split("\n", 1)[1])))
+    assert max(img2.size) <= 1568  # ridimensionata per la visione
+    # il blocco TESTI ignora i depositi immagine: mai base64 nel contesto
+    block = _build_attach_block([{"id": a["id"], "name": "screen.png", "kind": "image"}],
+                                query="cosa vedi?", uid="img@test")
+    assert block == ""
+
+
+def test_chat_images_require_claude_engine():
+    import io
+    from PIL import Image
+    store.create_user("imgeng@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "imgeng@test", "Password123!")
+    im = Image.new("RGB", (80, 80), (200, 0, 0))
+    buf = io.BytesIO(); im.save(buf, "PNG")
+    aid = c.post("/api/attach", files=[("files", ("x.png", buf.getvalue(), "image/png"))]).json()["attachments"][0]["id"]
+    r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "cosa vedi?"}],
+                                  "free_mode": True, "engine": "lmstudio",
+                                  "attachments": [{"id": aid, "name": "x.png", "kind": "image"}]})
+    assert "motore Claude" in r.text
+
+
+def test_orchestrator_apply_images():
+    from app.orchestrator import _apply_images
+    msgs = [{"role": "user", "content": "prima"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "cosa vedi nell'immagine?"}]
+    out = _apply_images(msgs, [("image/jpeg", "QUJDRA==")])
+    blocks = out[-1]["content"]
+    assert isinstance(blocks, list) and blocks[0]["type"] == "image"
+    assert blocks[0]["source"]["media_type"] == "image/jpeg"
+    assert blocks[-1] == {"type": "text", "text": "cosa vedi nell'immagine?"}
+    assert out[0]["content"] == "prima"  # i turni precedenti restano testo
+
+
+def test_chat_js_paste_and_payload_filter():
+    store.create_user("pjs@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "pjs@test", "Password123!")
+    js = c.get("/static/chat.js").text
+    # incolla da appunti + FIX del filtro payload (gli allegati con id passavano il filtro .text)
+    assert "clipboardData" in js and 'indexOf("image/")' in js
+    assert "(a.id || a.text) && !a.error" in js
+    assert "savePrefs" in js and "/api/prefs" in js
+
+
 def test_attach_store_full_relevance_beyond_old_caps():
     """Il caso del report reale: file oltre ogni vecchio cap — il deposito
     server-side rende visibili TUTTE le righe alla selezione per pertinenza."""

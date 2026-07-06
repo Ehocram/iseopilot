@@ -134,6 +134,7 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
         out_msgs = list(messages)
 
     needs_restore = bool(anon.get_map())
+    out_msgs = _apply_images(out_msgs, images or [])
     payload = {"model": model, "max_tokens": 8000, "system": system,
                "messages": out_msgs, "stream": True}
 
@@ -255,8 +256,32 @@ def complete(system: str, user_text: str, settings: dict, max_tokens: int = 4000
     return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
 
 
+
+
+def _apply_images(msgs: list, images: list) -> list:
+    """Trasforma l'ultimo messaggio utente in contenuto MULTIMODALE per
+    l'API Claude: blocchi immagine (base64) seguiti dal testo. Applicato
+    DOPO l'anonimizzazione del testo: le immagini viaggiano così come sono
+    (limite dichiarato all'utente nell'interfaccia)."""
+    if not images:
+        return msgs
+    out = list(msgs)
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") == "user":
+            text = out[i].get("content") or ""
+            blocks = [{"type": "image",
+                       "source": {"type": "base64", "media_type": mt, "data": b64}}
+                      for mt, b64 in images]
+            blocks.append({"type": "text",
+                           "text": text if isinstance(text, str) else str(text)})
+            out[i] = {"role": "user", "content": blocks}
+            break
+    return out
+
+
 def stream_reply(messages, settings, anon_names, context: str = "", free_mode: bool = False,
-                 memory_context: str = "", feedback_context: str = "") -> Iterator[str]:
+                 memory_context: str = "", feedback_context: str = "",
+                 images: list | None = None) -> Iterator[str]:
     """Genera la risposta in streaming secondo il motore selezionato."""
     engine = settings.get("ai_engine", "claude")
     if engine == "lmstudio":

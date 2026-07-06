@@ -440,3 +440,6 @@ table.grid code{font-family:var(--mono); font-size:12px; color:var(--dim);}
 .si-bar{height:4px; border-radius:999px; background:rgba(255,255,255,.07); overflow:hidden; max-width:340px;}
 .si-fill{height:100%; width:38%; border-radius:999px; background:linear-gradient(90deg, rgba(236,29,43,.25), var(--iseo,#ec1d2b), rgba(236,29,43,.25)); animation:si-slide 1.4s ease-in-out infinite;}
 @keyframes si-slide{0%{transform:translateX(-110%);}100%{transform:translateX(340%);}}
+
+/* ── Avviso immagini allegate ────────────────────────────── */
+.img-hint{margin-top:6px; font-size:11px; color:#E8B84B;}

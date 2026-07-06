@@ -214,6 +214,7 @@ PAIRS = {
     "Seleziona almeno un file (o trascina una cartella).": "Select at least one file (or drag a folder).",
     "se persiste, ricarica la pagina e ripeti l'accesso": "if it persists, reload the page and sign in again",
     "blocchi": "chunks",
+    "Nota: le immagini allegate non passano dall'anonimizzazione e vengono inviate a Claude così come sono.": "Note: attached images do not go through anonymisation and are sent to Claude as they are.",
     "AI libera": "Free AI",
     "Allega file (fino a 20)": "Attach files (up to 20)",
     "Estraggo il testo…": "Extracting text…",
