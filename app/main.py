@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -567,7 +567,11 @@ def api_chat(request: Request, body: ChatRequest):
                 # dell'utente decide DOVE cercare; niente ricerche a tappeto.
                 parts = []
                 if src == "kb":
-                    parts.append(knowledge.retrieve(dept, search_q_ai, use_kb=True, use_folder=False))
+                    kb_text, kb_names = knowledge.kb_search(dept, search_q_ai, n=5)
+                    if kb_text.strip():
+                        parts.append(knowledge._fit_budget(
+                            ["[Conoscenza dipartimento — " + dept + "]\n" + kb_text], 6000))
+                    source_links.extend(knowledge.kb_links(dept, kb_names))
                 elif src == "folder":
                     parts.append(knowledge.retrieve(dept, search_q_ai, use_kb=False, use_folder=True))
                 elif src == "onedrive":
@@ -717,6 +721,24 @@ class PrefsBody(BaseModel):
     tone: str | None = None
     lang: str | None = None
     source: str | None = None
+
+
+@app.get("/kb/file/{name}")
+async def kb_file(request: Request, name: str):
+    """Originale di un documento della Conoscenza. Perimetro: l'utente scarica
+    SOLO dalla collezione del PROPRIO dipartimento (il percorso è derivato
+    dalla sessione, mai dal client); nome sanificato; download in audit."""
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    dept = user.get("department") or ""
+    p = knowledge.kb_file_path(dept, name)
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail=(
+            "Originale non archiviato: il documento è stato caricato prima "
+            "dell'archiviazione degli originali. Ricaricalo dalla pagina Conoscenza."))
+    _audit(request, user["username"], "kb_download", f"file={p.name[:120]}")
+    return FileResponse(p, filename=p.name)
 
 
 @app.post("/api/prefs")
@@ -1329,6 +1351,7 @@ def knowledge_upload(request: Request, files: list[UploadFile] = File(...)):
             done, _msg = knowledge.kb_ingest(dept, f.filename, text)
             if done:
                 ok_count += 1
+                knowledge.kb_save_file(dept, f.filename, raw)  # originale → link in chat
             else:
                 # FAIL LOUDLY: il motivo va mostrato, mai solo il nome del file
                 reason = (_msg or "motivo sconosciuto").strip()
@@ -1370,6 +1393,7 @@ def knowledge_delete(request: Request, filename: str = Form(...)):
     ok, _msg = knowledge.kb_delete(dept, filename)
     _audit(request, user["username"], "kb_rimozione_documento", f"file={filename[:120]}, esito={'ok' if ok else 'ko'}")
     if ok:
+        knowledge.kb_delete_file(dept, filename)
         return RedirectResponse(url=f"/knowledge?msg=Rimosso+{filename}.", status_code=303)
     # FAIL LOUDLY: il motivo, non un errore generico
     return RedirectResponse(

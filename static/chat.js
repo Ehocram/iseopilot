@@ -225,9 +225,14 @@
     head.textContent = (I18N.sources || "Fonti") + " (" + items.length + ")";
     box.appendChild(head);
     items.forEach(function (s) {
-      var a = document.createElement("a");
-      a.className = "src-link";
-      a.href = s.url; a.target = "_blank"; a.rel = "noopener noreferrer";
+      var a;
+      if (s.url) {
+        a = document.createElement("a");
+        a.href = s.url; a.target = "_blank"; a.rel = "noopener noreferrer";
+      } else {
+        a = document.createElement("span");  // originale non archiviato: nome senza link
+      }
+      a.className = "src-link" + (s.url ? "" : " nolink");
       var icon = (s.kind === "report") ? "📊 " : (s.kind === "download") ? "⬇️ " : "📄 ";
       a.textContent = icon + (s.name || s.url);
       box.appendChild(a);

@@ -451,3 +451,52 @@ def retrieve(dept: str, query: str, use_kb: bool = True, use_folder: bool = True
             if f_text.strip():
                 parts.append("[Cartella: " + p + "]\n" + f_text)
     return _fit_budget(parts, max_chars)
+
+
+# ── Archivio ORIGINALI della Conoscenza ─────────────────────
+# All'upload il file originale viene conservato nel volume dati (per
+# dipartimento): le FONTI in chat diventano link scaricabili. Perimetro:
+# serviti SOLO agli utenti del dipartimento, download tracciato in audit.
+KB_FILES_DIR = Path(os.environ.get("APP_DATA_DIR", "/data")) / "kb_files"
+
+
+def kb_file_path(dept: str, filename: str) -> Path:
+    """Percorso dell'originale, a prova di traversal: directory per
+    collezione di dipartimento + SOLO il nome base del file."""
+    d = KB_FILES_DIR / store.collection_for_department(dept)
+    d.mkdir(parents=True, exist_ok=True)
+    name = Path(filename or "").name.strip()
+    if not name or name in (".", ".."):
+        name = "documento"
+    return d / name
+
+
+def kb_save_file(dept: str, filename: str, raw: bytes) -> None:
+    try:
+        kb_file_path(dept, filename).write_bytes(raw)
+    except Exception as e:
+        import sys
+        print(f"[kb-file] impossibile archiviare {filename}: {e}", file=sys.stderr)
+
+
+def kb_delete_file(dept: str, filename: str) -> None:
+    try:
+        p = kb_file_path(dept, filename)
+        if p.is_file():
+            p.unlink()
+    except Exception:
+        pass
+
+
+def kb_links(dept: str, names: list) -> list:
+    """Voci FONTI per i documenti KB: link all'originale se archiviato,
+    solo il nome altrimenti (documenti caricati prima di questa funzione)."""
+    from urllib.parse import quote
+    out = []
+    for n in names:
+        name = n[0] if isinstance(n, (tuple, list)) else str(n)
+        item = {"name": name, "kind": "kb"}
+        if kb_file_path(dept, name).is_file():
+            item["url"] = "/kb/file/" + quote(name)
+        out.append(item)
+    return out

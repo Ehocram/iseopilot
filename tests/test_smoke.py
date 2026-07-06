@@ -1008,6 +1008,50 @@ def test_chat_streaming_with_image_sends_multimodal():
     store.set_setting("claude_api_key", "", secret=True)
 
 
+def test_kb_file_archive_and_download():
+    from unittest.mock import patch
+    from app import knowledge as kn
+    # percorso a prova di traversal: resta il solo nome base
+    assert kn.kb_file_path("IT", "../../etc/passwd").name == "passwd"
+    assert str(kn.kb_file_path("IT", "a/b/GPO 19.11.pdf")).endswith("GPO 19.11.pdf")
+    # upload: l'originale viene archiviato dopo l'ingest riuscito
+    store.create_user("kbf@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "kbf@test", "Password123!")
+    with patch.object(kn, "kb_available", return_value=True), \
+         patch.object(kn, "extract_text", return_value="testo"), \
+         patch.object(kn, "kb_ingest", return_value=(True, "ok")):
+        c.post("/knowledge/upload",
+               files=[("files", ("GPO 19.11 Password policy (IT).pdf", b"ORIGINALE-PDF", "application/pdf"))],
+               follow_redirects=False)
+    fp = kn.kb_file_path("IT", "GPO 19.11 Password policy (IT).pdf")
+    assert fp.read_bytes() == b"ORIGINALE-PDF"
+    # kb_links: url per gli archiviati, solo nome per i vecchi
+    links = kn.kb_links("IT", [("GPO 19.11 Password policy (IT).pdf", ""), ("vecchio.pdf", "")])
+    assert links[0]["url"].startswith("/kb/file/") and "url" not in links[1]
+    # download: stesso dipartimento OK, con contenuto
+    r = c.get(links[0]["url"])
+    assert r.status_code == 200 and r.content == b"ORIGINALE-PDF"
+    # ALTRO dipartimento: 404 (la collezione è un'altra)
+    store.create_user("kbhr@test", auth.hash_password("Password123!"), "HR")
+    c2 = fresh_client(); login(c2, "kbhr@test", "Password123!")
+    assert c2.get(links[0]["url"]).status_code == 404
+    # anonimo: rimandato al login
+    c3 = fresh_client()
+    assert c3.get(links[0]["url"], follow_redirects=False).status_code == 303
+    # rimozione dalla KB: via anche l'originale
+    with patch.object(kn, "kb_delete", return_value=(True, "ok")):
+        c.post("/knowledge/delete", data={"filename": "GPO 19.11 Password policy (IT).pdf"},
+               follow_redirects=False)
+    assert not fp.exists()
+    # client: le fonti senza url si rendono come testo, mai href rotti
+    js = c.get("/static/chat.js").text
+    assert "nolink" in js and "if (s.url)" in js
+
+
+def test_kb_file_archive_placeholder():
+    pass
+
+
 def test_prefs_persist_per_user():
     store.create_user("prefs@test", auth.hash_password("Password123!"), "IT")
     c = fresh_client(); login(c, "prefs@test", "Password123!")

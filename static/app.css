@@ -443,3 +443,5 @@ table.grid code{font-family:var(--mono); font-size:12px; color:var(--dim);}
 
 /* ── Avviso immagini allegate ────────────────────────────── */
 .img-hint{margin-top:6px; font-size:11px; color:#E8B84B;}
+
+.src-link.nolink{opacity:.55; cursor:default; text-decoration:none;}
