@@ -105,7 +105,8 @@ def _sse(payload: dict) -> str:
 
 # ── Claude ──────────────────────────────────────────────────
 def _stream_claude(messages, settings, anon_names, context: str = "", free_mode: bool = False,
-                   memory_context: str = "", feedback_context: str = "") -> Iterator[str]:
+                   memory_context: str = "", feedback_context: str = "",
+                   images: list | None = None) -> Iterator[str]:
     api_key = settings.get("claude_api_key", "").strip()
     model = settings.get("claude_model", "claude-opus-4-8").strip() or "claude-opus-4-8"
     if not api_key:
@@ -287,4 +288,4 @@ def stream_reply(messages, settings, anon_names, context: str = "", free_mode: b
     if engine == "lmstudio":
         yield from _stream_lmstudio(messages, settings, context, free_mode, memory_context, feedback_context)
     else:
-        yield from _stream_claude(messages, settings, anon_names, context, free_mode, memory_context, feedback_context)
+        yield from _stream_claude(messages, settings, anon_names, context, free_mode, memory_context, feedback_context, images=images)

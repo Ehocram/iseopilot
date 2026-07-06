@@ -952,6 +952,62 @@ def test_account_requires_login():
     assert r.status_code == 303 and "/login" in r.headers.get("location", "")
 
 
+def _fake_claude_stream():
+    from unittest.mock import MagicMock
+    sse = [
+        'event: message_start', 'data: {"type":"message_start"}', '',
+        'event: content_block_delta',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"CIAO DAL FINTO CLAUDE"}}',
+        '',
+        'event: message_stop', 'data: {"type":"message_stop"}', '',
+    ]
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.iter_lines.return_value = iter(sse)
+    fake.__enter__ = lambda s: s
+    fake.__exit__ = lambda s, *a: False
+    return fake
+
+
+def test_chat_streaming_end_to_end_with_key():
+    """Regressione del blocco 'barra infinita': con la chiave PRESENTE lo
+    streaming deve arrivare al delta. (Il NameError su images moriva qui:
+    retrieval ok, poi stream muto — il test senza chiave non lo copriva.)"""
+    from unittest.mock import patch
+    import app.orchestrator as orch
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    store.create_user("e2e@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "e2e@test", "Password123!")
+    with patch.object(orch.requests, "post", return_value=_fake_claude_stream()):
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "ciao"}],
+                                      "free_mode": False, "source": "kb", "engine": "claude"})
+    assert "CIAO DAL FINTO CLAUDE" in r.text
+    store.set_setting("claude_api_key", "", secret=True)
+
+
+def test_chat_streaming_with_image_sends_multimodal():
+    """Con un'immagine allegata, l'ultimo messaggio verso Claude è a blocchi
+    (image + text) e lo streaming produce comunque il delta."""
+    import io
+    from unittest.mock import patch
+    from PIL import Image
+    import app.orchestrator as orch
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    store.create_user("e2img@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "e2img@test", "Password123!")
+    im = Image.new("RGB", (60, 60), (0, 120, 0))
+    buf = io.BytesIO(); im.save(buf, "PNG")
+    aid = c.post("/api/attach", files=[("files", ("v.png", buf.getvalue(), "image/png"))]).json()["attachments"][0]["id"]
+    with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "cosa vedi?"}],
+                                      "free_mode": True, "engine": "claude",
+                                      "attachments": [{"id": aid, "name": "v.png", "kind": "image"}]})
+    assert "CIAO DAL FINTO CLAUDE" in r.text
+    sent = mp.call_args.kwargs["json"]["messages"][-1]["content"]
+    assert isinstance(sent, list) and sent[0]["type"] == "image" and sent[-1]["type"] == "text"
+    store.set_setting("claude_api_key", "", secret=True)
+
+
 def test_prefs_persist_per_user():
     store.create_user("prefs@test", auth.hash_password("Password123!"), "IT")
     c = fresh_client(); login(c, "prefs@test", "Password123!")
