@@ -1135,6 +1135,17 @@ def test_gen_docx_formatting_no_duplicates_and_real_bullets():
     os.unlink(path)
 
 
+def test_html_pages_never_cached():
+    """L'HTML esce sempre con no-store: mai più 'funziona solo dopo
+    hard-refresh' (browser o App Proxy che servono pagine vecchie con
+    riferimenti ad asset vecchi)."""
+    c = fresh_client()
+    r = c.get("/login")
+    assert "no-store" in r.headers.get("cache-control", "")
+    r2 = c.get("/static/chat.js")
+    assert "no-store" not in r2.headers.get("cache-control", "")
+
+
 def test_rtf_attachment_supported():
     """Il caso di Marco: log.rtf allegato — ora viene letto (i Mac producono
     RTF di default), col testo estratto nel deposito."""

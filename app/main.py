@@ -34,6 +34,21 @@ app = FastAPI(title="ISEOPilot")
 _secret = os.environ.get("APP_SECRET_KEY", "").strip()
 if not _secret:
     raise RuntimeError("APP_SECRET_KEY non impostata: necessaria per firmare le sessioni.")
+
+
+@app.middleware("http")
+async def _no_html_cache(request, call_next):
+    """Le pagine HTML non si cacheano MAI (browser e App Proxy): l'HTML vecchio
+    referenzia asset vecchi col loro ?v= vecchio, e il cache-busting non può
+    bustare sé stesso. Classe di incidenti: 'funziona solo dopo hard-refresh'."""
+    response = await call_next(request)
+    ctype = response.headers.get("content-type", "")
+    if ctype.startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=_secret,
