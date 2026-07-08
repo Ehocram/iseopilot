@@ -337,10 +337,18 @@ def test_settings_shows_connect_controls():
 
 def test_free_mode_system_prompt():
     from app.orchestrator import build_system
-    # modalità libera: istruzione generalista, niente blocco CONTESTO anche se fornito
-    s = build_system("Tecnico", "Italiano", "DOC_AZIENDALE_SEGRETO", free_mode=True)
+    # modalità libera: istruzione generalista; il context (che in libera
+    # contiene SOLO gli allegati dell'utente) DEVE entrare come blocco ALLEGATI
+    # — scartarlo faceva negare al modello i file allegati (caso Guillaume).
+    # La garanzia "nessuna fonte aziendale in libera" vive in _build_context:
+    # il retrieval non parte proprio.
+    s = build_system("Tecnico", "Italiano", "[ALLEGATO 1/1: listino.xlsx]\nPADLOCK 8mm", free_mode=True)
     assert "MODALITÀ AI LIBERA" in s
-    assert "DOC_AZIENDALE_SEGRETO" not in s and "CONTESTO" not in s
+    assert "ALLEGATI DELL'UTENTE" in s and "PADLOCK 8mm" in s
+    assert "=== CONTESTO ===" not in s  # niente blocco documentale in libera
+    # senza allegati: nessun blocco extra
+    s0 = build_system("Tecnico", "Italiano", "", free_mode=True)
+    assert "ALLEGATI DELL'UTENTE" not in s0
     # modalità documentale: usa il contesto
     s2 = build_system("Tecnico", "Italiano", "DOC_AZIENDALE_SEGRETO", free_mode=False)
     assert "DOC_AZIENDALE_SEGRETO" in s2 and "MODALITÀ AI LIBERA" not in s2
@@ -1050,6 +1058,173 @@ def test_kb_file_archive_and_download():
 
 def test_kb_file_archive_placeholder():
     pass
+
+
+def test_docx_textbox_fallback_and_legacy_doc_diagnosis():
+    """Caso reale dal log OneDrive (docx a 0 caratteri): il testo nelle CASELLE
+    DI TESTO viene recuperato dal fallback XML; un .doc legacy rinominato .docx
+    non estrae ma la diagnosi arriva nei log (mai più zero-char muti)."""
+    import io, contextlib, tempfile, os
+    from docx import Document
+    from docx.oxml import parse_xml
+    from app.engines.folder_index import _extract_text
+    from pathlib import Path
+    # 1) docx col testo SOLO in una casella di testo (w:txbxContent)
+    d = Document()
+    ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    box = parse_xml(f'<w:txbxContent {ns}><w:p><w:r><w:t>TESTO NELLA CASELLA 2012</w:t></w:r></w:p></w:txbxContent>')
+    d.element.body.insert(0, box)
+    fd, tmp = tempfile.mkstemp(suffix=".docx"); os.close(fd)
+    d.save(tmp)
+    try:
+        text = _extract_text(Path(tmp), ".docx")
+        assert "TESTO NELLA CASELLA 2012" in text
+    finally:
+        os.unlink(tmp)
+    # 2) .doc legacy (magic OLE) rinominato .docx: "" senza eccezioni, diagnosi a stderr
+    fd, tmp2 = tempfile.mkstemp(suffix=".docx"); os.close(fd)
+    Path(tmp2).write_bytes(b"\xd0\xcf\x11\xe0" + b"junk" * 200)
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            out = _extract_text(Path(tmp2), ".docx")
+        assert out == ""
+        assert "LEGACY" in err.getvalue()
+    finally:
+        os.unlink(tmp2)
+
+
+def test_gen_docx_formatting_no_duplicates_and_real_bullets():
+    """Regressione formattazione Word: add_paragraph(text, style=inesistente)
+    inseriva il testo e POI falliva sullo stile — ogni titolo e ogni bullet
+    usciva DOPPIO (grezzo + stilato), coi pallini come "•" letterali."""
+    import os
+    from app import docgen
+    from docx import Document
+    from docx.oxml.ns import qn
+    spec = {"title": "Titolo del documento", "subtitle": "Sottotitolo di prova",
+            "sections": [
+                {"heading": "Sezione uno", "paragraphs": ["Primo paragrafo di corpo."],
+                 "bullets": ["Punto uno", "Punto due"]},
+                {"heading": "Sezione due", "paragraphs": ["Altro testo di corpo."]},
+            ]}
+    path, name = docgen.gen_docx(spec)
+    d = Document(path)
+    texts = [p.text for p in d.paragraphs if p.text.strip()]
+    # 1) nessuna riga duplicata consecutiva (il raddoppio heading/bullet)
+    for a, b in zip(texts, texts[1:]):
+        assert a != b, f"riga duplicata: {a!r}"
+    # 2) mai pallini letterali
+    assert all("•" not in t for t in texts)
+    # 3) i titoli di sezione NON usano lo stile del titolo di copertina, e sono bold
+    for p in d.paragraphs:
+        if p.text.strip() in ("Sezione uno", "Sezione due"):
+            assert p.style.name != "ISEO Titolo"
+            assert any(r.bold for r in p.runs)
+    # 4) i bullet portano la numerazione VERA (numPr) quando il template c'è
+    bullets = [p for p in d.paragraphs if p.text.strip() in ("Punto uno", "Punto due")]
+    assert bullets
+    try:
+        d.styles["Paragrafo elenco"]; has_tpl = True
+    except Exception:
+        has_tpl = False
+    if has_tpl:
+        for p in bullets:
+            ppr = p._p.find(qn("w:pPr"))
+            assert ppr is not None and ppr.find(qn("w:numPr")) is not None
+    os.unlink(path)
+
+
+def test_web_search_tool_only_when_enabled_and_free():
+    """Ricerca web: tool nel payload SOLO con flag admin attivo E modalità
+    libera — mai in Documentale (contratto fonti aziendali) né a flag spento."""
+    import json as _json
+    from unittest.mock import patch
+    import app.orchestrator as orch
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    store.create_user("web@test", auth.hash_password("Password123!"), "Sales")
+    c = fresh_client(); login(c, "web@test", "Password123!")
+    def _payload(free, source=None):
+        with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp:
+            body = {"messages": [{"role": "user", "content": "trend di mercato serrature 2026?"}],
+                    "free_mode": free, "engine": "claude"}
+            if source: body["source"] = source
+            c.post("/api/chat", json=body)
+        return mp.call_args.kwargs["json"]
+    store.set_setting("claude_web_search", "1")
+    p1 = _payload(True)
+    assert p1.get("tools") and p1["tools"][0]["type"] == "web_search_20250305"
+    assert "RICERCA WEB" in p1["system"]
+    p2 = _payload(False, source="kb")
+    assert "tools" not in p2
+    store.set_setting("claude_web_search", "0")
+    p3 = _payload(True)
+    assert "tools" not in p3
+    store.set_setting("claude_api_key", "", secret=True)
+
+
+def test_web_search_stream_status_and_note():
+    """Nel flusso: indicatore 'Ricerca web in corso' (riusa lo status) e nota
+    finale col conteggio; gli eventi tool non rompono il parser."""
+    from unittest.mock import patch, MagicMock
+    import app.orchestrator as orch
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    store.set_setting("claude_web_search", "1")
+    store.create_user("web2@test", auth.hash_password("Password123!"), "Sales")
+    c = fresh_client(); login(c, "web2@test", "Password123!")
+    sse = [
+        'data: {"type":"message_start"}', '',
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"t1","name":"web_search"}}', '',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"query\\":\\"tre"}}', '',
+        'data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"t1"}}', '',
+        'data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Il trend 2026 è X [fonte](https://esempio.com)."}}', '',
+        'data: {"type":"message_stop"}', '',
+    ]
+    fake = MagicMock(); fake.status_code = 200
+    fake.iter_lines.return_value = iter(sse)
+    fake.__enter__ = lambda s: s; fake.__exit__ = lambda s, *a: False
+    with patch.object(orch.requests, "post", return_value=fake):
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "trend?"}],
+                                      "free_mode": True, "engine": "claude"})
+    assert "Ricerca web in corso" in r.text
+    assert "Il trend 2026" in r.text
+    assert "1 ricerca web" in r.text
+    store.set_setting("claude_web_search", "0")
+    store.set_setting("claude_api_key", "", secret=True)
+
+
+def test_web_search_toggle_placeholder():
+    pass
+
+
+def test_free_mode_attachment_reaches_claude():
+    """Regressione del caso Guillaume: allegato + AI LIBERA — il contenuto
+    DEVE arrivare nel payload verso Claude (l'elif del prompt libera lo
+    scartava, e il modello negava di vedere il file)."""
+    import json as _json
+    from unittest.mock import patch
+    import app.orchestrator as orch
+    from app import knowledge as kn
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    store.create_user("freeatt@test", auth.hash_password("Password123!"), "Sales")
+    c = fresh_client(); login(c, "freeatt@test", "Password123!")
+    with patch.object(kn, "extract_attachment_text", return_value="PADLOCK 8mm\tprezzo 12"):
+        a = c.post("/api/attach", files=[("files", ("Grille de réponses.xlsx", b"x", "application/vnd.ms-excel"))]).json()["attachments"][0]
+    with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "review the file"}],
+                                      "free_mode": True, "engine": "claude",
+                                      "attachments": [{"id": a["id"], "name": "Grille de réponses.xlsx", "chars": a["chars"]}]})
+    assert "CIAO DAL FINTO CLAUDE" in r.text
+    blob = _json.dumps(mp.call_args.kwargs["json"], ensure_ascii=False)
+    assert "[ALLEGATO" in blob and "PADLOCK 8mm" in blob
+    # e in DOCUMENTALE l'allegato continua a passare
+    with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp2:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "review"}],
+                                  "free_mode": False, "source": "kb", "engine": "claude",
+                                  "attachments": [{"id": a["id"], "name": "Grille de réponses.xlsx", "chars": a["chars"]}]})
+    blob2 = _json.dumps(mp2.call_args.kwargs["json"], ensure_ascii=False)
+    assert "[ALLEGATO" in blob2 and "PADLOCK 8mm" in blob2
+    store.set_setting("claude_api_key", "", secret=True)
 
 
 def test_prefs_persist_per_user():

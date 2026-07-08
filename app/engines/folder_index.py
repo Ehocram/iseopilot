@@ -41,7 +41,13 @@ from pathlib import Path
 
 
 def _dbg(msg):
-    """Log leggero sullo stesso file del resto dell'app (~/chat_assistant_debug.txt)."""
+    """Log leggero: file storico dell'app E stderr (così sul server la diagnosi
+    finisce nei docker logs invece che in un file effimero dentro il container)."""
+    try:
+        import sys
+        print(f"[folder_index] {msg}", file=sys.stderr)
+    except Exception:
+        pass
     try:
         with open(Path.home() / "chat_assistant_debug.txt", "a", encoding="utf-8") as f:
             f.write(f"[{_dt.datetime.now():%H:%M:%S}] [folder_index] {msg}\n")
@@ -72,7 +78,7 @@ CHUNK_OVERLAP  = 40
 # estratto con la vecchia logica e i file NON risultano modificati (mtime/size
 # invariati) → l'update incrementale non li ri-parserebbe. Cambiando questa
 # costante, update() rigenera l'indice da zero una volta sola.
-EXTRACTOR_VERSION = "2"  # v2: estrazione .docx con tabelle + intestazioni/piè di pagina
+EXTRACTOR_VERSION = "3"  # v3: fallback XML per docx con testo nelle caselle di testo
 
 # Stopwords IT/EN per costruire la query FTS (non per filtrare i documenti)
 _STOP = {
@@ -147,6 +153,18 @@ def _docx_full_text(path: Path) -> str:
                     _walk(cell)  # ricorsivo → gestisce tabelle dentro celle
 
     _walk(doc)
+    # RETE DI SICUREZZA: se paragrafi+tabelle non hanno prodotto testo, il
+    # contenuto può vivere nelle CASELLE DI TESTO (w:txbxContent), che le API
+    # .paragraphs/.tables non vedono. Raccolta a livello XML: tutti i w:p del
+    # documento, caselle incluse (caso reale: docx tecnici 2012 usciti a 0 char).
+    if sum(len(t.strip()) for t in out) < 20:
+        from docx.oxml.ns import qn as _qn
+        for p_el in doc.element.iter(_qn("w:p")):
+            t = "".join(n.text or "" for n in p_el.iter(_qn("w:t")))
+            if t.strip():
+                out.append(t)
+        if out:
+            _dbg(f"docx {path.name}: testo recuperato dal fallback XML (caselle di testo)")
     # intestazioni e piè di pagina (saltando quelli "ereditati" per non duplicare)
     for sec in doc.sections:
         for hf in (sec.header, sec.footer):
@@ -190,7 +208,13 @@ def _extract_text(path: Path, ext: str) -> str:
         # incluso, l'estrazione fallisce qui: logghiamo l'errore reale invece di
         # restituire silenziosamente "" (cosi' l'indice vuoto non resta un mistero).
         try:
-            _dbg(f"estrazione FALLITA: {path.name} ({ext}): {type(_e).__name__}: {_e}")
+            hint = ""
+            try:
+                if path.read_bytes()[:4] == b"\xd0\xcf\x11\xe0":
+                    hint = " — è un .doc LEGACY (OLE) rinominato .docx: riesportarlo come .docx reale"
+            except Exception:
+                pass
+            _dbg(f"estrazione FALLITA: {path.name} ({ext}): {type(_e).__name__}: {_e}{hint}")
         except Exception:
             pass
         return ""

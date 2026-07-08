@@ -199,37 +199,61 @@ def _safe_name(title: str, ext: str) -> str:
 
 def gen_docx(spec: dict) -> tuple[str, str]:
     from docx import Document
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
     doc = Document(str(DOCX_TEMPLATE)) if DOCX_TEMPLATE.is_file() else Document()
     # svuota i paragrafi placeholder del template (mantiene header/footer/logo)
     for p in list(doc.paragraphs):
         p._element.getparent().remove(p._element)
 
-    def style_or(name, fallback):
+    def has_style(name: str) -> bool:
         try:
             _ = doc.styles[name]
-            return name
+            return True
         except Exception:
-            return fallback
+            return False
 
-    title_style = style_or("ISEO Titolo", "Title")
-    body_style = style_or("Paragrafo base ISEO", "Normal")
+    # NB: add_paragraph(text, style=...) prima INSERISCE il testo e poi assegna
+    # lo stile: se lo stile non esiste, l'eccezione arriva DOPO e il paragrafo
+    # grezzo resta nel documento — era la causa delle righe DUPLICATE. Qui lo
+    # stile viene applicato sullo STESSO paragrafo, con ripiego senza doppioni.
+    def add(text: str, style: str | None = None, bold: bool = False,
+            before: int = 0, after: int = 0, bullet: bool = False):
+        p = doc.add_paragraph()
+        if style and has_style(style):
+            p.style = doc.styles[style]
+        run = p.add_run(str(text))
+        run.bold = bold
+        if before:
+            p.paragraph_format.space_before = Pt(before)
+        if after:
+            p.paragraph_format.space_after = Pt(after)
+        if bullet:
+            # elenco VERO del template (numId=1 = puntato), mai "•" letterale
+            numpr = p._p.get_or_add_pPr().makeelement(qn("w:numPr"), {})
+            ilvl = numpr.makeelement(qn("w:ilvl"), {qn("w:val"): "0"})
+            numid = numpr.makeelement(qn("w:numId"), {qn("w:val"): "1"})
+            numpr.append(ilvl); numpr.append(numid)
+            p._p.get_or_add_pPr().append(numpr)
+        return p
 
-    doc.add_paragraph(spec.get("title", "Documento"), style=title_style)
+    title_style = "ISEO Titolo" if has_style("ISEO Titolo") else "Title"
+    body_style = "Paragrafo base ISEO" if has_style("Paragrafo base ISEO") else "Normal"
+    list_style = "Paragrafo elenco" if has_style("Paragrafo elenco") else "List Bullet"
+    use_numpr = has_style("Paragrafo elenco")  # il numbering c'è solo nel template
+
+    add(spec.get("title", "Documento"), style=title_style, after=6)
     if spec.get("subtitle"):
-        doc.add_paragraph(spec["subtitle"], style=body_style)
+        add(spec["subtitle"], style=body_style, after=10)
     for sec in spec.get("sections", []):
         if sec.get("heading"):
-            try:
-                doc.add_heading(sec["heading"], level=1)
-            except Exception:
-                doc.add_paragraph(sec["heading"], style=title_style)
+            # titolo di SEZIONE: corpo in grassetto con aria sopra — mai lo
+            # stile del titolo di copertina, che urlava a ogni sezione
+            add(sec["heading"], style=body_style, bold=True, before=14, after=6)
         for par in sec.get("paragraphs", []):
-            doc.add_paragraph(str(par), style=body_style)
+            add(str(par), style=body_style, after=6)
         for b in sec.get("bullets", []):
-            try:
-                doc.add_paragraph(str(b), style="List Bullet")
-            except Exception:
-                doc.add_paragraph("• " + str(b), style=body_style)
+            add(str(b), style=list_style, after=3, bullet=use_numpr)
 
     name = _safe_name(spec.get("title", "documento"), "docx")
     path = OUT_DIR / (next(tempfile._get_candidate_names()) + ".docx")

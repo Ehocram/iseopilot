@@ -97,6 +97,13 @@
           <div class="hint">Sostituisce IP, email, codici fiscali, P.IVA, hash, token e i nomi del dizionario con segnaposto, ripristinati nella risposta.</div>
         </div>
         <div class="field">
+          <div class="checkrow">
+            <input type="checkbox" id="claude_web_search" name="claude_web_search" value="1" {% if claude_web_search %}checked{% endif %}>
+            <label for="claude_web_search">Ricerca web (solo modalità AI libera)</label>
+          </div>
+          <div class="hint">Claude può cercare sul web quando la domanda riguarda informazioni recenti; le fonti sono citate con link nella risposta e la barra mostra "Ricerca web in corso". Max 5 ricerche per domanda. Nota governance: le query (già anonimizzate) transitano dai motori di ricerca via Anthropic — nuovo flusso dati da annotare. Costo per ricerca a consumo.</div>
+        </div>
+        <div class="field">
           <label for="anon_dictionary">Dizionario anonimizzazione nomi</label>
           <textarea id="anon_dictionary" name="anon_dictionary" placeholder="Un nome per riga (persone, aziende, progetti riservati)…">{{ anon_dictionary }}</textarea>
           <div class="hint">Un termine per riga. Ogni occorrenza viene mascherata prima dell'invio a Claude.</div>

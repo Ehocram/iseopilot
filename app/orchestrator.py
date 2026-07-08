@@ -69,15 +69,25 @@ def build_system(tone_key: str, reply_lang: str, context: str = "",
         "link di download comparirà sotto la risposta.")
     if free_mode:
         # MODALITÀ AI LIBERA (AI ON): conoscenza generale, nessuna ricerca nelle
-        # fonti aziendali. Porting del comportamento del pulsante "🤖 AI" desktop.
+        # fonti aziendali. Gli ALLEGATI dell'utente però passano SEMPRE (in
+        # libera il context contiene solo quelli): scartarli faceva negare al
+        # modello file che l'utente vedeva regolarmente agganciati alla chat.
         parts.append(
             "MODALITÀ AI LIBERA. Sei un assistente generalista: rispondi usando la "
             "TUA CONOSCENZA GENERALE su qualsiasi argomento (persone pubbliche, fatti "
-            "storici, scienza, tecnica, geografia, attualità). NON stai consultando "
-            "documenti aziendali. NON dire mai 'non trovato nei documenti', 'nella base "
-            "dati' o 'non ho informazioni': stai rispondendo dalla tua conoscenza "
-            "generale. Fornisci sempre una risposta utile e completa."
+            "storici, scienza, tecnica, geografia, attualità). NON stai consultando le "
+            "fonti aziendali (Conoscenza, Cartelle, OneDrive, Dynamics). NON dire mai "
+            "'non trovato nei documenti' o 'nella base dati': stai rispondendo dalla "
+            "tua conoscenza generale. Fornisci sempre una risposta utile e completa."
         )
+        if context and context.strip():
+            parts.append(
+                "ECCEZIONE IMPORTANTE: l'utente ha ALLEGATO dei documenti a questa "
+                "conversazione. Li trovi qui sotto e DEVI leggerli e usarli come fonte "
+                "primaria per rispondere: non negare mai di vederli.\n\n"
+                "=== ALLEGATI DELL'UTENTE ===\n" + context.strip() +
+                "\n=== FINE ALLEGATI ==="
+            )
     elif context and context.strip():
         parts.append(
             "Usa il CONTESTO seguente, recuperato dalla base di conoscenza aziendale, "
@@ -138,6 +148,17 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
     out_msgs = _apply_images(out_msgs, images or [])
     payload = {"model": model, "max_tokens": 8000, "system": system,
                "messages": out_msgs, "stream": True}
+    # RICERCA WEB (tool server-side Anthropic): solo in AI LIBERA e solo se
+    # l'amministratore l'ha attivata. Tetto per domanda: contiene costi e latenza.
+    web_enabled = bool(free_mode and settings.get("claude_web_search"))
+    if web_enabled:
+        payload["tools"] = [{"type": "web_search_20250305", "name": "web_search",
+                             "max_uses": 5}]
+        payload["system"] = system + (
+            "\n\nHai a disposizione la RICERCA WEB: usala quando la domanda riguarda "
+            "informazioni recenti, prezzi, trend o fatti verificabili online. Nel testo "
+            "della risposta cita SEMPRE i link delle fonti web che hai usato.")
+    web_used = 0
 
     try:
         resp = requests.post(
@@ -161,6 +182,13 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
         except Exception:
             continue
         etype = evt.get("type")
+        if etype == "content_block_start":
+            blk = evt.get("content_block", {}) or {}
+            if blk.get("type") == "server_tool_use" and blk.get("name") == "web_search":
+                web_used += 1
+                yield _sse({"type": "status",
+                            "text": f"Ricerca web in corso ({web_used})…"})
+            continue
         if etype == "content_block_delta":
             delta = evt.get("delta", {}).get("text", "")
             if not delta:
@@ -185,6 +213,12 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
     if needs_restore and buffer:
         yield _sse({"type": "delta", "text": anon.restore(buffer)})
 
+    if web_used:
+        import sys
+        print(f"[web] ricerche web usate nella risposta: {web_used}", file=sys.stderr)
+        yield _sse({"type": "delta",
+                    "text": f"\n\n🌐 *Risposta costruita con {web_used} ricerc"
+                            f"{'a' if web_used == 1 else 'he'} web.*"})
     if needs_restore:
         n = len(anon.get_map())
         yield _sse({"type": "delta",

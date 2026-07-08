@@ -379,6 +379,7 @@ def admin_settings() -> dict:
         "claude_model_rewrite": store.get_setting("claude_model_rewrite", "claude-haiku-4-5-20251001"),
         "claude_model_docgen": store.get_setting("claude_model_docgen", "claude-fable-5"),
         "claude_anonymize": store.get_setting("claude_anonymize", "1") == "1",
+        "claude_web_search": store.get_setting("claude_web_search", "0") == "1",
         "lm_url": store.get_setting("lm_url", ""),
         "lm_model": store.get_setting("lm_model", ""),
     }
@@ -961,6 +962,7 @@ def admin_page(request: Request):
         claude_model_docgen=store.get_setting("claude_model_docgen", "claude-fable-5"),
         claude_key_set=store.has_secret("claude_api_key"),
         claude_anonymize=store.get_setting("claude_anonymize", "1") == "1",
+        claude_web_search=store.get_setting("claude_web_search", "0") == "1",
         lm_url=store.get_setting("lm_url", ""),
         lm_model=store.get_setting("lm_model", ""),
         anon_dictionary=store.get_setting("anon_dictionary", ""),
@@ -998,6 +1000,7 @@ def admin_save(
     claude_model_docgen: str = Form("claude-fable-5"),
     search_ai_rewrite: str = Form("0"),
     claude_anonymize: str = Form("0"),
+    claude_web_search: str = Form("0"),
     lm_url: str = Form(""),
     lm_model: str = Form(""),
     anon_dictionary: str = Form(""),
@@ -1023,6 +1026,7 @@ def admin_save(
     store.set_setting("claude_model_docgen", claude_model_docgen.strip() or "claude-fable-5")
     store.set_setting("search_ai_rewrite", "1" if search_ai_rewrite == "1" else "0")
     store.set_setting("claude_anonymize", "1" if claude_anonymize == "1" else "0")
+    store.set_setting("claude_web_search", "1" if claude_web_search == "1" else "0")
     store.set_setting("lm_url", lm_url.strip())
     store.set_setting("lm_model", lm_model.strip())
     store.set_setting("anon_dictionary", anon_dictionary)
