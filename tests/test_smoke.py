@@ -1135,6 +1135,45 @@ def test_gen_docx_formatting_no_duplicates_and_real_bullets():
     os.unlink(path)
 
 
+def test_rtf_attachment_supported():
+    """Il caso di Marco: log.rtf allegato — ora viene letto (i Mac producono
+    RTF di default), col testo estratto nel deposito."""
+    from app.main import _attach_load
+    store.create_user("rtf@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "rtf@test", "Password123!")
+    rtf = b"{\\rtf1\\ansi Questo arriva da un RTF di TextEdit}"
+    r = c.post("/api/attach", files=[("files", ("log.rtf", rtf, "text/rtf"))])
+    a = r.json()["attachments"][0]
+    assert a["ok"] and a.get("id")
+    assert "arriva da un RTF" in _attach_load("rtf@test", a["id"])
+
+
+def test_failed_attachment_reported_to_model():
+    """Un allegato RIFIUTATO non sparisce: il modello riceve la nota col
+    motivo e può spiegarlo, invece di negare l'esistenza di allegati."""
+    import json as _json
+    from unittest.mock import patch
+    import app.orchestrator as orch
+    from app.main import _build_attach_block
+    block = _build_attach_block([{"name": "log.xyz", "error": "Tipo non supportato"}],
+                                query="di cosa parla?", uid="x@test")
+    assert "ALLEGATI NON CARICATI" in block and "log.xyz" in block and "Tipo non supportato" in block
+    # end-to-end: la nota arriva nel payload verso Claude (AI libera)
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    store.create_user("failatt@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "failatt@test", "Password123!")
+    with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "l'allegato di che cosa parla?"}],
+                                  "free_mode": True, "engine": "claude",
+                                  "attachments": [{"name": "log.xyz", "error": "Tipo non supportato"}]})
+    blob = _json.dumps(mp.call_args.kwargs["json"], ensure_ascii=False)
+    # NB: il NOME del file ("log.xyz") matcha i pattern dell'anonimizzatore
+    # (nome.estensione ≈ dominio) e viaggia MASCHERATO verso Anthropic — è il
+    # comportamento giusto: si asserisce sulla nota e sul motivo, non sul nome.
+    assert "ALLEGATI NON CARICATI" in blob and "Tipo non supportato" in blob
+    store.set_setting("claude_api_key", "", secret=True)
+
+
 def test_web_search_tool_only_when_enabled_and_free():
     """Ricerca web: tool nel payload SOLO con flag admin attivo E modalità
     libera — mai in Documentale (contratto fonti aziendali) né a flag spento."""
@@ -1302,7 +1341,7 @@ def test_chat_js_paste_and_payload_filter():
     js = c.get("/static/chat.js").text
     # incolla da appunti + FIX del filtro payload (gli allegati con id passavano il filtro .text)
     assert "clipboardData" in js and 'indexOf("image/")' in js
-    assert "(a.id || a.text) && !a.error" in js
+    assert "a.id || a.text || a.error" in js
     assert "savePrefs" in js and "/api/prefs" in js
 
 

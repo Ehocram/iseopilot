@@ -285,7 +285,7 @@
           free_mode: modeSel && modeSel.value === "free",
           source: selectedSource(),
           session_id: sessionId,
-          attachments: attachments.filter(function(a){return (a.id || a.text) && !a.error;})
+          attachments: attachments.filter(function(a){return a.id || a.text || a.error;})
                                   .map(function(a){return {name:a.name, text:a.text};}),
         }),
       });

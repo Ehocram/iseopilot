@@ -41,7 +41,7 @@ folder_index.INDEX_DIR = FOLDER_INDEX_DIR
 ALLOWED_UPLOAD_EXT = {".txt", ".md", ".csv", ".json", ".xml", ".py",
                       ".pdf", ".docx", ".xlsx", ".xls"}
 # Gli allegati di chat accettano anche le presentazioni.
-ALLOWED_ATTACH_EXT = ALLOWED_UPLOAD_EXT | {".pptx", ".ppt"}
+ALLOWED_ATTACH_EXT = ALLOWED_UPLOAD_EXT | {".pptx", ".ppt", ".rtf"}
 
 
 # ── Configurazione ChromaDB per dipartimento ────────────────
@@ -151,6 +151,14 @@ def extract_attachment_text(filename: str, raw: bytes) -> str:
             return _extract_xlsx_full(raw)
         except Exception:
             pass  # ripiego sul percorso standard
+    if ext == ".rtf":
+        # I Mac producono RTF di default (TextEdit): rifiutarlo generava solo
+        # chip d'errore e confusione. striprtf è tollerante sui file reali.
+        try:
+            from striprtf.striprtf import rtf_to_text
+            return rtf_to_text(raw.decode("utf-8", errors="replace"))[:ATTACHMENT_MAX_CHARS]
+        except Exception:
+            pass
     if ext == ".csv":
         try:
             return raw.decode("utf-8", errors="replace")[:ATTACHMENT_MAX_CHARS]

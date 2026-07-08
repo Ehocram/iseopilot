@@ -217,7 +217,11 @@ def _build_attach_block(attachments: list, query: str = "", uid: str = "") -> st
     rende gli allegati affidabili come in un prompt diretto."""
     import sys
     items = []
+    falliti = [(str(a.get("name", "allegato")), str(a.get("error")))
+               for a in (attachments or [])[:20] if a.get("error")]
     for a in (attachments or [])[:20]:
+        if a.get("error"):
+            continue
         name = str(a.get("name", "allegato"))
         text = str(a.get("text", "") or "")
         if not text and a.get("id") and uid:
@@ -227,10 +231,18 @@ def _build_attach_block(attachments: list, query: str = "", uid: str = "") -> st
         chars_reali = int(a.get("chars") or len(text))
         if text.strip():
             items.append((name, text, chars_reali))
-    if not items:
-        return ""
-    quota = max(ATTACH_MIN_PER_FILE, ATTACH_TOTAL_BUDGET // len(items))
     parts = []
+    if falliti:
+        # Il modello DEVE spiegare all'utente perché un allegato non c'è,
+        # invece di negare l'esistenza di allegati (il motivo era sul chip
+        # e moriva lì). Vale anche quando è l'unico "allegato" della domanda.
+        dettaglio = "; ".join(f"{n} ({e})" for n, e in falliti)
+        parts.append("[ALLEGATI NON CARICATI: " + dettaglio + " — informa "
+                     "l'utente che questi file NON sono stati letti e riporta "
+                     "il motivo esatto tra parentesi]")
+    if not items:
+        return "\n\n".join(parts)
+    quota = max(ATTACH_MIN_PER_FILE, ATTACH_TOTAL_BUDGET // len(items))
     for i, (name, text, chars_reali) in enumerate(items, 1):
         shown, by_rel, matched, included, terms = _relevant_slice(text, query, quota)
         cut = len(text) > quota

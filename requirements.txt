@@ -11,3 +11,4 @@ python-multipart>=0.0.9        # form POST
 requests>=2.31                 # chiamate Claude / LM Studio
 cryptography>=42.0             # Fernet: cifratura segreti a riposo
 itsdangerous>=2.1            # firma cookie di sessione (login locale)
+striprtf
