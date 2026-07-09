@@ -1137,13 +1137,32 @@ def test_gen_docx_formatting_no_duplicates_and_real_bullets():
 
 def test_html_pages_never_cached():
     """L'HTML esce sempre con no-store: mai più 'funziona solo dopo
-    hard-refresh' (browser o App Proxy che servono pagine vecchie con
-    riferimenti ad asset vecchi)."""
+    hard-refresh' (browser o App Proxy che servono pagine vecchie)."""
     c = fresh_client()
     r = c.get("/login")
     assert "no-store" in r.headers.get("cache-control", "")
     r2 = c.get("/static/chat.js")
     assert "no-store" not in r2.headers.get("cache-control", "")
+
+
+def test_admin_logs_page_and_empty_deposit_diagnosis():
+    """Admin → Log: lo stderr finisce nel buffer consultabile (solo admin);
+    e un deposito muto produce la diagnosi DEPOSITO VUOTO con lo stato del
+    file — mai più '0 car.' senza spiegazione."""
+    from app import diag
+    from app.main import _build_attach_block
+    diag.install()
+    _build_attach_block([{"id": "a" * 32, "name": "fantasma.xlsx", "chars": 465310}],
+                        query="quante righe?", uid="marco.test")
+    righe = "\n".join(diag.tail(filtro="DEPOSITO VUOTO"))
+    assert "fantasma.xlsx" in righe and "esiste=False" in righe and "uid=marco.test" in righe
+    store.create_user("logadmin@test", auth.hash_password("Password123!"), "IT", is_admin=True)
+    store.create_user("lognorm@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "logadmin@test", "Password123!")
+    r = c.get("/admin/logs?filtro=DEPOSITO")
+    assert r.status_code == 200 and "DEPOSITO VUOTO" in r.text
+    c2 = fresh_client(); login(c2, "lognorm@test", "Password123!")
+    assert c2.get("/admin/logs").status_code == 403
 
 
 def test_rtf_attachment_supported():

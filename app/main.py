@@ -20,6 +20,9 @@ from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.background import BackgroundTask
 
+from . import diag
+diag.install()
+
 from . import auth, connectors, docgen, i18n, knowledge, memory, store
 from .connectors import (DEF_OD_CLIENT_ID, DEF_OD_TENANT_ID, DEF_DYN_CLIENT_ID,
                          DEF_DYN_TENANT_ID, DEF_DYN_RESOURCE_URL)
@@ -240,9 +243,22 @@ def _build_attach_block(attachments: list, query: str = "", uid: str = "") -> st
         name = str(a.get("name", "allegato"))
         text = str(a.get("text", "") or "")
         if not text and a.get("id") and uid:
-            text = _attach_load(uid, str(a.get("id")))
+            aid = str(a.get("id"))
+            text = _attach_load(uid, aid)
             if text.startswith("IMG:"):
                 text = ""  # le immagini viaggiano come blocchi visione, non testo
+            if not text.strip():
+                # FAIL LOUDLY: deposito muto = la causa va nominata nei log
+                import sys
+                _p = _attach_user_dir(uid) / f"{aid}.txt"
+                try:
+                    _stato = (f"esiste={_p.is_file()}"
+                              + (f" size={_p.stat().st_size}" if _p.is_file() else "")
+                              + f" dir_file={len(list(_p.parent.glob('*.txt')))}")
+                except Exception as _e:
+                    _stato = f"stat_err={_e}"
+                print(f"[attach-ctx] {name}: DEPOSITO VUOTO id={aid[:8]} uid={uid} "
+                      f"{_stato} path={_p}", file=sys.stderr)
         chars_reali = int(a.get("chars") or len(text))
         if text.strip():
             items.append((name, text, chars_reali))
@@ -749,6 +765,27 @@ class PrefsBody(BaseModel):
     tone: str | None = None
     lang: str | None = None
     source: str | None = None
+
+
+@app.get("/admin/logs", response_class=HTMLResponse)
+async def admin_logs(request: Request, filtro: str = "", n: int = 400):
+    """Log applicativi consultabili dall'app (richiesta di Marco: niente più
+    SSH per leggere [attach]/[attach-ctx]/[web]/[folder_index]). Solo admin."""
+    user = auth.current_user(request)
+    if not user or not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Riservato agli amministratori.")
+    righe = diag.tail(n=min(max(n, 10), 800), filtro=filtro[:80])
+    corpo = "\n".join(righe) or "(nessuna riga: il buffer si riempie con l'uso)"
+    html = ("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='5'>"
+            "<title>ISEOPilot — Log</title><style>body{background:#0a0c10;color:#c9d1d9;"
+            "font:12px/1.5 ui-monospace,monospace;padding:16px}h1{color:#EC1D2B;font-size:14px}"
+            "form{margin:8px 0}input{background:#12151B;color:#c9d1d9;border:1px solid #262B36;"
+            "padding:4px 8px}pre{white-space:pre-wrap;word-break:break-all}</style></head><body>"
+            f"<h1>Log applicativi · ultime {len(righe)} righe · refresh 5s</h1>"
+            "<form method='get'>filtro: <input name='filtro' value='" + filtro.replace("'", "") + "'>"
+            " <input type='submit' value='applica'></form><pre>" + corpo.replace("<", "&lt;")
+            + "</pre></body></html>")
+    return HTMLResponse(html)
 
 
 @app.get("/kb/file/{name}")
