@@ -138,10 +138,11 @@ def _attach_user_dir(uid: str) -> Path:
     return d
 
 
-def _attach_save(uid: str, text: str) -> str:
+def _attach_save(uid: str, text: str, name: str = "") -> str:
     import uuid
     aid = uuid.uuid4().hex
-    (_attach_user_dir(uid) / f"{aid}.txt").write_text(text, encoding="utf-8")
+    testa = f"NAME:{(name or '')[:200]}\n" if name and not text.startswith("IMG:") else ""
+    (_attach_user_dir(uid) / f"{aid}.txt").write_text(testa + text, encoding="utf-8")
     return aid
 
 
@@ -155,7 +156,10 @@ def _attach_load(uid: str, aid: str) -> str:
         return ""
     p = _attach_user_dir(uid) / f"{aid}.txt"
     try:
-        return p.read_text(encoding="utf-8")
+        t = p.read_text(encoding="utf-8")
+        if t.startswith("NAME:"):
+            t = t.partition("\n")[2]
+        return t
     except FileNotFoundError:
         # il file non è sotto QUESTA utenza: esiste altrove? (solo esistenza,
         # mai lettura cross-utente: serve a smascherare un disallineamento uid)
@@ -181,6 +185,28 @@ def _attach_load_image(uid: str, aid: str):
         head, _, b64 = t.partition("\n")
         return head[4:] or "image/jpeg", b64
     return None
+
+
+def _attach_find_by_name(uid: str, name: str) -> str:
+    """Risolve un allegato per NOME dentro la cartella dell'UTENTE (mai
+    cross-utente): tolleranza per i client vecchi che inviano solo {name}.
+    Tra più depositi omonimi vince il più recente."""
+    name = (name or "").strip()[:200]
+    if not name:
+        return ""
+    try:
+        d = _attach_user_dir(uid)
+        for f in sorted(d.glob("*.txt"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                with open(f, encoding="utf-8") as h:
+                    prima = h.readline().rstrip("\n")
+                if prima == f"NAME:{name}":
+                    return f.read_text(encoding="utf-8").partition("\n")[2]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ""
 
 
 def _attach_purge_old() -> None:
@@ -261,15 +287,20 @@ def _build_attach_block(attachments: list, query: str = "", uid: str = "") -> st
         name = str(a.get("name", "allegato"))
         text = str(a.get("text", "") or "")
         if not text and not a.get("id"):
-            # entry senza id, testo o errore: client con interfaccia VECCHIA
-            # (es. HTML cacheato dall'App Proxy). Il log stampa le chiavi, e la
-            # nota nel contesto fa dire AL MODELLO la cura: auto-guarigione.
+            # entry {name} da client VECCHIO: il server risolve PER NOME nel
+            # deposito dell'utente — tolleranza totale, nessun refresh richiesto
             import sys
-            print(f"[attach-ctx] {name}: ENTRY ANOMALA chiavi={sorted(a.keys())} uid={uid}",
-                  file=sys.stderr)
-            falliti.append((name, "interfaccia non aggiornata: ricarica la pagina "
-                                  "con Ctrl+F5 (o Cmd+Shift+R) e riallega il file"))
-            continue
+            if uid:
+                text = _attach_find_by_name(uid, name)
+            if text.strip():
+                print(f"[attach-ctx] {name}: risolto PER NOME (client vecchio) "
+                      f"testo={len(text)} uid={uid}", file=sys.stderr)
+            else:
+                print(f"[attach-ctx] {name}: ENTRY ANOMALA chiavi={sorted(a.keys())} uid={uid}",
+                      file=sys.stderr)
+                falliti.append((name, "interfaccia non aggiornata: ricarica la pagina "
+                                      "con Ctrl+F5 (o Cmd+Shift+R) e riallega il file"))
+                continue
         if not text and a.get("id") and uid:
             aid = str(a.get("id"))
             text = _attach_load(uid, aid)
@@ -917,7 +948,8 @@ async def api_attach(request: Request, files: list[UploadFile] = File(...)):
             # Testo INTEGRALE nel deposito server-side; al client va solo l'id.
             # La selezione per pertinenza avverrà sul testo INTERO quando la
             # domanda esiste — mai più tagli ciechi pre-domanda.
-            aid = _attach_save(user["username"], text[:knowledge.ATTACHMENT_MAX_CHARS])
+            aid = _attach_save(user["username"], text[:knowledge.ATTACHMENT_MAX_CHARS],
+                               name=f.filename or "")
             out.append({"id": aid, "name": f.filename, "ok": True,
                         "chars": len(text)})
         except Exception as e:

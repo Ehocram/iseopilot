@@ -89,4 +89,20 @@
   };
 </script>
 <script src="/static/chat.js?v={{ asset_v }}"></script>
+<script>
+  // AUTO-VERIFICA: se il chat.js caricato è di una build vecchia (cache di
+  // browser o proxy), la sentinella manca: banner + ricarica con URL unico
+  // che buca QUALSIASI strato di cache. Fine dell'era "prova con Ctrl+F5".
+  setTimeout(function () {
+    if (!window.__ISEOPILOT_JS_OK) {
+      var b = document.createElement("div");
+      b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+        "background:#EC1D2B;color:#fff;padding:10px 16px;font:14px system-ui;" +
+        "text-align:center;cursor:pointer";
+      b.textContent = "{{ t('Interfaccia non aggiornata: clicca qui per ricaricare la versione corrente.') }}";
+      b.onclick = function () { location.replace("/?b=" + Date.now()); };
+      document.body.appendChild(b);
+    }
+  }, 1500);
+</script>
 {% endblock %}

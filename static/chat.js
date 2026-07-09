@@ -25,6 +25,7 @@
 
   let history = [];      // {role, content}
   let sessionId = null;  // sessione corrente (null = nuova non ancora salvata)
+  window.__ISEOPILOT_JS_OK = true;  // sentinella anti-interfaccia-vecchia
   let attachments = [];  // {name, text, chars}
   const systemWelcomeHTML = messagesEl.innerHTML; // per "Nuova chat"
 

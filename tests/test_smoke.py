@@ -1145,6 +1145,51 @@ def test_html_pages_never_cached():
     assert "no-store" not in r2.headers.get("cache-control", "")
 
 
+def test_stale_js_selfcheck_banner():
+    """La pagina si auto-verifica: chat.js nuovo espone la sentinella; l'HTML
+    contiene il controllo col banner di ricarica cache-busting."""
+    store.create_user("selfjs@test", auth.hash_password("Password123!"), "IT")
+    c = fresh_client(); login(c, "selfjs@test", "Password123!")
+    js = c.get("/static/chat.js").text
+    assert "__ISEOPILOT_JS_OK" in js
+    html = c.get("/").text
+    assert "__ISEOPILOT_JS_OK" in html and "Interfaccia non aggiornata" in html
+    assert "location.replace" in html and "Date.now()" in html
+
+
+def test_v0_client_name_only_resolved_server_side():
+    """Il caso della nottata: client VECCHIO che manda solo {name} — il server
+    risolve per nome nel deposito dell'utente e la risposta arriva. E2E fino
+    al payload verso Claude. Isolamento tra utenti garantito."""
+    import json as _json
+    from unittest.mock import patch
+    import app.orchestrator as orch
+    from app import knowledge as kn
+    from app.main import _build_attach_block, _attach_load
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    store.create_user("v0@test", auth.hash_password("Password123!"), "Sales")
+    c = fresh_client(); login(c, "v0@test", "Password123!")
+    with patch.object(kn, "extract_attachment_text",
+                      return_value="Riga1 SOC\nRiga2 IT\nRiga3 SOC"):
+        a = c.post("/api/attach", files=[("files", ("FINAL_Grille de réponses CT199.xlsx",
+                                                    b"x", "application/vnd.ms-excel"))]).json()["attachments"][0]
+    # il load per id spoglia l'intestazione NAME:
+    assert _attach_load("v0@test", a["id"]).startswith("Riga1 SOC")
+    # payload da CLIENT VECCHIO: solo {name}
+    with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "quante righe soc?"}],
+                                      "free_mode": True, "engine": "claude",
+                                      "attachments": [{"name": "FINAL_Grille de réponses CT199.xlsx"}]})
+    assert "CIAO DAL FINTO CLAUDE" in r.text
+    blob = _json.dumps(mp.call_args.kwargs["json"], ensure_ascii=False)
+    assert "[ALLEGATO" in blob and "Riga1 SOC" in blob
+    # ISOLAMENTO: un altro utente con lo stesso nome file NON risolve
+    block2 = _build_attach_block([{"name": "FINAL_Grille de réponses CT199.xlsx"}],
+                                 query="soc?", uid="intruso@test")
+    assert "Riga1 SOC" not in block2 and "ALLEGATI NON CARICATI" in block2
+    store.set_setting("claude_api_key", "", secret=True)
+
+
 def test_attach_probes_name_every_failure_shape():
     """Ogni forma di fallimento allegati è NOMINATA nei log: id sotto altra
     utenza, id inesistente, entry anomala senza id/testo/errore."""
