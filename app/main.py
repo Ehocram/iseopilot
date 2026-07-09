@@ -147,12 +147,30 @@ def _attach_save(uid: str, text: str) -> str:
 
 def _attach_load(uid: str, aid: str) -> str:
     """Carica il testo di un allegato. L'id è vincolato all'UTENTE della
-    sessione: nessun accesso cross-utente, id solo esadecimale."""
+    sessione: nessun accesso cross-utente, id solo esadecimale.
+    Diagnostica LOUD: ogni fallimento viene nominato nei log."""
+    import sys
     if not re.fullmatch(r"[0-9a-f]{32}", str(aid or "")):
+        print(f"[attach-load] id NON valido: {str(aid)[:40]!r} uid={uid}", file=sys.stderr)
         return ""
+    p = _attach_user_dir(uid) / f"{aid}.txt"
     try:
-        return (_attach_user_dir(uid) / f"{aid}.txt").read_text(encoding="utf-8")
-    except Exception:
+        return p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # il file non è sotto QUESTA utenza: esiste altrove? (solo esistenza,
+        # mai lettura cross-utente: serve a smascherare un disallineamento uid)
+        try:
+            altrove = [d.name for d in ATTACH_DIR.iterdir()
+                       if d.is_dir() and (d / f"{aid}.txt").is_file()]
+        except Exception:
+            altrove = []
+        print(f"[attach-load] MANCANTE id={aid[:8]} uid={uid} "
+              f"{'trovato sotto ALTRA utenza: ' + ','.join(altrove) if altrove else 'assente ovunque'}",
+              file=sys.stderr)
+        return ""
+    except Exception as e:
+        print(f"[attach-load] ERRORE lettura id={aid[:8]} uid={uid}: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
         return ""
 
 
@@ -242,6 +260,14 @@ def _build_attach_block(attachments: list, query: str = "", uid: str = "") -> st
             continue
         name = str(a.get("name", "allegato"))
         text = str(a.get("text", "") or "")
+        if not text and not a.get("id"):
+            # entry senza id, testo o errore: forma da client sconosciuto —
+            # la diagnosi stampa le CHIAVI ricevute, così il log dice quale
+            # versione di chat.js sta davvero girando nel browser
+            import sys
+            print(f"[attach-ctx] {name}: ENTRY ANOMALA chiavi={sorted(a.keys())} uid={uid}",
+                  file=sys.stderr)
+            continue
         if not text and a.get("id") and uid:
             aid = str(a.get("id"))
             text = _attach_load(uid, aid)

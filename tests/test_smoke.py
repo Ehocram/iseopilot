@@ -1145,6 +1145,25 @@ def test_html_pages_never_cached():
     assert "no-store" not in r2.headers.get("cache-control", "")
 
 
+def test_attach_probes_name_every_failure_shape():
+    """Ogni forma di fallimento allegati è NOMINATA nei log: id sotto altra
+    utenza, id inesistente, entry anomala senza id/testo/errore."""
+    from app import diag
+    from app.main import _attach_save, _build_attach_block
+    diag.install()
+    # id salvato sotto un'utenza, cercato da un'altra: la sonda lo dice
+    aid = _attach_save("utente.vero", "contenuto del deposito")
+    _build_attach_block([{"id": aid, "name": "grille.xlsx", "chars": 22}],
+                        query="quante righe?", uid="utente.sbagliato")
+    righe = "\n".join(diag.tail(filtro="attach-load"))
+    assert "MANCANTE" in righe and "ALTRA utenza" in righe and "utente.vero" in righe
+    # entry anomala (client sconosciuto): chiavi stampate
+    _build_attach_block([{"name": "grille.xlsx", "chars": 465310}],
+                        query="quante righe?", uid="utente.vero")
+    righe2 = "\n".join(diag.tail(filtro="ENTRY ANOMALA"))
+    assert "grille.xlsx" in righe2 and "chars" in righe2 and "name" in righe2
+
+
 def test_admin_logs_page_and_empty_deposit_diagnosis():
     """Admin → Log: lo stderr finisce nel buffer consultabile (solo admin);
     e un deposito muto produce la diagnosi DEPOSITO VUOTO con lo stato del
