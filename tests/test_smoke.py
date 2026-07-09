@@ -1158,10 +1158,12 @@ def test_attach_probes_name_every_failure_shape():
     righe = "\n".join(diag.tail(filtro="attach-load"))
     assert "MANCANTE" in righe and "ALTRA utenza" in righe and "utente.vero" in righe
     # entry anomala (client sconosciuto): chiavi stampate
-    _build_attach_block([{"name": "grille.xlsx", "chars": 465310}],
-                        query="quante righe?", uid="utente.vero")
+    blocco = _build_attach_block([{"name": "grille.xlsx", "chars": 465310}],
+                                 query="quante righe?", uid="utente.vero")
     righe2 = "\n".join(diag.tail(filtro="ENTRY ANOMALA"))
     assert "grille.xlsx" in righe2 and "chars" in righe2 and "name" in righe2
+    # auto-guarigione: il modello riceve la cura da riferire all'utente
+    assert "ALLEGATI NON CARICATI" in blocco and "Ctrl+F5" in blocco
 
 
 def test_admin_logs_page_and_empty_deposit_diagnosis():

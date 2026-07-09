@@ -261,12 +261,14 @@ def _build_attach_block(attachments: list, query: str = "", uid: str = "") -> st
         name = str(a.get("name", "allegato"))
         text = str(a.get("text", "") or "")
         if not text and not a.get("id"):
-            # entry senza id, testo o errore: forma da client sconosciuto —
-            # la diagnosi stampa le CHIAVI ricevute, così il log dice quale
-            # versione di chat.js sta davvero girando nel browser
+            # entry senza id, testo o errore: client con interfaccia VECCHIA
+            # (es. HTML cacheato dall'App Proxy). Il log stampa le chiavi, e la
+            # nota nel contesto fa dire AL MODELLO la cura: auto-guarigione.
             import sys
             print(f"[attach-ctx] {name}: ENTRY ANOMALA chiavi={sorted(a.keys())} uid={uid}",
                   file=sys.stderr)
+            falliti.append((name, "interfaccia non aggiornata: ricarica la pagina "
+                                  "con Ctrl+F5 (o Cmd+Shift+R) e riallega il file"))
             continue
         if not text and a.get("id") and uid:
             aid = str(a.get("id"))
