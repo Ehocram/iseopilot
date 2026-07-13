@@ -1157,6 +1157,39 @@ def test_stale_js_selfcheck_banner():
     assert "location.replace" in html and "Date.now()" in html
 
 
+def test_history_ui_notes_stripped_and_free_mode_redirect():
+    """Caso Carlos, due lezioni: (1) le note 🔒/🌐 dei turni precedenti NON
+    viaggiano verso Claude (il modello ne faceva eco: '4 lucchetti');
+    (2) in AI libera il prompt insegna a reindirizzare verso
+    Documentale→Conoscenza per le domande su documenti aziendali."""
+    import json as _json
+    from unittest.mock import patch
+    import app.orchestrator as orch
+    from app.orchestrator import build_system
+    # (2) il prompt libera contiene il reindirizzo di cortesia
+    sp = build_system("Aziendale formale", "Italiano", "", free_mode=True)
+    assert "Documentale" in sp and "Conoscenza" in sp
+    assert "Non suggerire di caricare a mano" in sp
+    # (1) e2e: lo storico spedito a Claude è spogliato dalle note UI
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    store.create_user("carlos.hist@test", auth.hash_password("Password123!"), "Quality")
+    c = fresh_client(); login(c, "carlos.hist@test", "Password123!")
+    storia = [
+        {"role": "user", "content": "prima domanda"},
+        {"role": "assistant", "content": "Prima risposta utile." + chr(10) * 2
+            + "🔒 *3 elementi anonimizzati prima dell'invio ad Anthropic.*" + chr(10) * 2
+            + "🌐 *Risposta costruita con 2 ricerche web.*"},
+        {"role": "user", "content": "seconda domanda"},
+    ]
+    with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp:
+        r = c.post("/api/chat", json={"messages": storia, "free_mode": True, "engine": "claude"})
+    assert mp.called, f"Claude mai chiamato: HTTP {r.status_code}: {r.text[:300]}"
+    blob = _json.dumps(mp.call_args.kwargs["json"], ensure_ascii=False)
+    assert "Prima risposta utile." in blob
+    assert "🔒" not in blob and "🌐" not in blob and "anonimizzati" not in blob
+    store.set_setting("claude_api_key", "", secret=True)
+
+
 def test_kb_search_coverage_for_enumeration_questions():
     """Il caso Carlos: 'quali certificazioni ISO abbiamo?' — il semantico
     pesca 2 documenti su 3, ma i tre 'Corporate ISO *' matchano per NOME e

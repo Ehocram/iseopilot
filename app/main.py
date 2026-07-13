@@ -539,10 +539,22 @@ def api_chat(request: Request, body: ChatRequest):
     if not user:
         raise HTTPException(status_code=401, detail="Sessione scaduta. Effettua di nuovo l'accesso.")
 
+    def _strip_note_ui(testo: str) -> str:
+        """Le note 🔒/🌐 in coda alle risposte sono cornice UI, non conversazione:
+        se restano nello storico verso Claude, il modello finisce per fargli eco
+        (i '4 lucchetti' del caso Carlos). Via, ovunque compaiano in coda."""
+        righe = testo.rstrip().splitlines()
+        while righe and (not righe[-1].strip()
+                         or re.match(r"^\s*[🔒🌐]\s*\*.*\*\s*$", righe[-1])):
+            righe.pop()
+        return "\n".join(righe).rstrip()
+
     clean = []
     for m in body.messages[-20:]:
         role = m.get("role")
         content = (m.get("content") or "").strip()
+        if role == "assistant":
+            content = _strip_note_ui(content)
         if role in ("user", "assistant") and content:
             clean.append({"role": role, "content": content})
     if not clean or clean[-1]["role"] != "user":

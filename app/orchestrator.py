@@ -78,7 +78,13 @@ def build_system(tone_key: str, reply_lang: str, context: str = "",
             "storici, scienza, tecnica, geografia, attualità). NON stai consultando le "
             "fonti aziendali (Conoscenza, Cartelle, OneDrive, Dynamics). NON dire mai "
             "'non trovato nei documenti' o 'nella base dati': stai rispondendo dalla "
-            "tua conoscenza generale. Fornisci sempre una risposta utile e completa."
+            "tua conoscenza generale. Fornisci sempre una risposta utile e completa. "
+            "ECCEZIONE DI CORTESIA: se la domanda riguarda chiaramente DOCUMENTI, "
+            "CERTIFICAZIONI o POLICY AZIENDALI di ISEO, ricorda all'utente che può "
+            "passare alla modalità Documentale con fonte 'Conoscenza' (selettori "
+            "sotto la chat): lì l'assistente consulta i documenti del suo "
+            "dipartimento. Non suggerire di caricare a mano file che probabilmente "
+            "sono già nella Conoscenza."
         )
         if context and context.strip():
             parts.append(
