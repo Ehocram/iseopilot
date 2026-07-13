@@ -1157,6 +1157,54 @@ def test_stale_js_selfcheck_banner():
     assert "location.replace" in html and "Date.now()" in html
 
 
+def test_kb_search_coverage_for_enumeration_questions():
+    """Il caso Carlos: 'quali certificazioni ISO abbiamo?' — il semantico
+    pesca 2 documenti su 3, ma i tre 'Corporate ISO *' matchano per NOME e
+    devono entrare TUTTI, con copertura dichiarata al modello."""
+    from unittest.mock import patch
+    from app import knowledge as kn
+
+    class FakeVDB:
+        def list_documents(self):
+            return [{"name": "Corporate ISO 45001.pdf", "chunks": 9},
+                    {"name": "Corporate ISO 14001.pdf", "chunks": 7},
+                    {"name": "Corporate ISO 27001.pdf", "chunks": 11},
+                    {"name": "Policy password.pdf", "chunks": 4}]
+        def search_raw(self, query, n_results=8):
+            # il semantico vede solo 27001 (x3) e 14001 (x1): 45001 OMESSA
+            return [("La ISO 27001 copre la sicurezza delle informazioni.", "Corporate ISO 27001.pdf"),
+                    ("Ambito della 27001: SGSI.", "Corporate ISO 27001.pdf"),
+                    ("Terzo passaggio 27001.", "Corporate ISO 27001.pdf"),
+                    ("La ISO 14001 riguarda l'ambiente.", "Corporate ISO 14001.pdf")]
+        def search_in_document(self, query, source, n_results=1):
+            return f"Certificato {source.replace('.pdf', '')} ottenuto da ISEO."
+        def search(self, query, n_results=5):
+            raise AssertionError("non deve servire il ripiego")
+
+    with patch.object(kn, "kb_available", return_value=True), \
+         patch.object(kn.vector_db, "get_vdb", return_value=FakeVDB()):
+        testo, fonti = kn.kb_search("Quality", "quali certificazioni ISO abbiamo ottenuto?")
+    # TUTTI e tre i documenti ISO nel contesto — inclusa la 45001 omessa dal semantico
+    for nome in ("Corporate ISO 45001", "Corporate ISO 14001", "Corporate ISO 27001"):
+        assert nome in testo
+    # copertura dichiarata + istruzione per le domande di elenco
+    assert "TUTTI inclusi" in testo and "elenco/conteggio" in testo
+    # il documento non pertinente NON è trascinato dentro dal nome
+    assert "Policy password" not in testo
+    # fonti (per i link) coprono i tre ISO
+    nomi_fonti = [f[0] for f in fonti]
+    assert all(any(iso in nf for nf in nomi_fonti) for iso in ("45001", "14001", "27001"))
+    # max 2 passaggi per fonte: il terzo chunk 27001 resta fuori
+    assert "Terzo passaggio 27001" not in testo
+
+    # domanda SENZA match sui nomi: niente intestazione, semantico diversificato
+    with patch.object(kn, "kb_available", return_value=True), \
+         patch.object(kn.vector_db, "get_vdb", return_value=FakeVDB()):
+        testo2, _ = kn.kb_search("Quality", "come proteggiamo i dati?")
+    assert "corrispondenti alla domanda per NOME" not in testo2
+    assert "ISO 27001" in testo2
+
+
 def test_v0_client_name_only_resolved_server_side():
     """Il caso della nottata: client VECCHIO che manda solo {name} — il server
     risolve per nome nel deposito dell'utente e la risposta arriva. E2E fino

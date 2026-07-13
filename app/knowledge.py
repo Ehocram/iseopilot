@@ -209,10 +209,72 @@ def kb_delete(dept: str, filename: str) -> tuple[bool, str]:
 
 
 def kb_search(dept: str, query: str, n: int = 4) -> tuple[str, list]:
+    """Ricerca nella Conoscenza con GARANZIA DI COPERTURA per le domande di
+    enumerazione (caso Carlos: 'quali certificazioni ISO abbiamo?' pescava 2
+    documenti su 3). Tre mosse: (1) i documenti il cui NOME matcha i termini
+    della domanda entrano TUTTI, col loro miglior passaggio; (2) il resto del
+    budget è semantico ma DIVERSIFICATO per fonte (max 2 passaggi a documento);
+    (3) la copertura è DICHIARATA al modello — contratto dei conteggi, come
+    per gli allegati. In caso d'errore, ripiego sul comportamento storico."""
     if not kb_available():
         return "", []
     try:
-        return vector_db.get_vdb(vector_cfg(dept)).search(query, n_results=n)
+        vdb = vector_db.get_vdb(vector_cfg(dept))
+        try:
+            import re as _re
+            _stop = {"che", "come", "quali", "quale", "quante", "quanti", "una",
+                     "uno", "gli", "del", "della", "delle", "dei", "per", "con",
+                     "abbiamo", "sono", "nella", "nostra", "nostre", "the", "and",
+                     "have", "does", "what", "which", "our"}
+            terms = [w for w in _re.findall(r"[a-zà-ÿ0-9]{2,}", (query or "").lower())
+                     if w not in _stop]
+            nomi = [d.get("name", "") for d in vdb.list_documents()]
+            scored = []
+            for nome in nomi:
+                nl = nome.lower()
+                sc = sum(1 for t in terms if t in nl)
+                if sc > 0:
+                    scored.append((-sc, nome))
+            scored.sort()
+            corrispondenti = [nome for _s, nome in scored[:8]]
+
+            parti, fonti, usati = [], [], set()
+            budget = 5800
+            # 1) copertura garantita: un passaggio da OGNI documento col nome
+            for nome in corrispondenti:
+                chunk = vdb.search_in_document(query, nome, n_results=1)
+                if chunk.strip():
+                    blocco = f"[Fonte: {nome}]\n{chunk[:900]}"
+                    if sum(len(x) for x in parti) + len(blocco) > budget:
+                        break
+                    parti.append(blocco)
+                    fonti.append((nome, ""))
+                    usati.add(nome)
+            # 2) semantico diversificato per fonte (max 2 passaggi a documento)
+            per_fonte = {}
+            for chunk, src in vdb.search_raw(query, n_results=max(n * 2, 8)):
+                if per_fonte.get(src, 0) >= 2:
+                    continue
+                blocco = f"[Fonte: {src}]\n{chunk[:900]}"
+                if sum(len(x) for x in parti) + len(blocco) > budget:
+                    break
+                parti.append(blocco)
+                per_fonte[src] = per_fonte.get(src, 0) + 1
+                if src not in usati:
+                    fonti.append((src, ""))
+                    usati.add(src)
+            if not parti:
+                return "", []
+            testa = ""
+            if corrispondenti:
+                inclusi = [nome for nome in corrispondenti if nome in usati]
+                testa = ("[DOCUMENTI della Conoscenza corrispondenti alla domanda "
+                         f"per NOME: {'; '.join(corrispondenti)} — "
+                         f"{'TUTTI inclusi qui sotto' if len(inclusi) == len(corrispondenti) else f'inclusi {len(inclusi)} su {len(corrispondenti)}'}. "
+                         "Per domande di elenco/conteggio usa QUESTA lista.]\n\n")
+            return testa + "\n\n".join(parti), fonti
+        except Exception:
+            return vdb.search(query, n_results=n)  # comportamento storico
     except Exception:
         return "", []
 

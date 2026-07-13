@@ -244,6 +244,35 @@ class VectorDBManager:
         except Exception as e:
             return "", []
 
+    def search_raw(self, query: str, n_results: int = 8) -> list:
+        """Come search(), ma restituisce coppie (chunk, source) grezze:
+        serve alla composizione con diversificazione e copertura per nome."""
+        self._ensure_connected()
+        try:
+            count = self._collection.count()
+            if count == 0:
+                return []
+            res = self._collection.query(query_texts=[query],
+                                         n_results=min(n_results, count))
+            docs = (res.get("documents") or [[]])[0]
+            metas = (res.get("metadatas") or [[]])[0]
+            return [(d, (m or {}).get("source", "?")) for d, m in zip(docs, metas)]
+        except Exception:
+            return []
+
+    def search_in_document(self, query: str, source: str, n_results: int = 1) -> str:
+        """Migliori passaggi DENTRO un documento specifico (filtro source):
+        garanzia di copertura per le domande di enumerazione."""
+        self._ensure_connected()
+        try:
+            res = self._collection.query(query_texts=[query],
+                                         n_results=n_results,
+                                         where={"source": source})
+            docs = (res.get("documents") or [[]])[0]
+            return "\n".join(docs)
+        except Exception:
+            return ""
+
     def list_documents(self) -> list:
         self._ensure_connected()
         try:
