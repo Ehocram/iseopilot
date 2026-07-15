@@ -217,6 +217,7 @@ PAIRS = {
     "Nota: le immagini allegate non passano dall'anonimizzazione e vengono inviate a Claude così come sono.": "Note: attached images do not go through anonymisation and are sent to Claude as they are.",
     "Interfaccia non aggiornata: clicca qui per ricaricare la versione corrente.": "Interface out of date: click here to reload the current version.",
     "AI libera": "Free AI",
+    "Attività": "Tasks",
     "Allega file (fino a 20)": "Attach files (up to 20)",
     "Estraggo il testo…": "Extracting text…",
     "Non leggibile": "Not readable",

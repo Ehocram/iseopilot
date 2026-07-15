@@ -482,6 +482,7 @@ def admin_settings() -> dict:
         "claude_model_docgen": store.get_setting("claude_model_docgen", "claude-fable-5"),
         "claude_anonymize": store.get_setting("claude_anonymize", "1") == "1",
         "claude_web_search": store.get_setting("claude_web_search", "0") == "1",
+        "cowork_enabled": store.get_setting("cowork_enabled", "0") == "1",
         "lm_url": store.get_setting("lm_url", ""),
         "lm_model": store.get_setting("lm_model", ""),
     }
@@ -515,7 +516,8 @@ def chat_page(request: Request):
         src_onedrive_available=_od,
         src_dynamics_available=_dy,
         pref_engine=store.get_user_setting(uid, "pref_engine", "claude"),
-        pref_mode=store.get_user_setting(uid, "pref_mode", "kb"),
+        pref_mode=(lambda _m, _cw: _m if (_m != "cowork" or _cw) else "kb")(store.get_user_setting(uid, "pref_mode", "kb"), store.get_setting("cowork_enabled", "0") == "1"),
+        cowork_enabled=store.get_setting("cowork_enabled", "0") == "1",
         pref_tone=pref_tone if pref_tone in TONES else "Aziendale formale",
         pref_lang=pref_lang if pref_lang in LANG_INSTR else "Italiano",
         pref_source=pref_source,
@@ -523,6 +525,7 @@ def chat_page(request: Request):
 
 
 class ChatRequest(BaseModel):
+    mode: str | None = None
     messages: list[dict]
     engine: str = "claude"
     tone: str = "Aziendale formale"
@@ -574,6 +577,23 @@ def api_chat(request: Request, body: ChatRequest):
 
     # Allegati della conversazione: hanno priorità e valgono SEMPRE, anche in AI
     # libera (l'utente allega un file e chiede sintesi/elaborazione).
+    # ── Modalità ATTIVITÀ (cowork): agente delimitato sulla Conoscenza ──
+    if (body.mode or "") == "cowork":
+        if store.get_setting("cowork_enabled", "0") != "1":
+            def _cw_off():
+                yield "data: " + json.dumps({"type": "error", "text":
+                    "La modalità Attività non è abilitata: chiedi all'amministratore "
+                    "(Admin → Motore)."}, ensure_ascii=False) + "\n\n"
+            return StreamingResponse(_cw_off(), media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        from . import cowork
+        _audit(request, uid, "cowork", f"domanda={query[:160]}")
+        dept = user.get("department") or ""
+        return StreamingResponse(
+            cowork.run(dept, uid, query, _area_settings(settings, "claude_model_dynamics"), anon_names()),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     attach_block = _build_attach_block(body.attachments, query, uid)
 
     # Immagini allegate → blocchi visione Claude (max 5 per domanda)
@@ -888,7 +908,7 @@ async def api_prefs(request: Request, body: PrefsBody):
     uid = user["username"]
     if body.engine in ("claude", "lmstudio"):
         store.set_user_setting(uid, "pref_engine", body.engine)
-    if body.mode in ("kb", "free"):
+    if body.mode in ("kb", "free", "cowork"):
         store.set_user_setting(uid, "pref_mode", body.mode)
     if body.tone in TONES:
         store.set_user_setting(uid, "pref_tone", body.tone)
@@ -1099,6 +1119,7 @@ def admin_page(request: Request):
         claude_key_set=store.has_secret("claude_api_key"),
         claude_anonymize=store.get_setting("claude_anonymize", "1") == "1",
         claude_web_search=store.get_setting("claude_web_search", "0") == "1",
+        cowork_enabled=store.get_setting("cowork_enabled", "0") == "1",
         lm_url=store.get_setting("lm_url", ""),
         lm_model=store.get_setting("lm_model", ""),
         anon_dictionary=store.get_setting("anon_dictionary", ""),
@@ -1137,6 +1158,7 @@ def admin_save(
     search_ai_rewrite: str = Form("0"),
     claude_anonymize: str = Form("0"),
     claude_web_search: str = Form("0"),
+    cowork_enabled: str = Form("0"),
     lm_url: str = Form(""),
     lm_model: str = Form(""),
     anon_dictionary: str = Form(""),
@@ -1163,6 +1185,7 @@ def admin_save(
     store.set_setting("search_ai_rewrite", "1" if search_ai_rewrite == "1" else "0")
     store.set_setting("claude_anonymize", "1" if claude_anonymize == "1" else "0")
     store.set_setting("claude_web_search", "1" if claude_web_search == "1" else "0")
+    store.set_setting("cowork_enabled", "1" if cowork_enabled == "1" else "0")
     store.set_setting("lm_url", lm_url.strip())
     store.set_setting("lm_model", lm_model.strip())
     store.set_setting("anon_dictionary", anon_dictionary)

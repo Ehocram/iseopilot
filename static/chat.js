@@ -260,7 +260,7 @@
     const text = inputEl.value.trim();
     if (!text) return;
     // In Documentale serve UNA fonte dati selezionata: popup e stop.
-    if (modeSel && modeSel.value !== "free" && !selectedSource()) {
+    if (modeSel && modeSel.value === "kb" && !selectedSource()) {
       alert(I18N.pickSource || "Seleziona una fonte dati (Conoscenza, Cartelle, OneDrive o Dynamics 365) prima di inviare, oppure passa alla modalità AI libera.");
       return;
     }
@@ -284,6 +284,7 @@
           tone: toneSel.value,
           reply_lang: langSel.value,
           free_mode: modeSel && modeSel.value === "free",
+          mode: modeSel ? modeSel.value : null,
           source: selectedSource(),
           session_id: sessionId,
           attachments: attachments.filter(function(a){return a.id || a.text || a.error;})

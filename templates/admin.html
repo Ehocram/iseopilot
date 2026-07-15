@@ -104,6 +104,13 @@
           <div class="hint">Claude può cercare sul web quando la domanda riguarda informazioni recenti; le fonti sono citate con link nella risposta e la barra mostra "Ricerca web in corso". Max 5 ricerche per domanda. Nota governance: le query (già anonimizzate) transitano dai motori di ricerca via Anthropic — nuovo flusso dati da annotare. Costo per ricerca a consumo.</div>
         </div>
         <div class="field">
+          <div class="checkrow">
+            <input type="checkbox" id="cowork_enabled" name="cowork_enabled" value="1" {% if cowork_enabled %}checked{% endif %}>
+            <label for="cowork_enabled">Modalità Attività (agente sulla Conoscenza)</label>
+          </div>
+          <div class="hint">Terza modalità nel selettore: per i COMPITI ("preparami un documento con tutte le certificazioni…"). L'agente pianifica fino a 8 passi: cerca nella Conoscenza, legge documenti interi, può generare un Word. Perimetro identico alla chat: solo la Conoscenza del reparto, sola lettura, anonimizzazione, ogni passo nei log. Costo: più chiamate per domanda.</div>
+        </div>
+        <div class="field">
           <label for="anon_dictionary">Dizionario anonimizzazione nomi</label>
           <textarea id="anon_dictionary" name="anon_dictionary" placeholder="Un nome per riga (persone, aziende, progetti riservati)…">{{ anon_dictionary }}</textarea>
           <div class="hint">Un termine per riga. Ogni occorrenza viene mascherata prima dell'invio a Claude.</div>

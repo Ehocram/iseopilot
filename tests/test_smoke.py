@@ -1157,6 +1157,78 @@ def test_stale_js_selfcheck_banner():
     assert "location.replace" in html and "Date.now()" in html
 
 
+def test_cowork_mode_gated_and_agent_flow():
+    """Modalità ATTIVITÀ: (a) invisibile e rifiutata a flag spento; (b) col
+    flag: il flusso cerca→leggi→componi→rispondi produce status, link al
+    documento, risposta finale e nota 🧭 — passi limitati con chiusura onesta."""
+    import io as _io
+    import tempfile, os
+    from unittest.mock import patch
+    from app import knowledge as kn, cowork, docgen, connectors
+
+    store.create_user("cw@test", auth.hash_password("Password123!"), "Quality")
+    c = fresh_client(); login(c, "cw@test", "Password123!")
+
+    # (a) flag spento: opzione assente e richiesta rifiutata con messaggio chiaro
+    store.set_setting("cowork_enabled", "0")
+    assert 'value="cowork"' not in c.get("/").text
+    r0 = c.post("/api/chat", json={"messages": [{"role": "user", "content": "compito"}],
+                                   "mode": "cowork", "free_mode": False, "engine": "claude"})
+    assert "non è abilitata" in r0.text
+
+    # (b) flag acceso: opzione presente + flusso agente completo
+    store.set_setting("cowork_enabled", "1")
+    store.set_setting("claude_api_key", "sk-test", secret=True)
+    assert 'value="cowork"' in c.get("/").text
+
+    fd, tmp_doc = tempfile.mkstemp(suffix=".docx"); os.close(fd)
+    fd2, tmp_orig = tempfile.mkstemp(suffix=".pdf"); os.close(fd2)
+    open(tmp_orig, "wb").write(b"pdf-finto")
+    from pathlib import Path as _P
+    passi = iter([
+        '{"azione": "cerca", "query": "certificazioni ISO"}',
+        '{"azione": "leggi", "documento": "Corporate ISO 9001.pdf"}',
+        '{"azione": "componi", "spec": {"title": "Profilo certificazioni ISEO", "sections": [{"heading": "ISO 9001", "paragraphs": ["Qualità."]}]}}',
+        '{"azione": "rispondi", "testo": "Ecco il profilo: ISO 9001 (qualità). [Fonte: Corporate ISO 9001.pdf]"}',
+    ])
+    with patch.object(kn, "kb_available", return_value=True), \
+         patch.object(kn, "kb_list", return_value=[{"name": "Corporate ISO 9001.pdf", "chunks": 5}]), \
+         patch.object(kn, "kb_search", return_value=("[Fonte: Corporate ISO 9001.pdf]\nchunk", [("Corporate ISO 9001.pdf", "")])), \
+         patch.object(kn, "kb_file_path", return_value=_P(tmp_orig)), \
+         patch.object(kn, "extract_text", return_value="TESTO INTEGRALE ISO 9001"), \
+         patch.object(docgen, "gen_docx", return_value=(tmp_doc, "Profilo.docx")), \
+         patch.object(connectors, "register_download", return_value="tok123"), \
+         patch.object(cowork, "complete", side_effect=lambda *a, **k: next(passi)):
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content":
+                        "prepara un profilo con tutte le certificazioni"}],
+                    "mode": "cowork", "free_mode": False, "engine": "claude"})
+    body = r.text
+    assert "passo 1/8" in body and "leggo" in body and "compongo" in body
+    assert "/download/tok123" in body and "Profilo.docx" in body
+    assert "Ecco il profilo: ISO 9001" in body
+    assert "🧭" in body and "1 documento letto" in body
+    os.unlink(tmp_doc); os.unlink(tmp_orig)
+
+    # (c) fuga in avanti: il modello non conclude mai → chiusura ONESTA al limite
+    sempre_cerca = lambda *a, **k: '{"azione": "cerca", "query": "ancora"}'
+    ultima = {"n": 0}
+    def _script(*a, **k):
+        ultima["n"] += 1
+        if ultima["n"] <= cowork.MAX_PASSI:
+            return '{"azione": "cerca", "query": "ancora"}'
+        return "Sintesi parziale di quanto raccolto."
+    with patch.object(kn, "kb_available", return_value=True), \
+         patch.object(kn, "kb_list", return_value=[{"name": "Doc.pdf", "chunks": 1}]), \
+         patch.object(kn, "kb_search", return_value=("frammento", [])), \
+         patch.object(cowork, "complete", side_effect=_script):
+        r2 = c.post("/api/chat", json={"messages": [{"role": "user", "content": "compito infinito"}],
+                    "mode": "cowork", "free_mode": False, "engine": "claude"})
+    assert f"passo {cowork.MAX_PASSI}/{cowork.MAX_PASSI}" in r2.text
+    assert "limite" in r2.text and "Sintesi parziale" in r2.text
+    store.set_setting("cowork_enabled", "0")
+    store.set_setting("claude_api_key", "", secret=True)
+
+
 def test_history_ui_notes_stripped_and_free_mode_redirect():
     """Caso Carlos, due lezioni: (1) le note 🔒/🌐 dei turni precedenti NON
     viaggiano verso Claude (il modello ne faceva eco: '4 lucchetti');

@@ -57,6 +57,7 @@
           <select id="mode" title="{{ t('Documentale: cerca nelle fonti. AI libera: conoscenza generale, senza cercare nei documenti.') }}">
             <option value="kb" {% if pref_mode == 'kb' %}selected{% endif %}>{{ t("Documentale") }}</option>
             <option value="free" {% if pref_mode == 'free' %}selected{% endif %}>{{ t("AI libera") }}</option>
+            {% if cowork_enabled %}<option value="cowork" {% if pref_mode == 'cowork' %}selected{% endif %}>{{ t("Attività") }}</option>{% endif %}
           </select>
         </div>
         <div class="ctl">
