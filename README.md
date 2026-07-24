@@ -216,6 +216,13 @@ python tests/test_smoke.py
   Title/Subtitle/**Heading 1**/List Paragraph se definiti e il **numbering
   bullet del template stesso** (numId reale rilevato da `numbering.xml`, con
   glifo • come ripiego dichiarato); in PowerPoint si usano tema e layout del file.
+- **Incremento 7b** ✓ — **Attività (Cowork): documento garantito**. Se il
+  compito chiede un file Word e il planner esaurisce gli 8 passi senza
+  arrivare a "componi" (contenuto pronto, file mai prodotto), la composizione
+  avviene comunque in **finalizzazione** con una chiamata dedicata fuori dal
+  budget passi (nudge deterministico all'ultimo passo disponibile; se anche la
+  finalizzazione fallisce resta la dichiarazione onesta di parte mancante).
+  Il template personale (📐) vale anche in Attività, dichiarato nel footer.
 - **Successivi** — Cronologia chat persistente per-utente; account Dynamics 365
   in sola lettura per-utente (migrazione dal System Administrator); re-rank semantico.
 

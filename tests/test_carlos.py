@@ -368,6 +368,85 @@ def test_gen_docx_personale_usa_stili_del_template(tmp_path):
     assert ("<w:numPr>" in doc) or ("• b1" in doc)     # elenco vero o glifo, mai piatto
 
 
+# ── Attività (Cowork): documento garantito e template personale ──
+def _cowork_events(monkeypatch, uid, domanda, fake_complete, tpl_path=None):
+    from app import cowork
+    monkeypatch.setattr(cowork.knowledge, "kb_list",
+                        lambda dept: [{"name": "NIS2 Guide.docx"}])
+    monkeypatch.setattr(cowork.knowledge, "kb_search",
+                        lambda dept, q, n=4: ("frammento sulla NIS2", []))
+    monkeypatch.setattr(cowork, "complete", fake_complete)
+    return list(cowork.run("IT", uid, domanda, {"claude_api_key": "k"}, []))
+
+
+def test_cowork_finalizza_documento_a_passi_esauriti(monkeypatch):
+    """Caso Carlos: il planner spende tutti i passi in ricerca e non arriva mai
+    a 'componi' — il documento va COMPOSTO comunque in finalizzazione."""
+    import json as _json
+
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+        if "JSON valido" in system:      # chiamata di finalizzazione: la spec
+            return _json.dumps({"title": "NIS2 Sales Guide",
+                                "sections": [{"heading": "S", "paragraphs": ["p"],
+                                              "bullets": ["b"]}]})
+        if "LIMITE PASSI RAGGIUNTO" in user:   # sintesi finale testuale
+            return "Guida pronta, file al download."
+        return '{"azione": "cerca", "query": "nis2"}'   # loop: sempre ricerca
+
+    events = _cowork_events(monkeypatch, "cw_fin@test",
+                            "genera un documento word: guida NIS2 per i venditori",
+                            fake_complete)
+    blob = "".join(events)
+    assert '"kind": "download"' in blob                 # il file c'è
+    assert "documento composto in finalizzazione" in blob
+    assert "sintesi parziale dichiarata" not in blob
+
+
+def test_cowork_senza_richiesta_documento_niente_finalizzazione(monkeypatch):
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+        if "LIMITE PASSI RAGGIUNTO" in user:
+            return "Sintesi testuale."
+        return '{"azione": "cerca", "query": "nis2"}'
+
+    events = _cowork_events(monkeypatch, "cw_nofin@test",
+                            "riassumi cosa dice la NIS2 sui fornitori",
+                            fake_complete)
+    blob = "".join(events)
+    assert '"kind": "download"' not in blob             # nessun file inventato
+    assert "sintesi parziale dichiarata" in blob        # chiusura onesta invariata
+
+
+def test_cowork_componi_usa_template_personale(monkeypatch):
+    import json as _json
+    assert docgen.save_user_template("cw_tpl@test", "docx", _docx_bytes(), "SC.docx") == ""
+    atteso = docgen.get_user_template("cw_tpl@test", "docx")[0]
+    visto = {}
+    orig = docgen.gen_docx
+
+    def spia(spec, template_path=None):
+        visto["tpl"] = template_path
+        return orig(spec, template_path=template_path)
+
+    from app import cowork
+    monkeypatch.setattr(cowork.docgen, "gen_docx", spia)
+    calls = {"n": 0}
+
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _json.dumps({"azione": "componi",
+                                "spec": {"title": "T", "sections":
+                                         [{"heading": "S", "paragraphs": ["p"], "bullets": []}]}})
+        return '{"azione": "rispondi", "testo": "Fatto, file pronto. [Fonte: NIS2 Guide.docx]"}'
+
+    events = _cowork_events(monkeypatch, "cw_tpl@test",
+                            "crea un word di prova", fake_complete)
+    blob = "".join(events)
+    assert visto["tpl"] == atteso                       # bypass anche in Attività
+    assert "template: SC.docx" in blob                  # dichiarato nel footer
+    docgen.delete_user_template("cw_tpl@test", "docx")
+
+
 # ── B) markup servito per il renderer/typography ────────────
 def test_chat_page_serve_hook_renderer_e_template():
     c = _mk_user("uihook@test")

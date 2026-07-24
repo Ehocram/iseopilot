@@ -96,10 +96,21 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
     memoria = [f"COMPITO: {domanda}",
                "DOCUMENTI DISPONIBILI (usa questi nomi esatti):\n- " + "\n- ".join(nomi)]
     letture, ricerche, file_generato = [], 0, ""
+    # Il compito chiede un file Word/PDF? Se sì, il documento è GARANTITO:
+    # nudge all'ultimo passo e, se non basta, composizione in finalizzazione
+    # (fuori dal budget passi). Caso Carlos: 8 passi spesi in ricerca e
+    # "componi" mai raggiunto — contenuto pronto, file mai prodotto.
+    doc_richiesto = docgen.detect_request(domanda) in ("docx", "pdf")
+    _tpl = docgen.get_user_template(uid, "docx")
+    tpl_docx, tpl_nome = (_tpl[0], _tpl[1]) if _tpl else (None, "")
 
     for passo in range(1, MAX_PASSI + 1):
         yield _sse({"type": "status",
                     "text": f"Attività · passo {passo}/{MAX_PASSI}: pianifico…"})
+        if passo == MAX_PASSI and doc_richiesto and not file_generato:
+            memoria.append("[ULTIMO PASSO DISPONIBILE: il compito richiede un "
+                           "documento Word — usa ORA l'azione 'componi' con il "
+                           "contenuto già raccolto.]")
         contesto = "\n\n".join(memoria)[-MEMORIA_MAX_CHARS:]
         try:
             contesto_anon = anon.anonymize_names(anon.anonymize(contesto),
@@ -146,7 +157,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
             yield _sse({"type": "status",
                         "text": f"Attività · passo {passo}/{MAX_PASSI}: compongo «{titolo[:60]}»…"})
             try:
-                path, fname = docgen.gen_docx(spec)
+                path, fname = docgen.gen_docx(spec, template_path=tpl_docx)
                 token = connectors.register_download(uid, path, fname)
                 file_generato = fname
                 yield _sse({"type": "sources", "items": [
@@ -165,10 +176,11 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
             _log(f"uid={uid} conclusa in {passo} passi (letture={len(letture)}, "
                  f"ricerche={ricerche}, file={file_generato or '-'})")
             yield from _stream_testo(testo)
+            _tpl_nota = f" · template: {tpl_nome}" if (file_generato and tpl_nome) else ""
             yield _sse({"type": "delta", "text":
                         f"\n\n🧭 *Attività: {passo} pass{'o' if passo == 1 else 'i'}, "
                         f"{len(letture)} document{'o letto' if len(letture) == 1 else 'i letti'}, "
-                        f"{ricerche} ricerch{'a' if ricerche == 1 else 'e'}.*"})
+                        f"{ricerche} ricerch{'a' if ricerche == 1 else 'e'}{_tpl_nota}.*"})
             yield _sse({"type": "done"})
             return
 
@@ -177,6 +189,34 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
 
     # passi esauriti: chiusura ONESTA con ciò che è stato raccolto
     _log(f"uid={uid} limite passi raggiunto (letture={len(letture)}, ricerche={ricerche})")
+    if doc_richiesto and not file_generato:
+        # FINALIZZAZIONE GARANTITA: il compito chiedeva un documento — una
+        # chiamata dedicata (fuori dal budget passi) trasforma il materiale
+        # raccolto nella spec e il file viene COMPOSTO comunque. Solo se anche
+        # questa fallisce si torna alla dichiarazione onesta di parte mancante.
+        yield _sse({"type": "status",
+                    "text": "Attività · compongo il documento richiesto…"})
+        try:
+            contesto = "\n\n".join(memoria)[-MEMORIA_MAX_CHARS:]
+            sys_spec = ("Componi ORA il documento Word richiesto dal COMPITO, "
+                        "usando ESCLUSIVAMENTE il materiale raccolto qui sotto. " +
+                        docgen._SCHEMAS["docx"])
+            contesto_anon = anon.anonymize_names(anon.anonymize(contesto),
+                                                 anon_names, use_nlp=False)
+            raw = complete(sys_spec, contesto_anon, settings, max_tokens=3500)
+            spec = docgen._parse_json(anon.restore(raw))
+            path, fname = docgen.gen_docx(spec, template_path=tpl_docx)
+            token = connectors.register_download(uid, path, fname)
+            file_generato = fname
+            yield _sse({"type": "sources", "items": [
+                {"name": fname, "url": "/download/" + token, "kind": "download"}]})
+            memoria.append(f"[DOCUMENTO GENERATO IN FINALIZZAZIONE: {fname} — "
+                           "nella sintesi dichiara che il file è pronto al download]")
+            _log(f"uid={uid} finalizzazione documento riuscita: {fname}")
+        except Exception as e:
+            _log(f"finalizzazione documento FALLITA: {type(e).__name__}: {e}")
+            memoria.append(f"[FINALIZZAZIONE DOCUMENTO FALLITA: {e} — dichiara "
+                           "la parte mancante nella sintesi]")
     yield _sse({"type": "status", "text": "Attività · sintesi finale…"})
     try:
         contesto = "\n\n".join(memoria)[-MEMORIA_MAX_CHARS:]
@@ -191,7 +231,12 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         finale = (f"Ho raggiunto il limite di {MAX_PASSI} passi e non sono "
                   f"riuscito a completare la sintesi finale ({e}).")
     yield from _stream_testo(finale)
-    yield _sse({"type": "delta", "text":
-                f"\n\n🧭 *Attività: limite di {MAX_PASSI} passi raggiunto — "
-                "sintesi parziale dichiarata.*"})
+    if file_generato:
+        _tpl_nota = f" · template: {tpl_nome}" if tpl_nome else ""
+        coda = (f"\n\n🧭 *Attività: limite di {MAX_PASSI} passi raggiunto — "
+                f"documento composto in finalizzazione ({file_generato}){_tpl_nota}.*")
+    else:
+        coda = (f"\n\n🧭 *Attività: limite di {MAX_PASSI} passi raggiunto — "
+                "sintesi parziale dichiarata.*")
+    yield _sse({"type": "delta", "text": coda})
     yield _sse({"type": "done"})
