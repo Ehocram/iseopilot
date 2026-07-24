@@ -18,8 +18,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Dipendenze prima del codice: sfrutta la cache dei layer.
+# TORCH SOLO CPU, installato PRIMA dei requirements: la VM non ha GPU e la
+# variante di default trascina l'intero stack CUDA NVIDIA (diversi GB di
+# ruote cublas/cudnn/nccl/triton) — causa del "no space left on device".
+# Con torch già presente, sentence-transformers lo riusa e non lo sostituisce.
 COPY requirements.txt requirements-connectors.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-connectors.txt
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir -r requirements.txt -r requirements-connectors.txt
 
 # Codice applicativo (include i template documentali in app/doc_templates)
 COPY app/ ./app/

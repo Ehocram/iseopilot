@@ -1,0 +1,10 @@
+# Contesto di build minimo: meno I/O e niente storia git dentro il daemon.
+.git
+.gitignore
+.pytest_cache
+__pycache__
+**/__pycache__
+data_test
+data_live
+*.zip
+deploy
