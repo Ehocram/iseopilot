@@ -47,7 +47,7 @@
           <div class="hint" style="margin-bottom:10px;">Ogni area usa il suo modello. Il <strong>planner Dynamics</strong> fa fino a 8 chiamate ragionate per domanda: è dove il modello migliore rende di più. La <strong>riscrittura query</strong> è un compito minuscolo: il modello economico basta. La <strong>generazione documenti</strong> è una chiamata sola dove la qualità si vede.</div>
           <div class="row2">
             <div class="field">
-              <label for="claude_model_dynamics">Planner Dynamics 365</label>
+              <label for="claude_model_dynamics">Planner Dynamics 365 / Power BI</label>
               <select id="claude_model_dynamics" name="claude_model_dynamics">
                 <option value="claude-fable-5" {% if claude_model_dynamics == 'claude-fable-5' %}selected{% endif %}>claude-fable-5 — consigliato (ragionamento multi-step)</option>
                 <option value="claude-opus-4-8" {% if claude_model_dynamics == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 — alta qualità</option>
@@ -171,7 +171,7 @@
 
     <!-- Connettori Microsoft -->
     <div class="panel">
-      <div class="panel-head"><div class="eyebrow">Connettori Microsoft · OneDrive / Dynamics 365</div>
+      <div class="panel-head"><div class="eyebrow">Connettori Microsoft · OneDrive / Dynamics 365 / Power BI</div>
         <h2>{{ t("Configurazione (auto-compilata con i valori ISEO)") }}</h2></div>
       <div class="panel-body">
         <div class="notice">Questi NON sono segreti: sono gli identificatori pubblici dell'app/tenant Azure e l'URL dell'istanza Dynamics. L'autenticazione resta <strong>per-utente</strong> (device code, nessun client secret): ogni utente collegherà il proprio account. Sono già precompilati con i valori dell'app desktop; svuota un campo per ripristinare il default.</div>
@@ -199,6 +199,24 @@
           <label for="dyn_resource_url">Dynamics — URL risorsa (istanza F&amp;O)</label>
           <input type="text" id="dyn_resource_url" name="dyn_resource_url" value="{{ dyn_resource_url }}" style="font-family:var(--mono);" placeholder="https://...operations.dynamics.com">
         </div>
+        <div class="field">
+          <div class="checkrow">
+            <input type="checkbox" id="pbi_enabled" name="pbi_enabled" value="1" {% if pbi_enabled %}checked{% endif %}>
+            <label for="pbi_enabled">Abilita il connettore Power BI per gli utenti</label>
+          </div>
+          <div class="hint">Spento (default) = superficie zero: nessun pannello in <em>Connessioni</em>, nessuna pill in chat, rotte di connessione e ricerca rifiutate. Accendilo solo dopo che in Entra sono stati aggiunti i permessi delegati Power BI Service e abilitato il tenant setting «Dataset Execute Queries REST API».</div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="pbi_client_id">Power BI — Client ID</label>
+            <input type="text" id="pbi_client_id" name="pbi_client_id" value="{{ pbi_client_id }}" style="font-family:var(--mono);">
+          </div>
+          <div class="field">
+            <label for="pbi_tenant_id">Power BI — Tenant ID</label>
+            <input type="text" id="pbi_tenant_id" name="pbi_tenant_id" value="{{ pbi_tenant_id }}" style="font-family:var(--mono);">
+          </div>
+        </div>
+        <div class="hint">Power BI usa la stessa app registration (device code): servono in Entra i permessi <strong>delegati</strong> Power BI Service — Dataset.Read.All, Workspace.Read.All, Report.Read.All — con admin consent, e il tenant setting <strong>«Dataset Execute Queries REST API»</strong> (Integration settings) abilitato nel portale amministrazione Power BI. Ogni query gira con l'identità dell'utente: contano i suoi permessi (Lettura + Build sul dataset) e la sua RLS.</div>
         <button type="button" class="ghost" id="autofillBtn">{{ t("Auto-compila con i valori ISEO") }}</button>
         <div class="hint" style="margin-top:8px;">Gli utenti collegano il proprio account dalla pagina <em>Connessioni</em> (sign-in device code).</div>
       </div>
@@ -249,6 +267,19 @@
       <pre id="dynDiagOut" style="display:none; white-space:pre-wrap; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:10px; padding:14px; font-size:12.5px; line-height:1.55; max-height:420px; overflow:auto;"></pre>
     </div>
   </div>
+
+  <!-- Diagnostica connessione Power BI -->
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">Power BI · diagnostica</div>
+      <div class="sub">Verifica perché una ricerca Power BI non restituisce risultati</div></div>
+    <div class="panel-body">
+      <div class="notice">La <strong>Diagnostica</strong> controlla la catena: token → <em>audience</em> (risorsa Power BI) → elenco workspace → catalogo per-utente → query di prova. Distingue token scaduto, permesso <strong>Build</strong> mancante, tenant setting «Dataset Execute Queries REST API» spento e capacità. Le righe di log delle ricerche Power BI (prefisso <code>[powerbi]</code>) compaiono nel log connettori del pannello Dynamics qui sopra. Il catalogo è per-utente e si genera dalla pagina <em>Connessioni</em>.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+        <button type="button" class="primary" id="pbiDiagBtn">Esegui diagnostica</button>
+      </div>
+      <pre id="pbiDiagOut" style="display:none; white-space:pre-wrap; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:10px; padding:14px; font-size:12.5px; line-height:1.55; max-height:420px; overflow:auto;"></pre>
+    </div>
+  </div>
 </div>
 <script>
   (function(){
@@ -266,6 +297,14 @@
       try{ var r=await fetch("/admin/dynamics/log"); var j=await r.json(); show(j.log||"(log vuoto)"); }
       catch(e){ show("Errore: "+e); }
     });
+    var pOut=document.getElementById("pbiDiagOut");
+    function pShow(t){ pOut.style.display="block"; pOut.textContent=t; }
+    var p=document.getElementById("pbiDiagBtn");
+    if(p) p.addEventListener("click", async function(){
+      pShow("Diagnostica in corso…");
+      try{ var r=await fetch("/admin/powerbi/diagnose"); var j=await r.json(); pShow(j.report||"(nessun esito)"); }
+      catch(e){ pShow("Errore: "+e); }
+    });
   })();
 </script>
 <script>
@@ -274,7 +313,8 @@
     b.addEventListener("click", function(){
       var v={od_client_id:"{{ def_od_client_id }}",od_tenant_id:"{{ def_od_tenant_id }}",
              dyn_client_id:"{{ def_dyn_client_id }}",dyn_tenant_id:"{{ def_dyn_tenant_id }}",
-             dyn_resource_url:"{{ def_dyn_resource_url }}"};
+             dyn_resource_url:"{{ def_dyn_resource_url }}",
+             pbi_client_id:"{{ def_pbi_client_id }}",pbi_tenant_id:"{{ def_pbi_tenant_id }}"};
       for(var k in v){ var el=document.getElementById(k); if(el) el.value=v[k]; }
     });
   })();

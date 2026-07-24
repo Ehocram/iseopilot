@@ -28,7 +28,7 @@ from pathlib import Path
 import requests
 
 from . import store
-from .engines import onedrive_search, dynamics_search
+from .engines import onedrive_search, dynamics_search, powerbi_search
 
 # Catalogo entità e schema .md Dynamics: reindirizzati sotto il volume dati
 # (di default il modulo li metterebbe nella home dell'utente). Il catalogo è
@@ -64,6 +64,15 @@ def _od_log_bridge(msg: str) -> None:
 
 
 onedrive_search._odlog = _od_log_bridge
+
+
+def _pbi_log_bridge(msg: str) -> None:
+    """Instrada il log diagnostico del modulo Power BI nel log unico dei
+    connettori, leggibile da Admin (stesso principio del bridge OneDrive)."""
+    _dyn_log("[powerbi] " + str(msg))
+
+
+powerbi_search._dbg_hook = _pbi_log_bridge
 
 
 def dyn_log_tail(n: int = 80) -> str:
@@ -125,8 +134,17 @@ DEF_OD_TENANT_ID     = "a97887fe-14ea-46bc-afa8-f7b85f2164ff"
 DEF_DYN_CLIENT_ID    = "c5a90f54-d599-4f71-a98f-0fa0781145c1"
 DEF_DYN_TENANT_ID    = "a97887fe-14ea-46bc-afa8-f7b85f2164ff"
 DEF_DYN_RESOURCE_URL = "https://isd365-prod.operations.eu.dynamics.com"
+# Power BI: stessa app registration (device code, public client) con i permessi
+# delegati Power BI Service (Dataset.Read.All, Workspace.Read.All,
+# Report.Read.All) aggiunti + admin consent. La CONNESSIONE resta separata:
+# token dedicato per la risorsa Power BI, catalogo per-utente.
+DEF_PBI_CLIENT_ID    = "c5a90f54-d599-4f71-a98f-0fa0781145c1"
+DEF_PBI_TENANT_ID    = "a97887fe-14ea-46bc-afa8-f7b85f2164ff"
 
-CONNECTORS = ("onedrive", "dynamics")
+CONNECTORS = ("onedrive", "dynamics", "powerbi")
+# Il lock serializza SOLO OneDrive/Dynamics (moduli desktop col TOKEN_FILE di
+# modulo da reindirizzare). Power BI riceve i percorsi nel cfg dell'istanza:
+# nessun globale condiviso, nessun lock necessario.
 _LOCK = threading.Lock()  # serializza l'uso della ricerca (TOKEN_FILE condiviso)
 
 
@@ -139,6 +157,13 @@ def ms_cfg(conn: str) -> dict:
             "resource_url": "",
             "scope": "Files.Read.All offline_access",
         }
+    if conn == "powerbi":
+        return {
+            "client_id": store.get_setting("pbi_client_id", DEF_PBI_CLIENT_ID),
+            "tenant_id": store.get_setting("pbi_tenant_id", DEF_PBI_TENANT_ID),
+            "resource_url": powerbi_search.PBI_RESOURCE,
+            "scope": powerbi_search.PBI_SCOPE,
+        }
     res = store.get_setting("dyn_resource_url", DEF_DYN_RESOURCE_URL).rstrip("/")
     return {
         "client_id": store.get_setting("dyn_client_id", DEF_DYN_CLIENT_ID),
@@ -148,13 +173,23 @@ def ms_cfg(conn: str) -> dict:
     }
 
 
+def pbi_enabled() -> bool:
+    """Kill-switch admin del connettore Power BI (pagina Motore, default SPENTO):
+    da spento non esiste superficie utente — niente pannello in Connessioni,
+    niente pill in chat, rotte di connessione e ricerca rifiutate."""
+    return store.get_setting("pbi_enabled", "0") == "1"
+
+
 def is_configured(conn: str) -> bool:
     if conn not in CONNECTORS:
         return False
     c = ms_cfg(conn)
     if conn == "dynamics":
         return bool(c["client_id"] and c["resource_url"])
-    return bool(c["client_id"])
+    if conn == "powerbi":
+        # configurato = identificatori presenti E abilitato dall'admin
+        return bool(c["client_id"]) and pbi_enabled()
+    return bool(c["client_id"])  # onedrive: la risorsa (Graph) è fissa
 
 
 # ── Token per-utente ────────────────────────────────────────
@@ -264,6 +299,17 @@ def search(user: str, conn: str, query: str, max_results: int = 3,
     Reindirizza il TOKEN_FILE del modulo al file dell'utente, sotto lock."""
     if conn not in CONNECTORS or not is_connected(user, conn):
         return ""
+    if conn == "powerbi":
+        if not is_configured("powerbi"):
+            return "[Power BI] Connettore disabilitato dall'amministratore."
+        try:
+            pbi = powerbi_search.PowerBISearch(_pbi_full_cfg(user, ai_settings))
+            return pbi.search(query, max_results=max_results,
+                              current_user_name=current_user_name) or ""
+        except Exception:
+            import traceback
+            _dyn_log("ECCEZIONE durante la ricerca powerbi:\n" + traceback.format_exc())
+            return "[Power BI] Errore interno del connettore: dettagli nel log connettori (Admin)."
     cfg = ms_cfg(conn)
     user_token = _token_path(user, conn)
     with _LOCK:
@@ -322,6 +368,32 @@ def _dyn_full_cfg(cfg: dict, ai_settings: dict | None) -> dict:
     }
 
 
+def _pbi_full_cfg(user: str, ai_settings: dict | None) -> dict:
+    """Cfg COMPLETO per PowerBISearch: identificatori app, PERCORSI PER-UTENTE
+    (token + catalogo, nella cartella-identità dell'utente) e motore AI per il
+    planner. Il modello del planner riusa l'impostazione admin del planner
+    Dynamics (stessa classe di lavoro: ragionamento multi-step su schema)."""
+    cfg = ms_cfg("powerbi")
+    ai = ai_settings or {}
+    token_path = _token_path(user, "powerbi")
+    return {
+        "pbi_client_id": cfg["client_id"],
+        "pbi_tenant_id": cfg["tenant_id"],
+        "pbi_token_file": str(token_path),
+        "pbi_catalog_file": str(token_path.parent / "powerbi_catalog.json"),
+        # motore AI per il planner (stessa disciplina di _dyn_full_cfg)
+        "ai_engine": ai.get("ai_engine", "claude"),
+        "claude_api_key": ai.get("claude_api_key", ""),
+        "claude_model": (ai.get("claude_model_dynamics") or "").strip() or ai.get("claude_model", "claude-opus-4-8"),
+        "claude_model_fallback": ai.get("claude_model", "claude-opus-4-8"),
+        "openai_api_key": ai.get("openai_api_key", ""),
+        "openai_model": ai.get("openai_model", ""),
+        "lm_url": ai.get("lm_url", ""),
+        "lm_model": ai.get("lm_model", ""),
+        "reply_lang": ai.get("reply_lang", "Italiano"),
+    }
+
+
 def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
                       current_user_name: str = "",
                       ai_settings: dict | None = None) -> tuple[str, list[dict]]:
@@ -330,6 +402,24 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
     non sono applicabili e la lista è vuota."""
     if conn not in CONNECTORS or not is_connected(user, conn):
         return "", []
+    if conn == "powerbi":
+        if not is_configured("powerbi"):
+            return "[Power BI] Connettore disabilitato dall'amministratore.", []
+        try:
+            _dyn_log(f"[powerbi] search avviata | query={query[:100]!r} | "
+                     f"token_file_esiste={_token_path(user, 'powerbi').is_file()}")
+            pbi = powerbi_search.PowerBISearch(_pbi_full_cfg(user, ai_settings))
+            text = pbi.search(query, max_results=max_results,
+                              current_user_name=current_user_name) or ""
+            links = [{"name": n, "url": u}
+                     for (n, u) in getattr(pbi, "last_links", []) if u]
+            _dyn_log(f"[powerbi] search conclusa | caratteri={len(text)} | link={len(links)}")
+            return text, links
+        except Exception:
+            import traceback
+            _dyn_log("ECCEZIONE durante la ricerca powerbi:\n" + traceback.format_exc())
+            return ("[Power BI] Errore interno del connettore: dettagli nel "
+                    "log connettori (Admin)."), []
     cfg = ms_cfg(conn)
     user_token = _token_path(user, conn)
     with _LOCK:
@@ -508,3 +598,136 @@ def dyn_build_catalog(user: str) -> dict:
             return {"errore": str(e)}
         finally:
             dynamics_search.TOKEN_FILE = prev
+
+
+# ── Catalogo Power BI (PER-UTENTE: workspace/dataset/tabelle/misure) ──
+# La generazione può richiedere minuti (una-due chiamate per dataset): gira in
+# un thread in background e il browser fa polling dello stato — nessuna
+# richiesta HTTP tenuta aperta a lungo (gli apparati intermedi, App Proxy in
+# testa, chiuderebbero la connessione: lezione già imparata con la chat SSE).
+_PBI_BUILDS: dict[str, dict] = {}
+_PBI_BUILDS_LOCK = threading.Lock()
+
+
+def pbi_catalog_status(user: str) -> dict:
+    """Stato del catalogo Power BI dell'utente (presente, dataset, interrogabili)."""
+    try:
+        pbi = powerbi_search.PowerBISearch(_pbi_full_cfg(user, None))
+        return pbi.catalog_status()
+    except Exception:
+        return {"present": False}
+
+
+def pbi_build_start(user: str) -> dict:
+    """Avvia in background la (ri)generazione del catalogo Power BI PER-UTENTE.
+    Ritorna subito; lo stato si legge con pbi_build_status()."""
+    if not is_configured("powerbi"):
+        return {"ok": False, "errore": "Connettore Power BI disabilitato "
+                                       "dall'amministratore."}
+    if not is_connected(user, "powerbi"):
+        return {"ok": False, "errore": "Account Power BI non connesso: collega "
+                                       "prima il tuo account in Connessioni."}
+    with _PBI_BUILDS_LOCK:
+        st = _PBI_BUILDS.get(user)
+        if st and st.get("running"):
+            return {"ok": True, "gia_in_corso": True}
+        _PBI_BUILDS[user] = {"running": True, "progress": "avvio…", "result": None}
+
+    def _progress(msg: str):
+        with _PBI_BUILDS_LOCK:
+            if user in _PBI_BUILDS:
+                _PBI_BUILDS[user]["progress"] = str(msg)[:200]
+
+    def _worker():
+        try:
+            pbi = powerbi_search.PowerBISearch(_pbi_full_cfg(user, None))
+            res = pbi.build_catalog(progress_cb=_progress)
+        except Exception as e:
+            import traceback
+            _dyn_log("[powerbi] ECCEZIONE build catalogo:\n" + traceback.format_exc())
+            res = {"errore": f"Generazione fallita: {e}"}
+        with _PBI_BUILDS_LOCK:
+            _PBI_BUILDS[user] = {"running": False, "progress": "", "result": res}
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"ok": True}
+
+
+def pbi_build_status(user: str) -> dict:
+    """Stato della generazione: running+progress, oppure il risultato finale
+    (una volta sola: il risultato viene consumato) + stato catalogo corrente."""
+    with _PBI_BUILDS_LOCK:
+        st = _PBI_BUILDS.get(user)
+        if st and st.get("running"):
+            return {"running": True, "progress": st.get("progress", "")}
+        result = st.pop("result", None) if st else None
+    out = {"running": False, "catalog": pbi_catalog_status(user)}
+    if result is not None:
+        out["result"] = result
+    return out
+
+
+def pbi_diagnose(user: str) -> str:
+    """Diagnostica end-to-end della connessione Power BI dell'utente: token,
+    audience, elenco workspace, stato catalogo e query di prova. Dice DOVE si
+    rompe la catena (token, permesso Build, tenant setting, capacità)."""
+    out = []
+    if not is_connected(user, "powerbi"):
+        return ("Power BI non risulta connesso per questo utente.\n"
+                "Vai in Connessioni e completa l'accesso device-code.")
+    cfg = _pbi_full_cfg(user, None)
+    pbi = powerbi_search.PowerBISearch(cfg)
+    out.append("1) File token utente: "
+               + ("presente" if Path(cfg["pbi_token_file"]).is_file() else "ASSENTE"))
+    tok = ""
+    try:
+        tok = pbi.tm.get_access_token() or ""
+        out.append("2) Access token: " + ("ottenuto" if tok else "NON ottenuto"))
+    except Exception as e:
+        out.append("2) Access token: ERRORE " + str(e)[:160])
+    if not tok:
+        out.append("   → Riconnetti Power BI dalla pagina Connessioni.")
+        return "\n".join(out)
+    aud = _jwt_audience(tok)
+    out.append("3) Audience del token (aud): " + (aud or "(non leggibile)"))
+    if "analysis.windows.net" in aud:
+        out.append("   ✅ Il token è emesso per la risorsa Power BI.")
+    else:
+        out.append("   ⛔ Il token NON è per la risorsa Power BI: l'app registration "
+                   "non ha i permessi delegati Power BI Service (Dataset.Read.All, "
+                   "Workspace.Read.All) con admin consent, oppure la connessione è "
+                   "precedente alla loro aggiunta. Aggiungi i permessi in Entra, poi "
+                   "DISCONNETTI e RICONNETTI Power BI.")
+        return "\n".join(out)
+    try:
+        r = pbi._req("GET", powerbi_search.PBI_API + "/groups?$top=5000", tok, timeout=30)
+        out.append(f"4) GET /groups → HTTP {r.status_code}")
+        if r.status_code == 200:
+            n = len(r.json().get("value", []))
+            out.append(f"   ✅ Workspace visibili all'utenza: {n} (+ area personale).")
+        else:
+            out.append("   ⛔ " + pbi._friendly_http_error(r.status_code, pbi._err_body(r)))
+            return "\n".join(out)
+    except Exception as e:
+        out.append("4) GET /groups: ERRORE " + str(e)[:160])
+        return "\n".join(out)
+    st = pbi.catalog_status()
+    if not st.get("present"):
+        out.append("5) Catalogo: NON generato → Connessioni → Power BI → «Genera catalogo».")
+        return "\n".join(out)
+    out.append(f"5) Catalogo: presente · {st.get('datasets', 0)} dataset, "
+               f"{st.get('interrogabili', 0)} interrogabili · generato {st.get('generato', '')}")
+    cat = pbi.load_catalog()
+    probe = next((i for i in cat.get("items", []) if i.get("schema_ok")), None)
+    if not probe:
+        out.append("6) Query di prova: saltata (nessun dataset con schema rilevato — "
+                   "vedi le note per-dataset nel catalogo).")
+        return "\n".join(out)
+    res = pbi._execute_dax(probe["group_id"], probe["dataset_id"],
+                           'EVALUATE ROW("ok", 1)', tok, timeout=30)
+    if res["ok"]:
+        out.append(f"6) Query di prova su '{probe['dataset']}' → HTTP 200")
+        out.append("   ✅ La catena token → permessi Build → tenant setting funziona.")
+    else:
+        out.append(f"6) Query di prova su '{probe['dataset']}' → " + res["errore"])
+    return "\n".join(out)

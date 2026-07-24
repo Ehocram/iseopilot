@@ -5,7 +5,7 @@ desktop "Chat Assistant" (PyQt6). Motore **Claude** (Anthropic) o **modello
 locale LM Studio**. Server-side: FastAPI + Jinja2 + JS vanilla + SSE.
 **Nessuna dipendenza da CDN esterni** (scelta di sicurezza).
 
-> Stato: **Incremento 5** completato (sign-in connettori, da validare sul tenant). Vedi *Roadmap* in fondo.
+> Stato: **Incremento 7** completato (feedback Carlos: recall, leggibilità, template personali). Vedi *Roadmap* in fondo.
 
 ---
 
@@ -167,6 +167,52 @@ python tests/test_smoke.py
   toggle. Flusso non bloccante (start + poll separati). **Da validare sul tenant
   Azure**: in sandbox il round-trip Microsoft non è raggiungibile; la logica, gli
   endpoint, l'isolamento del token e il degrado pulito sono testati.
+- **Incremento 6** ✓ (codice) — **Fonte Power BI per-utente** (quinta fonte,
+  connettore separato da OneDrive e Dynamics). **Disattivato di default**:
+  kill-switch admin in *Motore* ("Abilita il connettore Power BI"); da spento la
+  superficie utente è zero (niente pannello in Connessioni, niente pill in chat,
+  rotte rifiutate) e la piattaforma si comporta come prima dell'incremento.
+  Da acceso: sign-in device code dedicato con
+  scope `https://analysis.windows.net/powerbi/api/.default` (token proprio,
+  audience distinta), toggle `use_powerbi` e pill "Power BI" in chat. Ogni query
+  gira con l'identità dell'utente: valgono i suoi workspace, i permessi
+  Lettura+**Build** sul dataset e la sua Row-Level Security. **Catalogo
+  PER-UTENTE** (workspace/dataset/tabelle/colonne via `EVALUATE
+  COLUMNSTATISTICS()` sull'endpoint JSON `executeQueries`; misure via endpoint
+  Arrow `executeDaxQueries`+INFO solo su capacità dedicata e con `pyarrow`,
+  altrimenti nota esplicita), generato in **background** dalla pagina
+  Connessioni con polling di stato. Planner DAX agentico bounded (max 6 passi,
+  solo `EVALUATE`, tetto 50 righe mostrate), FONTI con link ad app.powerbi.com,
+  diagnostica admin dedicata (token → audience → workspace → catalogo → query di
+  prova). Prerequisiti tenant: permessi delegati Power BI Service
+  (Dataset.Read.All, Workspace.Read.All, Report.Read.All) con admin consent
+  sull'app registration esistente + tenant setting **"Dataset Execute Queries
+  REST API"** (Integration settings). **Da validare sul tenant**: in sandbox il
+  round-trip Microsoft non è raggiungibile; logica, endpoint, isolamento
+  per-utente e messaggi d'errore sono coperti dai test (`tests/test_powerbi.py`).
+- **Incremento 7** ✓ — **Feedback Carlos** (tre interventi):
+  (1) *Recall Conoscenza*: più documenti per argomento (tetto per-nome 8→12,
+  budget 5800→9000, semantico 12 chunk con max 2 per fonte; budget contesto in
+  chat 8000→12000) e **INVENTARIO di copertura** — sulle domande di
+  enumerazione/copertura IT+EN ("tutto quello che abbiamo su…", "do we have…",
+  "list all…") il modello riceve l'elenco dei NOMI documento del dipartimento
+  con conteggio dichiarato (completo/troncato), anche quando nessun estratto è
+  pertinente: mai un muto "nessun risultato" su una domanda di copertura.
+  (2) *Leggibilità a schermo*: renderer Markdown completo e SICURO in chat
+  (escape-first, blocchi codice estratti a monte con pulsante copia, titoli,
+  liste, tabelle, citazioni, link solo http/https) + tipografia delle bolle
+  (interlinea, spaziature, tabelle con bordi, h1–h3). Verificato con harness
+  Node (16 casi, inclusi vettori XSS) in fase di build.
+  (3) *Template personali Word/PowerPoint*: pulsante 📐 nel composer — l'utente
+  carica un proprio `.docx`/`.pptx` (es. Solution Centre) che, finché presente
+  (chip visibile con ✕), **bypassa il template ISEO** nella generazione
+  (il PDF usa il template Word personale). Validazione: solo `.docx`/`.pptx`,
+  **niente macro** (`.docm`/`.pptm`, `vbaProject`, content-type macroEnabled
+  rifiutati con motivo), max 15 MB, storage isolato per identità, audit
+  (`template_caricato`/`template_rifiutato`/`template_rimosso`). Un template
+  corrotto interrompe la generazione con errore parlante: nessun ripiego
+  silenzioso sul default. Su template arbitrari si usano gli stili Word
+  standard (Title/Normal/List Bullet) e i layout del tema PowerPoint del file.
 - **Successivi** — Cronologia chat persistente per-utente; account Dynamics 365
   in sola lettura per-utente (migrazione dal System Administrator); re-rank semantico.
 
@@ -201,7 +247,7 @@ La barra di stato in alto mostra la modalità corrente.
 
 ---
 
-## Connettori personali Microsoft (Incremento 5)
+## Connettori personali Microsoft (Incrementi 5–6)
 
 L'amministratore imposta la configurazione (auto-compilata con i valori ISEO) in
 *Motore*: client ID, tenant ID e URL della risorsa Dynamics. Non sono segreti.
@@ -213,6 +259,18 @@ Ogni utente collega il **proprio** account in *Connessioni*:
    completata; il token viene salvato isolato per identità.
 
 A quel punto il toggle del connettore diventa attivabile.
+
+**Power BI (Incremento 6).** Il connettore compare solo se l'amministratore lo
+ha abilitato in *Motore* (kill-switch, spento di default). Stessa procedura,
+pannello dedicato: dopo la
+connessione l'utente genera il **proprio catalogo** ("Genera catalogo": elenco
+dei workspace e dataset che la sua utenza può interrogare, con tabelle, colonne
+e — dove la capacità lo consente — misure). Le domande con fonte *Power BI*
+vengono tradotte dal planner in query DAX di sola lettura eseguite con il token
+dell'utente: Row-Level Security e permessi (serve **Build** sul dataset) si
+applicano per costruzione. Errori di accesso o configurazione (Build mancante,
+tenant setting "Dataset Execute Queries REST API" spento, token scaduto)
+producono messaggi espliciti in chat e nella diagnostica admin.
 
 **Mappa relazioni Dynamics (catalogo + schema .md).** Per query OData affidabili, l'admin genera una volta il *catalogo entità* dalla pagina *Motore* (scarica il `$metadata` dell'istanza: tutte le entità F&O, i campi e il grafo delle relazioni con navigation property + referential constraint) e i relativi file schema `.md` per entità, che alimentano il planner. Catalogo e schema vivono sotto il volume dati (`<APP_DATA_DIR>/dynamics/`), condivisi da tutti gli utenti, e si rigenerano con un click. Con il toggle acceso,
 le query in chat vengono arricchite con OneDrive (Graph Search) e/o Dynamics 365

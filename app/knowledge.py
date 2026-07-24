@@ -208,6 +208,46 @@ def kb_delete(dept: str, filename: str) -> tuple[bool, str]:
         return False, f"Errore eliminazione: {e}"
 
 
+# Domande di COPERTURA/ENUMERAZIONE (IT/EN): "tutto quello che abbiamo su…",
+# "quali documenti…", "abbiamo una policy di…", "list all…". Su queste il
+# modello deve vedere l'INVENTARIO dei nomi documento del dipartimento, così
+# ragiona sulla copertura reale e non solo sugli estratti recuperati.
+import re as _cov_re
+_COVERAGE_RE = _cov_re.compile(
+    r"\b(tutt[oaie]|complet[oaie]|panoramica|inventario|elenc\w+|"
+    r"quali\s+(document|polic|procedur|certificazion)\w*|"
+    r"abbiamo\s+(un|una|delle|dei|qualche)|esiste\s+(un|una)|"
+    r"che\s+documenti|copertura|"
+    r"everything|all\s+(the\s+)?(docs?|documents?|info|information|policies|procedures)|"
+    r"complete|overview|inventory|list\s+(all|of)|"
+    r"do\s+we\s+have|what\s+(docs?|documents?|policies)|coverage)\b",
+    _cov_re.IGNORECASE)
+
+
+def is_coverage_query(query: str) -> bool:
+    return bool(_COVERAGE_RE.search(query or ""))
+
+
+def _inventory_block(query: str, nomi: list, max_chars: int = 1800) -> str:
+    """Blocco inventario per le domande di copertura: SOLO nomi documento, con
+    conteggio dichiarato (completo o troncato) — contratto dei conteggi."""
+    if not is_coverage_query(query) or not nomi:
+        return ""
+    elenco, usati = [], 0
+    for nome in nomi:
+        pezzo = ("; " if elenco else "") + nome
+        if usati + len(pezzo) > max_chars:
+            break
+        elenco.append(nome)
+        usati += len(pezzo)
+    stato = ("elenco COMPLETO" if len(elenco) == len(nomi)
+             else f"primi {len(elenco)} di {len(nomi)} (elenco troncato per spazio)")
+    return (f"[INVENTARIO Conoscenza — {len(nomi)} documenti nel dipartimento, {stato}: "
+            + "; ".join(elenco) +
+            ". Per domande su copertura, esistenza o elenco dei documenti usa QUESTO inventario, "
+            "citando i nomi esatti; gli estratti qui sopra sono solo una selezione.]")
+
+
 def kb_search(dept: str, query: str, n: int = 4) -> tuple[str, list]:
     """Ricerca nella Conoscenza con GARANZIA DI COPERTURA per le domande di
     enumerazione (caso Carlos: 'quali certificazioni ISO abbiamo?' pescava 2
@@ -236,10 +276,10 @@ def kb_search(dept: str, query: str, n: int = 4) -> tuple[str, list]:
                 if sc > 0:
                     scored.append((-sc, nome))
             scored.sort()
-            corrispondenti = [nome for _s, nome in scored[:8]]
+            corrispondenti = [nome for _s, nome in scored[:12]]
 
             parti, fonti, usati = [], [], set()
-            budget = 5800
+            budget = 9000
             # 1) copertura garantita: un passaggio da OGNI documento col nome
             for nome in corrispondenti:
                 chunk = vdb.search_in_document(query, nome, n_results=1)
@@ -252,7 +292,7 @@ def kb_search(dept: str, query: str, n: int = 4) -> tuple[str, list]:
                     usati.add(nome)
             # 2) semantico diversificato per fonte (max 2 passaggi a documento)
             per_fonte = {}
-            for chunk, src in vdb.search_raw(query, n_results=max(n * 2, 8)):
+            for chunk, src in vdb.search_raw(query, n_results=max(n * 3, 12)):
                 if per_fonte.get(src, 0) >= 2:
                     continue
                 blocco = f"[Fonte: {src}]\n{chunk[:900]}"
@@ -263,7 +303,13 @@ def kb_search(dept: str, query: str, n: int = 4) -> tuple[str, list]:
                 if src not in usati:
                     fonti.append((src, ""))
                     usati.add(src)
+            inventario = _inventory_block(query, nomi)
             if not parti:
+                # domanda di copertura senza chunk pertinenti: l'INVENTARIO da
+                # solo permette comunque una risposta onesta ("abbiamo questi
+                # documenti"), invece del muto "nessun risultato".
+                if inventario:
+                    return inventario, []
                 return "", []
             testa = ""
             if corrispondenti:
@@ -272,7 +318,10 @@ def kb_search(dept: str, query: str, n: int = 4) -> tuple[str, list]:
                          f"per NOME: {'; '.join(corrispondenti)} — "
                          f"{'TUTTI inclusi qui sotto' if len(inclusi) == len(corrispondenti) else f'inclusi {len(inclusi)} su {len(corrispondenti)}'}. "
                          "Per domande di elenco/conteggio usa QUESTA lista.]\n\n")
-            return testa + "\n\n".join(parti), fonti
+            out = testa + "\n\n".join(parti)
+            if inventario:
+                out = out + "\n\n" + inventario
+            return out, fonti
         except Exception:
             return vdb.search(query, n_results=n)  # comportamento storico
     except Exception:

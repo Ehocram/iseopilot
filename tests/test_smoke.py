@@ -1294,8 +1294,10 @@ def test_kb_search_coverage_for_enumeration_questions():
         assert nome in testo
     # copertura dichiarata + istruzione per le domande di elenco
     assert "TUTTI inclusi" in testo and "elenco/conteggio" in testo
-    # il documento non pertinente NON è trascinato dentro dal nome
-    assert "Policy password" not in testo
+    # il documento non pertinente NON è trascinato dentro come ESTRATTO dal
+    # match sui nomi; il suo NOME può comparire solo nell'INVENTARIO di
+    # copertura (Incremento 7), che elenca dichiaratamente tutti i documenti
+    assert "[Fonte: Policy password.pdf]" not in testo
     # fonti (per i link) coprono i tre ISO
     nomi_fonti = [f[0] for f in fonti]
     assert all(any(iso in nf for nf in nomi_fonti) for iso in ("45001", "14001", "27001"))

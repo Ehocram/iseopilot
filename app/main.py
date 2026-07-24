@@ -25,7 +25,8 @@ diag.install()
 
 from . import auth, connectors, docgen, i18n, knowledge, memory, store
 from .connectors import (DEF_OD_CLIENT_ID, DEF_OD_TENANT_ID, DEF_DYN_CLIENT_ID,
-                         DEF_DYN_TENANT_ID, DEF_DYN_RESOURCE_URL)
+                         DEF_DYN_TENANT_ID, DEF_DYN_RESOURCE_URL,
+                         DEF_PBI_CLIENT_ID, DEF_PBI_TENANT_ID)
 from .orchestrator import TONES, LANG_INSTR, stream_reply
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -504,7 +505,9 @@ def chat_page(request: Request):
     _fold = bool(store.department_folders(dept))
     _od = connectors.is_connected(uid, "onedrive")
     _dy = connectors.is_connected(uid, "dynamics")
-    _avail = {"kb": True, "folder": _fold, "onedrive": _od, "dynamics": _dy}
+    _pb_on = connectors.is_configured("powerbi")  # kill-switch admin incluso
+    _pb = _pb_on and connectors.is_connected(uid, "powerbi")
+    _avail = {"kb": True, "folder": _fold, "onedrive": _od, "dynamics": _dy, "powerbi": _pb}
     pref_tone = store.get_user_setting(uid, "pref_tone", "Aziendale formale")
     pref_lang = store.get_user_setting(uid, "pref_lang", "Italiano")
     pref_source = store.get_user_setting(uid, "pref_source", "kb")
@@ -515,6 +518,8 @@ def chat_page(request: Request):
         src_folder_available=_fold,
         src_onedrive_available=_od,
         src_dynamics_available=_dy,
+        src_powerbi_available=_pb,
+        pbi_enabled=_pb_on,
         pref_engine=store.get_user_setting(uid, "pref_engine", "claude"),
         pref_mode=(lambda _m, _cw: _m if (_m != "cowork" or _cw) else "kb")(store.get_user_setting(uid, "pref_mode", "kb"), store.get_setting("cowork_enabled", "0") == "1"),
         cowork_enabled=store.get_setting("cowork_enabled", "0") == "1",
@@ -533,7 +538,7 @@ class ChatRequest(BaseModel):
     free_mode: bool = False
     session_id: str | None = None
     attachments: list[dict] = []
-    source: str | None = None  # 'kb' | 'folder' | 'onedrive' | 'dynamics' (documentale)
+    source: str | None = None  # 'kb' | 'folder' | 'onedrive' | 'dynamics' | 'powerbi' (documentale)
 
 
 @app.post("/api/chat")
@@ -623,17 +628,22 @@ def api_chat(request: Request, body: ChatRequest):
             "folder": bool(store.department_folders(_dept0)),
             "onedrive": connectors.is_connected(uid, "onedrive"),
             "dynamics": connectors.is_connected(uid, "dynamics"),
+            "powerbi": connectors.is_configured("powerbi")
+                       and connectors.is_connected(uid, "powerbi"),
         }
         _err_msg = ""
         if src not in _available:
-            _err_msg = ("Seleziona una fonte dati (Conoscenza, Cartelle, OneDrive o "
-                        "Dynamics 365) per la ricerca documentale, oppure passa alla "
-                        "modalità AI libera.")
+            _err_msg = ("Seleziona una fonte dati (Conoscenza, Cartelle, OneDrive, "
+                        "Dynamics 365 o Power BI) per la ricerca documentale, oppure "
+                        "passa alla modalità AI libera.")
         elif not _available[src]:
             _err_msg = {
                 "folder": "Nessuna cartella è configurata per il tuo reparto: chiedi all'amministratore.",
                 "onedrive": "OneDrive non è connesso: collegalo dalla pagina Connessioni.",
                 "dynamics": "Dynamics 365 non è connesso: collegalo dalla pagina Connessioni.",
+                "powerbi": ("Il connettore Power BI è disabilitato dall'amministratore."
+                            if not connectors.is_configured("powerbi")
+                            else "Power BI non è connesso: collegalo dalla pagina Connessioni."),
             }.get(src, "Fonte dati non disponibile.")
         if _err_msg:
             _msg = _err_msg
@@ -705,7 +715,7 @@ def api_chat(request: Request, body: ChatRequest):
                     kb_text, kb_names = knowledge.kb_search(dept, search_q_ai, n=5)
                     if kb_text.strip():
                         parts.append(knowledge._fit_budget(
-                            ["[Conoscenza dipartimento — " + dept + "]\n" + kb_text], 6000))
+                            ["[Conoscenza dipartimento — " + dept + "]\n" + kb_text], 9500))
                     source_links.extend(knowledge.kb_links(dept, kb_names))
                 elif src == "folder":
                     parts.append(knowledge.retrieve(dept, search_q_ai, use_kb=False, use_folder=True))
@@ -719,9 +729,18 @@ def api_chat(request: Request, body: ChatRequest):
                     if dy.strip():
                         parts.append("[Dynamics 365]\n" + dy)
                     source_links.extend(dy_links)
+                elif src == "powerbi":
+                    # Query DETERMINISTICA (come Dynamics): il planner Power BI
+                    # riceve la domanda arricchita e lavora coi permessi utente.
+                    pb, pb_links = connectors.search_with_links(uid, "powerbi", search_q, max_results=5, current_user_name=uid, ai_settings=settings)
+                    if pb.strip():
+                        parts.append("[Power BI]\n" + pb)
+                    source_links.extend(pb_links)
                 # budget equo: nessuna fonte (OneDrive/Dynamics incluse) viene
                 # scartata in silenzio dal taglio in coda
-                context = knowledge._fit_budget([p for p in parts if p.strip()], 8000)
+                # budget alzato (caso Carlos): più documenti per argomento senza
+                # tagli in coda; ampiamente dentro la finestra del modello.
+                context = knowledge._fit_budget([p for p in parts if p.strip()], 12000)
             except Exception:
                 context = ""
 
@@ -792,7 +811,8 @@ def api_chat(request: Request, body: ChatRequest):
         # (planner Dynamics in testa) — l'utente vede subito cosa sta accadendo.
         if not body.free_mode and not gen_fmt:
             _lbl = {"kb": i18n.t("Conoscenza", _lang), "folder": i18n.t("Cartelle", _lang),
-                    "onedrive": "OneDrive", "dynamics": "Dynamics 365"}.get(src, "")
+                    "onedrive": "OneDrive", "dynamics": "Dynamics 365",
+                    "powerbi": "Power BI"}.get(src, "")
             yield "data: " + json.dumps({"type": "status", "text":
                 i18n.t("Ricerca in corso su", _lang) + " " + _lbl + "… " +
                 i18n.t("l'operazione può richiedere qualche istante.", _lang)},
@@ -813,14 +833,23 @@ def api_chat(request: Request, body: ChatRequest):
                     i18n.t("Sto preparando il file…", _lang) + " " +
                     i18n.t("l'operazione può richiedere qualche istante.", _lang)},
                     ensure_ascii=False) + "\n\n"
+                _tpls = {"docx": None, "pptx": None}
+                _tpl_names = {}
+                for _f in ("docx", "pptx"):
+                    _t = docgen.get_user_template(uid, _f)
+                    if _t:
+                        _tpls[_f], _tpl_names[_f] = _t[0], _t[1]
                 path, fname = None, None
-                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, _area_settings(settings, "claude_model_docgen"), hist_text)):
+                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, _area_settings(settings, "claude_model_docgen"), hist_text, templates=_tpls)):
                     if isinstance(item, tuple) and item[0] == "result":
                         path, fname = item[1]
                     else:
                         yield item
                 token = connectors.register_download(uid, path, fname)
-                yield "data: " + json.dumps({"type": "delta", "text": f"Ho preparato **{fname}**. Puoi scaricarlo qui sotto."}, ensure_ascii=False) + "\n\n"
+                _tpl_used = _tpl_names.get("pptx" if gen_fmt == "pptx" else "docx") if gen_fmt in ("docx", "pdf", "pptx") else None
+                _msg_gen = (f"Ho preparato **{fname}** sul tuo template **{_tpl_used}**. Puoi scaricarlo qui sotto."
+                            if _tpl_used else f"Ho preparato **{fname}**. Puoi scaricarlo qui sotto.")
+                yield "data: " + json.dumps({"type": "delta", "text": _msg_gen}, ensure_ascii=False) + "\n\n"
                 yield "data: " + json.dumps({"type": "sources", "items": [{"name": fname, "url": "/download/" + token, "kind": "download"}]}, ensure_ascii=False) + "\n\n"
             except Exception as e:
                 yield "data: " + json.dumps({"type": "error", "text": "Generazione non riuscita: " + str(e)[:200]}, ensure_ascii=False) + "\n\n"
@@ -914,7 +943,7 @@ async def api_prefs(request: Request, body: PrefsBody):
         store.set_user_setting(uid, "pref_tone", body.tone)
     if body.lang in LANG_INSTR:
         store.set_user_setting(uid, "pref_lang", body.lang)
-    if body.source in ("kb", "folder", "onedrive", "dynamics"):
+    if body.source in ("kb", "folder", "onedrive", "dynamics", "powerbi"):
         store.set_user_setting(uid, "pref_source", body.source)
     return {"ok": True}
 
@@ -1137,8 +1166,12 @@ def admin_page(request: Request):
         dyn_tenant_id=store.get_setting("dyn_tenant_id", DEF_DYN_TENANT_ID),
         dyn_resource_url=store.get_setting("dyn_resource_url", DEF_DYN_RESOURCE_URL),
         def_od_client_id=DEF_OD_CLIENT_ID, def_od_tenant_id=DEF_OD_TENANT_ID,
+        pbi_enabled=store.get_setting("pbi_enabled", "0") == "1",
+        pbi_client_id=store.get_setting("pbi_client_id", DEF_PBI_CLIENT_ID),
+        pbi_tenant_id=store.get_setting("pbi_tenant_id", DEF_PBI_TENANT_ID),
         def_dyn_client_id=DEF_DYN_CLIENT_ID, def_dyn_tenant_id=DEF_DYN_TENANT_ID,
         def_dyn_resource_url=DEF_DYN_RESOURCE_URL,
+        def_pbi_client_id=DEF_PBI_CLIENT_ID, def_pbi_tenant_id=DEF_PBI_TENANT_ID,
         dyn_catalog=connectors.dyn_catalog_status(),
         dyn_connected=connectors.is_connected(user["username"], "dynamics"),
         dyn_msg=request.query_params.get("dyn_msg", ""),
@@ -1172,6 +1205,9 @@ def admin_save(
     dyn_client_id: str = Form(""),
     dyn_tenant_id: str = Form(""),
     dyn_resource_url: str = Form(""),
+    pbi_enabled: str = Form("0"),
+    pbi_client_id: str = Form(""),
+    pbi_tenant_id: str = Form(""),
 ):
     user = auth.current_user(request)
     if not user or not user["is_admin"]:
@@ -1201,6 +1237,9 @@ def admin_save(
     store.set_setting("dyn_client_id", dyn_client_id.strip() or DEF_DYN_CLIENT_ID)
     store.set_setting("dyn_tenant_id", dyn_tenant_id.strip() or DEF_DYN_TENANT_ID)
     store.set_setting("dyn_resource_url", dyn_resource_url.strip() or DEF_DYN_RESOURCE_URL)
+    store.set_setting("pbi_enabled", "1" if pbi_enabled == "1" else "0")
+    store.set_setting("pbi_client_id", pbi_client_id.strip() or DEF_PBI_CLIENT_ID)
+    store.set_setting("pbi_tenant_id", pbi_tenant_id.strip() or DEF_PBI_TENANT_ID)
     return RedirectResponse(url="/admin?saved=1", status_code=303)
 
 
@@ -1626,6 +1665,7 @@ def settings_page(request: Request):
         use_folder=store.get_user_setting(uname, "use_folder", "1") == "1",
         use_onedrive=store.get_user_setting(uname, "use_onedrive", "0") == "1",
         use_dynamics=store.get_user_setting(uname, "use_dynamics", "0") == "1",
+        use_powerbi=store.get_user_setting(uname, "use_powerbi", "0") == "1",
         kb_count=knowledge.kb_count(dept),
         folders=store.department_folders(dept),
         # Connettori Microsoft: stato reale di connessione per-utente.
@@ -1633,6 +1673,10 @@ def settings_page(request: Request):
         dyn_connected=connectors.is_connected(uname, "dynamics"),
         od_configured=connectors.is_configured("onedrive"),
         dyn_configured=connectors.is_configured("dynamics"),
+        pbi_enabled=connectors.pbi_enabled(),
+        pbi_connected=connectors.is_connected(uname, "powerbi"),
+        pbi_configured=connectors.is_configured("powerbi"),
+        pbi_catalog=connectors.pbi_catalog_status(uname),
         saved=request.query_params.get("saved") == "1",
     ))
 
@@ -1640,7 +1684,7 @@ def settings_page(request: Request):
 @app.post("/settings")
 def settings_save(request: Request, use_kb: str = Form("0"), use_folder: str = Form("0"),
                   use_onedrive: str = Form("0"), use_dynamics: str = Form("0"),
-                  ajax: str = Form("")):
+                  use_powerbi: str = Form("0"), ajax: str = Form("")):
     user = auth.current_user(request)
     if not user:
         if ajax == "1":
@@ -1651,6 +1695,7 @@ def settings_save(request: Request, use_kb: str = Form("0"), use_folder: str = F
     store.set_user_setting(uname, "use_folder", "1" if use_folder == "1" else "0")
     store.set_user_setting(uname, "use_onedrive", "1" if use_onedrive == "1" else "0")
     store.set_user_setting(uname, "use_dynamics", "1" if use_dynamics == "1" else "0")
+    store.set_user_setting(uname, "use_powerbi", "1" if use_powerbi == "1" else "0")
     if ajax == "1":
         # Salvataggio automatico (cambio toggle): nessun reload di pagina.
         return JSONResponse({"ok": True})
@@ -1746,6 +1791,80 @@ def admin_build_dyn_catalog(request: Request):
         return RedirectResponse(url="/admin?dyn_err=" + str(res["errore"]).replace(" ", "+")[:200], status_code=303)
     msg = f"Catalogo+generato:+{res.get('count',0)}+entità,+{res.get('relazioni',0)}+relazioni,+{res.get('schema_md',{}).get('file',0)}+schema."
     return RedirectResponse(url="/admin?saved=1&dyn_msg=" + msg, status_code=303)
+
+
+@app.get("/api/template")
+def template_status(request: Request):
+    """Stato dei template PERSONALI dell'utente (chip nel composer)."""
+    user = auth.current_user(request)
+    if not user:
+        return JSONResponse({"error": "Sessione scaduta."}, status_code=401)
+    return JSONResponse(docgen.user_templates_status(user["username"]))
+
+
+@app.post("/api/template")
+async def template_upload(request: Request, file: UploadFile = File(...)):
+    """Carica un template personale (.docx/.pptx, no macro): finché presente,
+    la generazione documenti lo usa AL POSTO del template di default."""
+    user = auth.current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Sessione scaduta."}, status_code=401)
+    fname = (file.filename or "").strip()
+    ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+    fmt = "docx" if ext == "docx" else ("pptx" if ext == "pptx" else "")
+    raw = await file.read()
+    if not fmt:
+        err = (docgen.validate_office_template(raw, ext or "?", fname)
+               or "Sono ammessi solo template .docx (Word) e .pptx (PowerPoint).")
+        _audit(request, user["username"], "template_rifiutato", f"file={fname}: {err[:120]}")
+        return JSONResponse({"ok": False, "error": err})
+    err = docgen.save_user_template(user["username"], fmt, raw, fname)
+    if err:
+        _audit(request, user["username"], "template_rifiutato", f"file={fname}: {err[:120]}")
+        return JSONResponse({"ok": False, "error": err})
+    _audit(request, user["username"], "template_caricato", f"formato={fmt}, file={fname}, bytes={len(raw)}")
+    return JSONResponse({"ok": True, "status": docgen.user_templates_status(user["username"])})
+
+
+@app.post("/api/template/delete")
+def template_delete(request: Request, fmt: str = Form(...)):
+    user = auth.current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Sessione scaduta."}, status_code=401)
+    if fmt not in ("docx", "pptx"):
+        return JSONResponse({"ok": False, "error": "Formato non valido."}, status_code=400)
+    docgen.delete_user_template(user["username"], fmt)
+    _audit(request, user["username"], "template_rimosso", f"formato={fmt}")
+    return JSONResponse({"ok": True, "status": docgen.user_templates_status(user["username"])})
+
+
+@app.post("/connect/powerbi/catalog/start")
+def pbi_catalog_start(request: Request):
+    """Avvia la generazione del catalogo Power BI dell'UTENTE (in background:
+    il browser fa polling su /connect/powerbi/catalog/status)."""
+    user = auth.current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "errore": "Sessione scaduta."}, status_code=401)
+    res = connectors.pbi_build_start(user["username"])
+    if res.get("ok"):
+        _audit(request, user["username"], "powerbi_catalogo", "generazione avviata")
+    return JSONResponse(res)
+
+
+@app.get("/connect/powerbi/catalog/status")
+def pbi_catalog_status_route(request: Request):
+    user = auth.current_user(request)
+    if not user:
+        return JSONResponse({"running": False, "errore": "Sessione scaduta."}, status_code=401)
+    return JSONResponse(connectors.pbi_build_status(user["username"]))
+
+
+@app.get("/admin/powerbi/diagnose")
+def admin_pbi_diagnose(request: Request):
+    user = auth.current_user(request)
+    if not user or not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    return JSONResponse({"report": connectors.pbi_diagnose(user["username"])})
 
 
 @app.get("/admin/dynamics/diagnose")

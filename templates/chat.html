@@ -35,12 +35,19 @@
           <input type="radio" name="datasource" value="onedrive" {% if pref_source == 'onedrive' %}checked{% endif %} {% if not src_onedrive_available %}disabled{% endif %}><span>OneDrive</span></label>
         <label class="src-pill {% if not src_dynamics_available %}off{% endif %}" {% if not src_dynamics_available %}title="{{ t('Dynamics 365 non è connesso: collegalo dalla pagina Connessioni.') }}"{% endif %}>
           <input type="radio" name="datasource" value="dynamics" {% if pref_source == 'dynamics' %}checked{% endif %} {% if not src_dynamics_available %}disabled{% endif %}><span>Dynamics 365</span></label>
+        {% if pbi_enabled %}
+        <label class="src-pill {% if not src_powerbi_available %}off{% endif %}" {% if not src_powerbi_available %}title="{{ t('Power BI non è connesso: collegalo dalla pagina Connessioni.') }}"{% endif %}>
+          <input type="radio" name="datasource" value="powerbi" {% if pref_source == 'powerbi' %}checked{% endif %} {% if not src_powerbi_available %}disabled{% endif %}><span>Power BI</span></label>
+        {% endif %}
       </div>
       <div class="attach-bar" id="attach-bar" hidden></div>
+      <div class="attach-bar" id="tpl-bar" hidden></div>
       <div class="img-hint" id="img-hint" hidden>{{ t("Nota: le immagini allegate non passano dall'anonimizzazione e vengono inviate a Claude così come sono.") }}</div>
       <div class="row">
         <button class="attach-btn" id="attach-btn" title="{{ t('Allega file (fino a 20)') }}" type="button">📎</button>
         <input type="file" id="attach-input" multiple accept=".txt,.md,.csv,.json,.xml,.py,.pdf,.docx,.xlsx,.xls,.pptx,.ppt,.rtf,.png,.jpg,.jpeg,.webp,.gif" hidden>
+        <button class="attach-btn" id="tpl-btn" title="{{ t('Template personale (.docx/.pptx): se caricato, i documenti generati usano il TUO template al posto di quello ISEO. Niente macro.') }}" type="button">📐</button>
+        <input type="file" id="tpl-input" accept=".docx,.pptx" hidden>
         <textarea id="input" placeholder="{{ t('Scrivi la tua domanda…  (Invio per inviare · Maiusc+Invio per andare a capo)') }}"></textarea>
         <button class="send" id="send">{{ t("Invia") }}</button>
       </div>
@@ -86,7 +93,9 @@
     proxyErr: "{{ t('risposta da un apparato di rete (proxy/VPN), non da ISEOPilot: la richiesta è stata interrotta prima di arrivare. Riprova; se persiste avvisa l\'amministratore.') }}",
     attaching: "{{ t('Estraggo il testo…') }}",
     attachErr: "{{ t('Non leggibile') }}",
-    tooMany: "{{ t('Massimo 20 allegati') }}"
+    tooMany: "{{ t('Massimo 20 allegati') }}",
+    tplChip: "{{ t('Template') }}",
+    tplRemove: "{{ t('Rimuovi template') }}"
   };
 </script>
 <script src="/static/chat.js?v={{ asset_v }}"></script>

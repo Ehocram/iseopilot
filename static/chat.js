@@ -158,18 +158,187 @@
   if (modeSel) modeSel.addEventListener("change", refreshMode);
   refreshStatus(); refreshMode();
 
+  // ── Template documento personale (bypass del template ISEO) ──
+  var tplBtn = document.getElementById("tpl-btn");
+  var tplInput = document.getElementById("tpl-input");
+  var tplBar = document.getElementById("tpl-bar");
+  function renderTplBar(st) {
+    if (!tplBar) return;
+    tplBar.innerHTML = "";
+    var any = false;
+    ["docx", "pptx"].forEach(function (fmt) {
+      if (!st || !st[fmt]) return;
+      any = true;
+      var chip = document.createElement("div");
+      chip.className = "chip tpl";
+      var label = document.createElement("span");
+      label.className = "chip-name";
+      label.textContent = "📐 " + (I18N.tplChip || "Template") + " " +
+        (fmt === "docx" ? "Word" : "PowerPoint") + ": " + st[fmt].name;
+      var x = document.createElement("button");
+      x.className = "chip-x"; x.type = "button"; x.textContent = "×";
+      x.title = I18N.tplRemove || "Rimuovi template";
+      x.addEventListener("click", function () {
+        var body = new URLSearchParams(); body.append("fmt", fmt);
+        fetch("/api/template/delete", { method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString() })
+          .then(function (r) { return r.json(); })
+          .then(function (d) { renderTplBar(d && d.status); })
+          .catch(function () {});
+      });
+      chip.appendChild(label); chip.appendChild(x);
+      tplBar.appendChild(chip);
+    });
+    tplBar.hidden = !any;
+  }
+  function loadTplStatus() {
+    if (!tplBar) return;
+    fetch("/api/template").then(function (r) { return r.json(); })
+      .then(renderTplBar).catch(function () {});
+  }
+  if (tplBtn && tplInput) {
+    tplBtn.addEventListener("click", function () { tplInput.click(); });
+    tplInput.addEventListener("change", function () {
+      var f = tplInput.files && tplInput.files[0];
+      tplInput.value = "";
+      if (!f) return;
+      var fd = new FormData();
+      fd.append("file", f, f.name);
+      tplBtn.disabled = true;
+      fetch("/api/template", { method: "POST", body: fd })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          tplBtn.disabled = false;
+          if (!d.ok) { alert(d.error || "Template non valido."); return; }
+          renderTplBar(d.status);
+        })
+        .catch(function () { tplBtn.disabled = false; alert(I18N.attachErr || "Errore di rete."); });
+    });
+    loadTplStatus();
+  }
+
   // ── Rendering messaggi ──────────────────────────────────
   function escapeHtml(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
             .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
+  // Renderer Markdown SICURO: escape PRIMA di ogni trasformazione, i blocchi
+  // codice sono estratti a monte (mai riprocessati), i link ammettono solo
+  // http/https. Nessun HTML dell'input arriva mai al DOM non escapato.
   function renderMarkdownish(text) {
-    let html = escapeHtml(text);
-    html = html.replace(/```([\s\S]*?)```/g, function (_m, code) {
-      return "<pre><code>" + code.replace(/^\n/, "") + "</code></pre>"; });
-    html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-    return html;
+    var codeBlocks = [];
+    var src = String(text).replace(/```([\s\S]*?)```/g, function (_m, inner) {
+      // il linguaggio conta SOLO se la prima riga del fence è una parola sola
+      // seguita da newline ("```python\n…"); altrimenti è tutto codice
+      // ("dentro ```x = 1``` frase" non deve perdere la "x").
+      var lang = "", code = inner;
+      var mFirst = inner.match(/^[ \t]*([\w+-]+)?[ \t]*\n([\s\S]*)$/);
+      if (mFirst) { lang = mFirst[1] || ""; code = mFirst[2]; }
+      codeBlocks.push({ lang: lang, code: code.replace(/\n$/, "") });
+      return "\n\u0000C" + (codeBlocks.length - 1) + "\u0000\n";
+    });
+    src = escapeHtml(src);
+
+    function inline(t) {
+      t = t.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+      t = t.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+      t = t.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>");
+      t = t.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      return t;
+    }
+
+    var out = [], para = [], list = null, quote = [], table = [];
+    function flushPara() {
+      if (!para.length) return;
+      out.push("<p>" + para.map(inline).join("<br>") + "</p>");
+      para = [];
+    }
+    function flushList() {
+      if (!list) return;
+      out.push("<" + list.tag + ">" + list.items.map(function (i) {
+        return "<li>" + inline(i) + "</li>"; }).join("") + "</" + list.tag + ">");
+      list = null;
+    }
+    function flushQuote() {
+      if (!quote.length) return;
+      out.push("<blockquote>" + quote.map(inline).join("<br>") + "</blockquote>");
+      quote = [];
+    }
+    function isSepRow(cells) {
+      return cells.length > 0 && cells.every(function (c) { return /^\s*:?-{2,}:?\s*$/.test(c); });
+    }
+    function flushTable() {
+      if (!table.length) return;
+      if (table.length < 2 || !isSepRow(table[1])) {
+        // non era una vera tabella: torna testo normale
+        table.forEach(function (cells) {
+          para.push(cells.map(function (c) { return c.trim(); }).join(" | "));
+        });
+        flushPara(); table = []; return;
+      }
+      var h = "<table><thead><tr>" + table[0].map(function (c) {
+        return "<th>" + inline(c.trim()) + "</th>"; }).join("") + "</tr></thead><tbody>";
+      for (var r = 2; r < table.length; r++) {
+        h += "<tr>" + table[r].map(function (c) {
+          return "<td>" + inline(c.trim()) + "</td>"; }).join("") + "</tr>";
+      }
+      out.push(h + "</tbody></table>");
+      table = [];
+    }
+    function flushAll() { flushPara(); flushList(); flushQuote(); flushTable(); }
+
+    var lines = src.split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var mCode = line.match(/^\u0000C(\d+)\u0000$/);
+      if (mCode) {
+        flushAll();
+        var blk = codeBlocks[parseInt(mCode[1], 10)] || { lang: "", code: "" };
+        out.push('<div class="codewrap"><button class="code-copy" type="button" title="Copia">⧉</button>' +
+                 "<pre><code>" + escapeHtml(blk.code) + "</code></pre></div>");
+        continue;
+      }
+      var mH = line.match(/^(#{1,3})\s+(.*)$/);
+      if (mH) { flushAll(); out.push("<h" + mH[1].length + ">" + inline(mH[2]) + "</h" + mH[1].length + ">"); continue; }
+      if (/^(\-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flushAll(); out.push("<hr>"); continue; }
+      if (/^&gt;\s?/.test(line)) { flushPara(); flushList(); flushTable(); quote.push(line.replace(/^&gt;\s?/, "")); continue; }
+      var mTab = line.match(/^\s*\|(.+)\|\s*$/);
+      if (mTab) { flushPara(); flushList(); flushQuote(); table.push(mTab[1].split("|")); continue; }
+      var mUl = line.match(/^\s*[-*•]\s+(.*)$/);
+      if (mUl) { flushPara(); flushQuote(); flushTable();
+        if (!list || list.tag !== "ul") { flushList(); list = { tag: "ul", items: [] }; }
+        list.items.push(mUl[1]); continue; }
+      var mOl = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (mOl) { flushPara(); flushQuote(); flushTable();
+        if (!list || list.tag !== "ol") { flushList(); list = { tag: "ol", items: [] }; }
+        list.items.push(mOl[1]); continue; }
+      if (!line.trim()) { flushAll(); continue; }
+      flushList(); flushQuote(); flushTable();
+      para.push(line);
+    }
+    flushAll();
+    return out.join("");
   }
+
+  // Copia dei blocchi codice (delega: i blocchi sono ri-renderizzati a ogni delta)
+  messagesEl.addEventListener("click", function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest(".code-copy") : null;
+    if (!b) return;
+    var codeEl = b.parentElement ? b.parentElement.querySelector("pre code") : null;
+    if (!codeEl) return;
+    var txt = codeEl.textContent || "";
+    function done() { b.textContent = "✓"; setTimeout(function () { b.textContent = "⧉"; }, 1200); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done).catch(function () {});
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = txt; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+  });
 
   function addMessage(role, text) {
     const wrap = document.createElement("div");

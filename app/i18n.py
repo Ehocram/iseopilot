@@ -205,6 +205,28 @@ PAIRS = {
     "Nessuna cartella configurata per il tuo reparto: chiedi all'amministratore.": "No folder configured for your department: ask the administrator.",
     "OneDrive non è connesso: collegalo dalla pagina Connessioni.": "OneDrive is not connected: link it from the Connections page.",
     "Dynamics 365 non è connesso: collegalo dalla pagina Connessioni.": "Dynamics 365 is not connected: link it from the Connections page.",
+    "Power BI non è connesso: collegalo dalla pagina Connessioni.": "Power BI is not connected: link it from the Connections page.",
+
+    # ── Connettore Power BI ──
+    "Connettore Power BI": "Power BI connector",
+    "Interroga i modelli semantici Power BI con la tua identità: valgono i tuoi permessi (Lettura + Build sul dataset) e la tua Row-Level Security.":
+        "Query Power BI semantic models with your identity: your permissions (Read + Build on the dataset) and your Row-Level Security apply.",
+    "Catalogo": "Catalog",
+    "interrogabili": "queryable",
+    "Catalogo non ancora generato": "Catalog not generated yet",
+    "Genera catalogo": "Generate catalog",
+    "Rigenera catalogo": "Regenerate catalog",
+    "Catalogo generato": "Catalog generated",
+    "Avvio generazione catalogo…": "Starting catalog generation…",
+    "Errore di rete.": "Network error.",
+    "Il catalogo elenca i workspace e i dataset visibili alla TUA utenza (tabelle, colonne e, dove disponibili, misure): è ciò che permette all'assistente di costruire query DAX affidabili. Rigeneralo quando cambiano i tuoi permessi o i modelli.":
+        "The catalog lists the workspaces and datasets visible to YOUR account (tables, columns and, where available, measures): it is what lets the assistant build reliable DAX queries. Regenerate it when your permissions or the models change.",
+
+    # ── Template documento personale ──
+    "Template personale (.docx/.pptx): se caricato, i documenti generati usano il TUO template al posto di quello ISEO. Niente macro.":
+        "Personal template (.docx/.pptx): when loaded, generated documents use YOUR template instead of the ISEO one. No macros.",
+    "Template": "Template",
+    "Rimuovi template": "Remove template",
     "Ricerca in corso su": "Search in progress on",
     "l'operazione può richiedere qualche istante.": "this may take a few moments.",
     "Sto preparando il file…": "Preparing the file…",

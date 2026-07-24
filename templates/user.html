@@ -79,6 +79,48 @@
       </div>
     </div>
 
+    {% if pbi_enabled %}
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">{{ t("Connettore Power BI") }}</div><h2>Power BI</h2></div>
+      <div class="panel-body">
+        {% if not pbi_configured %}
+        <div class="notice">Il connettore non è ancora configurato dall'amministratore (pagina <em>Motore</em>).</div>
+        {% endif %}
+        <div class="toggle-row">
+          <label class="switch"><input type="checkbox" name="use_powerbi" value="1" {% if use_powerbi %}checked{% endif %} {% if not pbi_connected %}disabled{% endif %}><span class="slider"></span></label>
+          <div class="toggle-txt">
+            <b>Power BI
+              {% if pbi_connected %}<span class="badge set">{{ t("connesso") }}</span>{% else %}<span class="badge unset">{{ t("non connesso") }}</span>{% endif %}
+            </b>
+            <span>{{ t("Interroga i modelli semantici Power BI con la tua identità: valgono i tuoi permessi (Lettura + Build sul dataset) e la tua Row-Level Security.") }}</span>
+            <div class="conn-actions">
+              {% if pbi_connected %}
+                <button type="button" class="ghost" onclick="if(confirm('{{ t("Disconnettere questo account?") }}')){fetch('/connect/powerbi/logout',{method:'POST'}).then(function(){location.reload();});}">{{ t("Disconnetti") }}</button>
+              {% elif pbi_configured %}
+                <button type="button" class="ghost connect-btn" data-conn="powerbi">{{ t("Connetti il mio account") }}</button>
+              {% endif %}
+            </div>
+            <div class="devicebox" id="box-powerbi" hidden></div>
+            {% if pbi_connected %}
+            <div style="margin-top:12px;">
+              {% if pbi_catalog.present %}
+                <span class="badge set">{{ t("Catalogo") }}: {{ pbi_catalog.datasets }} dataset · {{ pbi_catalog.interrogabili }} {{ t("interrogabili") }} · {{ pbi_catalog.generato }}</span>
+              {% else %}
+                <span class="badge unset">{{ t("Catalogo non ancora generato") }}</span>
+              {% endif %}
+              <div class="conn-actions" style="margin-top:8px;">
+                <button type="button" class="ghost" id="pbi-cat-btn">{% if pbi_catalog.present %}{{ t("Rigenera catalogo") }}{% else %}{{ t("Genera catalogo") }}{% endif %}</button>
+              </div>
+              <div class="devicebox" id="box-pbi-catalog" hidden></div>
+              <span class="hint">{{ t("Il catalogo elenca i workspace e i dataset visibili alla TUA utenza (tabelle, colonne e, dove disponibili, misure): è ciò che permette all'assistente di costruire query DAX affidabili. Rigeneralo quando cambiano i tuoi permessi o i modelli.") }}</span>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <div class="actions" style="max-width:780px;margin:0 auto 40px; display:flex; align-items:center; gap:14px;">
       <button type="submit" class="primary">{{ t("Salva preferenze") }}</button>
       <span class="hint" style="margin:0;">{{ t("Le modifiche agli interruttori si salvano da sole.") }}</span>
@@ -113,6 +155,42 @@
   }
   document.querySelectorAll('input[name^="use_"]').forEach(function(cb){
     cb.addEventListener("change", saveSources);
+  });
+})();
+</script>
+
+<script>
+(function(){
+  // Catalogo Power BI: avvio in background + polling dello stato (nessuna
+  // richiesta HTTP tenuta aperta a lungo dietro l'Application Proxy).
+  var btn = document.getElementById("pbi-cat-btn");
+  if(!btn) return;
+  var box = document.getElementById("box-pbi-catalog");
+  btn.addEventListener("click", function(){
+    btn.disabled = true; box.hidden = false;
+    box.innerHTML = "<div class='dev-wait'>{{ t('Avvio generazione catalogo…') }}</div>";
+    fetch("/connect/powerbi/catalog/start", {method:"POST"})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!d.ok){ box.innerHTML = "<div class='dev-err'>"+(d.errore||"Errore")+"</div>"; btn.disabled=false; return; }
+        var poll = setInterval(function(){
+          fetch("/connect/powerbi/catalog/status").then(function(r){return r.json();}).then(function(p){
+            if(p.running){
+              box.innerHTML = "<div class='dev-wait'>⏳ "+(p.progress||"…")+"</div>";
+              return;
+            }
+            clearInterval(poll);
+            var res = p.result || {};
+            if(res.errore){
+              box.innerHTML = "<div class='dev-err'>"+res.errore+"</div>"; btn.disabled=false;
+            } else {
+              box.innerHTML = "<div class='dev-step'>✓ {{ t('Catalogo generato') }}: "+(res.datasets||0)+" dataset, "+(res.interrogabili||0)+" {{ t('interrogabili') }}."+(res.avviso?(" "+res.avviso):"")+"</div>";
+              setTimeout(function(){ location.reload(); }, 1200);
+            }
+          }).catch(function(){});
+        }, 2000);
+      })
+      .catch(function(){ box.innerHTML = "<div class='dev-err'>{{ t('Errore di rete.') }}</div>"; btn.disabled=false; });
   });
 })();
 </script>

@@ -15,3 +15,8 @@ sentence-transformers>=2.7
 #   python -m spacy download it_core_news_sm
 spacy>=3.7
 reportlab>=4.0
+# Power BI — parsing risposta Apache Arrow dell'endpoint executeDaxQueries
+# (elenco MISURE via INFO functions; richiede dataset su capacità dedicata).
+# Import opzionale: senza pyarrow il connettore funziona con tabelle/colonne
+# e il catalogo dichiara "misure non rilevate".
+pyarrow>=16.0

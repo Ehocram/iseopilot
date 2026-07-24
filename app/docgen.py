@@ -26,6 +26,119 @@ PPTX_TEMPLATE = TEMPLATES_DIR / "Presentation_template_1.pptx"
 OUT_DIR = Path(tempfile.gettempdir()) / "iseopilot_docs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── Template PERSONALI per-utente (bypass del template di default) ──
+# L'utente può caricare dal composer un proprio .docx/.pptx: finché è
+# presente, la generazione usa QUELLO al posto del template ISEO. Storage
+# isolato per identità (stesso hashing dei token), niente macro, audit a
+# monte (main.py). Un solo slot per formato per utente: stato visibile in
+# chat come chip, quindi nessuna sorpresa tra una conversazione e l'altra.
+USER_TPL_DIR = Path(os.environ.get("APP_DATA_DIR", "/data")) / "user_templates"
+TPL_MAX_BYTES = 15 * 1024 * 1024
+_TPL_EXT = {"docx": ".docx", "pptx": ".pptx"}
+
+
+def _tpl_user_dir(user: str) -> Path:
+    import hashlib
+    d = USER_TPL_DIR / hashlib.sha256(user.encode()).hexdigest()[:16]
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def validate_office_template(raw: bytes, fmt: str, filename: str = "") -> str:
+    """Valida un template caricato. Ritorna "" se valido, altrimenti il MOTIVO
+    del rifiuto (parlante, per l'utente). Regole: solo .docx/.pptx, archivio
+    Office leggibile con le part attese, NIENTE macro (macroEnabled/vbaProject)."""
+    import io
+    import zipfile
+    name_l = (filename or "").lower()
+    if name_l.endswith((".docm", ".pptm", ".dotm", ".potm", ".xlsm")):
+        return "I template con macro non sono ammessi (.docm/.pptm): usa un .docx o .pptx senza macro."
+    if fmt not in _TPL_EXT:
+        return "Formato non supportato: sono ammessi solo template .docx (Word) e .pptx (PowerPoint)."
+    if len(raw) > TPL_MAX_BYTES:
+        return f"File troppo grande ({len(raw)//(1024*1024)} MB): il limite è {TPL_MAX_BYTES//(1024*1024)} MB."
+    bio = io.BytesIO(raw)
+    if not zipfile.is_zipfile(bio):
+        return "Il file non è un documento Office valido (archivio non leggibile)."
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            names = z.namelist()
+            if "[Content_Types].xml" not in names:
+                return "Il file non è un documento Office valido ([Content_Types].xml assente)."
+            if any("vbaproject" in n.lower() for n in names):
+                return "Il template contiene macro (vbaProject): non ammesso."
+            ct = z.read("[Content_Types].xml").decode("utf-8", "replace").lower()
+            if "macroenabled" in ct:
+                return "Il template è macro-enabled: non ammesso."
+            need = "word/document.xml" if fmt == "docx" else "ppt/presentation.xml"
+            if need not in names:
+                atteso = "Word (.docx)" if fmt == "docx" else "PowerPoint (.pptx)"
+                return f"Il file non è un template {atteso} valido ({need} assente)."
+    except Exception as e:
+        return f"Template non leggibile: {e}"
+    return ""
+
+
+def save_user_template(user: str, fmt: str, raw: bytes, orig_name: str) -> str:
+    """Salva il template dell'utente per il formato. Ritorna "" o l'errore."""
+    err = validate_office_template(raw, fmt, orig_name)
+    if err:
+        return err
+    d = _tpl_user_dir(user)
+    (d / f"template{_TPL_EXT[fmt]}").write_bytes(raw)
+    meta = {}
+    mp = d / "meta.json"
+    try:
+        if mp.exists():
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+    except Exception:
+        meta = {}
+    meta[fmt] = (orig_name or f"template{_TPL_EXT[fmt]}")[:120]
+    mp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return ""
+
+
+def get_user_template(user: str, fmt: str):
+    """(path, nome_originale) del template dell'utente, oppure None."""
+    d = _tpl_user_dir(user)
+    p = d / f"template{_TPL_EXT.get(fmt, '')}"
+    if not p.is_file():
+        return None
+    nome = f"template{_TPL_EXT[fmt]}"
+    try:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        nome = meta.get(fmt, nome)
+    except Exception:
+        pass
+    return str(p), nome
+
+
+def delete_user_template(user: str, fmt: str) -> bool:
+    d = _tpl_user_dir(user)
+    p = d / f"template{_TPL_EXT.get(fmt, '')}"
+    if p.is_file():
+        try:
+            p.unlink()
+        except Exception:
+            return False
+    try:
+        mp = d / "meta.json"
+        if mp.exists():
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+            meta.pop(fmt, None)
+            mp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return True
+
+
+def user_templates_status(user: str) -> dict:
+    out = {}
+    for fmt in ("docx", "pptx"):
+        t = get_user_template(user, fmt)
+        out[fmt] = {"name": t[1]} if t else None
+    return out
+
 ISEO_RED = "EC1D2B"
 
 # ── 1) Rilevamento intento + formato ───────────────────────
@@ -197,11 +310,20 @@ def _safe_name(title: str, ext: str) -> str:
     return f"{base}.{ext}"
 
 
-def gen_docx(spec: dict) -> tuple[str, str]:
+def gen_docx(spec: dict, template_path: str | None = None) -> tuple[str, str]:
     from docx import Document
     from docx.shared import Pt
     from docx.oxml.ns import qn
-    doc = Document(str(DOCX_TEMPLATE)) if DOCX_TEMPLATE.is_file() else Document()
+    if template_path:
+        # template PERSONALE dell'utente: se non è apribile l'errore arriva in
+        # chat — MAI ripiegare in silenzio sul template di default.
+        try:
+            doc = Document(str(template_path))
+        except Exception as e:
+            raise ValueError(f"Il template Word caricato non è utilizzabile: {e}. "
+                             "Rimuovilo o sostituiscilo dal composer.") from e
+    else:
+        doc = Document(str(DOCX_TEMPLATE)) if DOCX_TEMPLATE.is_file() else Document()
     # svuota i paragrafi placeholder del template (mantiene header/footer/logo)
     for p in list(doc.paragraphs):
         p._element.getparent().remove(p._element)
@@ -240,7 +362,9 @@ def gen_docx(spec: dict) -> tuple[str, str]:
     title_style = "ISEO Titolo" if has_style("ISEO Titolo") else "Title"
     body_style = "Paragrafo base ISEO" if has_style("Paragrafo base ISEO") else "Normal"
     list_style = "Paragrafo elenco" if has_style("Paragrafo elenco") else "List Bullet"
-    use_numpr = has_style("Paragrafo elenco")  # il numbering c'è solo nel template
+    # numbering hardcoded (numId=1) solo col template ISEO: su un template
+    # PERSONALE non c'è garanzia che quell'elenco esista — si usa lo stile.
+    use_numpr = has_style("Paragrafo elenco") and not template_path
 
     add(spec.get("title", "Documento"), style=title_style, after=6)
     if spec.get("subtitle"):
@@ -261,13 +385,23 @@ def gen_docx(spec: dict) -> tuple[str, str]:
     return str(path), name
 
 
-def gen_pptx(spec: dict) -> tuple[str, str]:
+def gen_pptx(spec: dict, template_path: str | None = None) -> tuple[str, str]:
     from pptx import Presentation
     from pptx.util import Inches, Pt
     from pptx.dml.color import RGBColor
     from pptx.enum.text import PP_ALIGN
 
-    prs = Presentation(str(PPTX_TEMPLATE)) if PPTX_TEMPLATE.is_file() else Presentation()
+    if template_path:
+        try:
+            prs = Presentation(str(template_path))
+        except Exception as e:
+            raise ValueError(f"Il template PowerPoint caricato non è utilizzabile: {e}. "
+                             "Rimuovilo o sostituiscilo dal composer.") from e
+        if not len(prs.slide_layouts):
+            raise ValueError("Il template PowerPoint caricato non contiene layout: "
+                             "non utilizzabile per la generazione.")
+    else:
+        prs = Presentation(str(PPTX_TEMPLATE)) if PPTX_TEMPLATE.is_file() else Presentation()
     # rimuovi le slide di esempio del template (mantiene tema, master, footer):
     # va rimossa sia la voce nell'elenco sia la relazione, altrimenti le part
     # restano orfane e generano nomi duplicati nello zip.
@@ -417,10 +551,10 @@ def _pdf_reportlab(spec: dict) -> tuple[str, str]:
     return str(path), name
 
 
-def gen_pdf(spec: dict) -> tuple[str, str]:
-    # preferito: Word sul template ISEO -> PDF (fedele a header/footer/logo)
+def gen_pdf(spec: dict, template_path: str | None = None) -> tuple[str, str]:
+    # preferito: Word sul template (ISEO o personale) -> PDF fedele
     try:
-        docx_path, _ = gen_docx(spec)
+        docx_path, _ = gen_docx(spec, template_path=template_path)
         pdf = _docx_to_pdf(docx_path)
         if pdf:
             return pdf, _safe_name(spec.get("title", "documento"), "pdf")
@@ -434,7 +568,15 @@ _BUILDERS = {"docx": gen_docx, "pptx": gen_pptx, "xlsx": gen_xlsx, "pdf": gen_pd
 
 
 def generate(fmt: str, user_request: str, context: str, settings: dict,
-             history_text: str = "") -> tuple[str, str]:
-    """Genera il file richiesto. Ritorna (path, filename_visibile)."""
+             history_text: str = "", templates: dict | None = None) -> tuple[str, str]:
+    """Genera il file richiesto. Ritorna (path, filename_visibile).
+    `templates` = {"docx": path|None, "pptx": path|None}: template PERSONALI
+    dell'utente che, se presenti, BYPASSANO quelli di default (pdf usa il
+    template Word). Un template invalido interrompe con errore parlante."""
     spec = build_spec(fmt, user_request, context, settings, history_text)
+    tpl = templates or {}
+    if fmt in ("docx", "pdf"):
+        return _BUILDERS[fmt](spec, template_path=tpl.get("docx"))
+    if fmt == "pptx":
+        return _BUILDERS[fmt](spec, template_path=tpl.get("pptx"))
     return _BUILDERS[fmt](spec)
