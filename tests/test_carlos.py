@@ -309,6 +309,65 @@ def test_generazione_in_chat_usa_template_personale(monkeypatch, tmp_path):
     c.post("/api/template/delete", data={"fmt": "docx"})
 
 
+def _dotx_bytes() -> bytes:
+    """Modello Word (.dotx): stesso package del .docx con content-type
+    'template' — quello che python-docx rifiuta e che va normalizzato."""
+    import zipfile
+    raw = _docx_bytes()
+    bio_in = io.BytesIO(raw)
+    bio_out = io.BytesIO()
+    with zipfile.ZipFile(bio_in) as zi, zipfile.ZipFile(bio_out, "w") as zo:
+        for item in zi.infolist():
+            data = zi.read(item.filename)
+            if item.filename == "[Content_Types].xml":
+                data = data.decode("utf-8").replace(
+                    "wordprocessingml.document.main+xml",
+                    "wordprocessingml.template.main+xml").encode("utf-8")
+            zo.writestr(item, data)
+    return bio_out.getvalue()
+
+
+def test_normalize_template_dotx_e_idempotenza():
+    dotx = _dotx_bytes()
+    from docx import Document
+    import pytest
+    with pytest.raises(Exception):
+        Document(io.BytesIO(dotx))                    # il modello viene rifiutato
+    conv = docgen.normalize_office_template(dotx)
+    assert conv != dotx
+    Document(io.BytesIO(conv))                        # il normalizzato si apre
+    assert docgen.normalize_office_template(conv) == conv   # idempotente sui .docx
+
+
+def test_upload_dotx_accettato_e_normalizzato():
+    c = _mk_user("tpldotx@test")
+    r = c.post("/api/template",
+               files={"file": ("Solution_Center.dotx", _dotx_bytes(), "application/octet-stream")})
+    j = r.json()
+    assert j["ok"] is True and j["status"]["docx"]["name"] == "Solution_Center.dotx"
+    # su disco è già un documento apribile: la generazione non fallirà
+    path, _nome = docgen.get_user_template("tpldotx@test", "docx")
+    from docx import Document
+    Document(path)
+    c.post("/api/template/delete", data={"fmt": "docx"})
+
+
+def test_gen_docx_personale_usa_stili_del_template(tmp_path):
+    """Contratto sui template personali: Heading 1 per le sezioni, Subtitle per
+    il sottotitolo, e MAI bullet persi (numbering reale oppure glifo •)."""
+    import zipfile
+    tpl = tmp_path / "personale.docx"
+    tpl.write_bytes(_docx_bytes())
+    spec = {"title": "T", "subtitle": "S",
+            "sections": [{"heading": "Sez", "paragraphs": ["p"], "bullets": ["b1", "b2"]}]}
+    path, _ = docgen.gen_docx(spec, template_path=str(tpl))
+    with zipfile.ZipFile(path) as z:
+        doc = z.read("word/document.xml").decode("utf-8")
+    assert 'w:pStyle w:val="Heading1"' in doc
+    assert 'w:pStyle w:val="Subtitle"' in doc
+    assert ("<w:numPr>" in doc) or ("• b1" in doc)     # elenco vero o glifo, mai piatto
+
+
 # ── B) markup servito per il renderer/typography ────────────
 def test_chat_page_serve_hook_renderer_e_template():
     c = _mk_user("uihook@test")

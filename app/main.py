@@ -1811,7 +1811,8 @@ async def template_upload(request: Request, file: UploadFile = File(...)):
         return JSONResponse({"ok": False, "error": "Sessione scaduta."}, status_code=401)
     fname = (file.filename or "").strip()
     ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
-    fmt = "docx" if ext == "docx" else ("pptx" if ext == "pptx" else "")
+    # anche i MODELLI Office senza macro (.dotx/.potx): normalizzati al salvataggio
+    fmt = {"docx": "docx", "dotx": "docx", "pptx": "pptx", "potx": "pptx"}.get(ext, "")
     raw = await file.read()
     if not fmt:
         err = (docgen.validate_office_template(raw, ext or "?", fname)

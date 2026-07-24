@@ -204,15 +204,18 @@ python tests/test_smoke.py
   (interlinea, spaziature, tabelle con bordi, h1–h3). Verificato con harness
   Node (16 casi, inclusi vettori XSS) in fase di build.
   (3) *Template personali Word/PowerPoint*: pulsante 📐 nel composer — l'utente
-  carica un proprio `.docx`/`.pptx` (es. Solution Centre) che, finché presente
+  carica un proprio `.docx`/`.pptx` **o modello `.dotx`/`.potx`** (normalizzato
+  al salvataggio: stesso package, content-type riscritto) che, finché presente
   (chip visibile con ✕), **bypassa il template ISEO** nella generazione
   (il PDF usa il template Word personale). Validazione: solo `.docx`/`.pptx`,
   **niente macro** (`.docm`/`.pptm`, `vbaProject`, content-type macroEnabled
   rifiutati con motivo), max 15 MB, storage isolato per identità, audit
   (`template_caricato`/`template_rifiutato`/`template_rimosso`). Un template
   corrotto interrompe la generazione con errore parlante: nessun ripiego
-  silenzioso sul default. Su template arbitrari si usano gli stili Word
-  standard (Title/Normal/List Bullet) e i layout del tema PowerPoint del file.
+  silenzioso sul default. Sui template personali si parla la lingua del file:
+  Title/Subtitle/**Heading 1**/List Paragraph se definiti e il **numbering
+  bullet del template stesso** (numId reale rilevato da `numbering.xml`, con
+  glifo • come ripiego dichiarato); in PowerPoint si usano tema e layout del file.
 - **Successivi** — Cronologia chat persistente per-utente; account Dynamics 365
   in sola lettura per-utente (migrazione dal System Administrator); re-rank semantico.
 

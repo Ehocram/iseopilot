@@ -79,11 +79,53 @@ def validate_office_template(raw: bytes, fmt: str, filename: str = "") -> str:
     return ""
 
 
+# I MODELLI Word/PowerPoint (.dotx/.potx, senza macro) sono lo stesso package
+# OPC con un content-type diverso: python-docx/python-pptx li rifiutano. La
+# normalizzazione riscrive SOLO l'override del part principale in
+# [Content_Types].xml: il resto (stili, header, footer, tema, numbering)
+# resta byte-identico.
+_CT_TEMPLATE_TO_DOC = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml":
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+    "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml":
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+}
+
+
+def normalize_office_template(raw: bytes) -> bytes:
+    """Se il package è un MODELLO (.dotx/.potx), lo converte in documento
+    (.docx/.pptx) riscrivendo il content-type del part principale. Se è già
+    un documento, ritorna i byte invariati. In caso di errore, invariati."""
+    import io
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            ct = z.read("[Content_Types].xml").decode("utf-8", "replace")
+            hit = None
+            for tpl_ct, doc_ct in _CT_TEMPLATE_TO_DOC.items():
+                if tpl_ct in ct:
+                    hit = (tpl_ct, doc_ct)
+                    break
+            if not hit:
+                return raw
+            out = io.BytesIO()
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zo:
+                for item in z.infolist():
+                    data = z.read(item.filename)
+                    if item.filename == "[Content_Types].xml":
+                        data = ct.replace(hit[0], hit[1]).encode("utf-8")
+                    zo.writestr(item, data)
+            return out.getvalue()
+    except Exception:
+        return raw
+
+
 def save_user_template(user: str, fmt: str, raw: bytes, orig_name: str) -> str:
     """Salva il template dell'utente per il formato. Ritorna "" o l'errore."""
     err = validate_office_template(raw, fmt, orig_name)
     if err:
         return err
+    raw = normalize_office_template(raw)  # .dotx/.potx -> .docx/.pptx
     d = _tpl_user_dir(user)
     (d / f"template{_TPL_EXT[fmt]}").write_bytes(raw)
     meta = {}
@@ -310,6 +352,32 @@ def _safe_name(title: str, ext: str) -> str:
     return f"{base}.{ext}"
 
 
+def _find_bullet_num_id(doc) -> int | None:
+    """Primo numId del template il cui abstractNum ha numFmt='bullet' al
+    livello 0: serve per elenchi puntati REALI sui template personali (dove
+    il numId=1 del template ISEO non esiste). None se non determinabile."""
+    try:
+        from docx.oxml.ns import qn
+        npart = getattr(doc.part, "numbering_part", None)
+        if npart is None:
+            return None
+        root = npart.element
+        bullet_abstracts = set()
+        for an in root.findall(qn("w:abstractNum")):
+            lvl0 = an.find(qn("w:lvl"))
+            fmt = lvl0.find(qn("w:numFmt")) if lvl0 is not None else None
+            if fmt is not None and fmt.get(qn("w:val")) == "bullet":
+                bullet_abstracts.add(an.get(qn("w:abstractNumId")))
+        candidates = []
+        for num in root.findall(qn("w:num")):
+            aid = num.find(qn("w:abstractNumId"))
+            if aid is not None and aid.get(qn("w:val")) in bullet_abstracts:
+                candidates.append(int(num.get(qn("w:numId"))))
+        return min(candidates) if candidates else None
+    except Exception:
+        return None
+
+
 def gen_docx(spec: dict, template_path: str | None = None) -> tuple[str, str]:
     from docx import Document
     from docx.shared import Pt
@@ -340,7 +408,8 @@ def gen_docx(spec: dict, template_path: str | None = None) -> tuple[str, str]:
     # grezzo resta nel documento — era la causa delle righe DUPLICATE. Qui lo
     # stile viene applicato sullo STESSO paragrafo, con ripiego senza doppioni.
     def add(text: str, style: str | None = None, bold: bool = False,
-            before: int = 0, after: int = 0, bullet: bool = False):
+            before: int = 0, after: int = 0, bullet: bool = False,
+            num_id: int = 1):
         p = doc.add_paragraph()
         if style and has_style(style):
             p.style = doc.styles[style]
@@ -351,10 +420,10 @@ def gen_docx(spec: dict, template_path: str | None = None) -> tuple[str, str]:
         if after:
             p.paragraph_format.space_after = Pt(after)
         if bullet:
-            # elenco VERO del template (numId=1 = puntato), mai "•" letterale
+            # elenco VERO del template (numId del template, mai "•" letterale)
             numpr = p._p.get_or_add_pPr().makeelement(qn("w:numPr"), {})
             ilvl = numpr.makeelement(qn("w:ilvl"), {qn("w:val"): "0"})
-            numid = numpr.makeelement(qn("w:numId"), {qn("w:val"): "1"})
+            numid = numpr.makeelement(qn("w:numId"), {qn("w:val"): str(num_id)})
             numpr.append(ilvl); numpr.append(numid)
             p._p.get_or_add_pPr().append(numpr)
         return p
@@ -362,22 +431,44 @@ def gen_docx(spec: dict, template_path: str | None = None) -> tuple[str, str]:
     title_style = "ISEO Titolo" if has_style("ISEO Titolo") else "Title"
     body_style = "Paragrafo base ISEO" if has_style("Paragrafo base ISEO") else "Normal"
     list_style = "Paragrafo elenco" if has_style("Paragrafo elenco") else "List Bullet"
-    # numbering hardcoded (numId=1) solo col template ISEO: su un template
-    # PERSONALE non c'è garanzia che quell'elenco esista — si usa lo stile.
     use_numpr = has_style("Paragrafo elenco") and not template_path
+    bullet_num = 1
+    subtitle_style, heading_style = body_style, None
+    if template_path:
+        # TEMPLATE PERSONALE: si parla la lingua del file — Subtitle e
+        # Heading 1 se definiti (è lì che vive il branding, es. Solution
+        # Centre), List Paragraph/List Bullet per gli elenchi, e il numbering
+        # BULLET del template stesso (numId reale, non l'1 del template ISEO).
+        if has_style("Subtitle"):
+            subtitle_style = "Subtitle"
+        if has_style("Heading 1"):
+            heading_style = "Heading 1"
+        if has_style("List Paragraph"):
+            list_style = "List Paragraph"
+        elif not has_style("List Bullet"):
+            list_style = body_style
+        found = _find_bullet_num_id(doc)
+        if found is not None:
+            use_numpr, bullet_num = True, found
 
     add(spec.get("title", "Documento"), style=title_style, after=6)
     if spec.get("subtitle"):
-        add(spec["subtitle"], style=body_style, after=10)
+        add(spec["subtitle"], style=subtitle_style, after=10)
     for sec in spec.get("sections", []):
         if sec.get("heading"):
-            # titolo di SEZIONE: corpo in grassetto con aria sopra — mai lo
-            # stile del titolo di copertina, che urlava a ogni sezione
-            add(sec["heading"], style=body_style, bold=True, before=14, after=6)
+            if heading_style:
+                # template personale con Heading 1: spaziatura dello stile
+                add(sec["heading"], style=heading_style)
+            else:
+                # titolo di SEZIONE (template ISEO): corpo in grassetto con
+                # aria sopra — mai lo stile del titolo di copertina
+                add(sec["heading"], style=body_style, bold=True, before=14, after=6)
         for par in sec.get("paragraphs", []):
             add(str(par), style=body_style, after=6)
         for b in sec.get("bullets", []):
-            add(str(b), style=list_style, after=3, bullet=use_numpr)
+            fallback_glyph = (not use_numpr) and bool(template_path)
+            add(("• " if fallback_glyph else "") + str(b), style=list_style,
+                after=3, bullet=use_numpr, num_id=bullet_num)
 
     name = _safe_name(spec.get("title", "documento"), "docx")
     path = OUT_DIR / (next(tempfile._get_candidate_names()) + ".docx")

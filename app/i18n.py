@@ -223,8 +223,8 @@ PAIRS = {
         "The catalog lists the workspaces and datasets visible to YOUR account (tables, columns and, where available, measures): it is what lets the assistant build reliable DAX queries. Regenerate it when your permissions or the models change.",
 
     # ── Template documento personale ──
-    "Template personale (.docx/.pptx): se caricato, i documenti generati usano il TUO template al posto di quello ISEO. Niente macro.":
-        "Personal template (.docx/.pptx): when loaded, generated documents use YOUR template instead of the ISEO one. No macros.",
+    "Template personale (.docx/.dotx/.pptx/.potx): se caricato, i documenti generati usano il TUO template al posto di quello ISEO. Niente macro.":
+        "Personal template (.docx/.dotx/.pptx/.potx): when loaded, generated documents use YOUR template instead of the ISEO one. No macros.",
     "Template": "Template",
     "Rimuovi template": "Remove template",
     "Ricerca in corso su": "Search in progress on",
