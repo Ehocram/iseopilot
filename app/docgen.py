@@ -245,10 +245,36 @@ _CONFIRM_RE = re.compile(
     re.IGNORECASE)
 
 
+# Modifica di un documento GIÀ GENERATO in conversazione (caso Laura): "togli
+# la parte X e aggiorna il documento", "riscrivilo più sintetico". Non c'è né
+# formato né verbo di creazione, ma il file esiste già nei turni recenti — il
+# marcatore affidabile è il messaggio dell'assistente "Ho preparato **nome.ext**".
+_GEN_MARKER_RE = re.compile(r"Ho preparato \*\*([^*]+?\.(docx|xlsx|pptx|pdf))\*\*")
+_MOD_VERB_RE = re.compile(
+    r"\b(modific\w+|cambia\w*|aggiorn\w+|corregg\w+|sistem\w+|riscriv\w+|"
+    r"rigener\w+|rifa(?:i|llo|lla)|rived\w+|aggiung\w+|togli\w*|rimuov\w+|"
+    r"elimin\w+|sostitu\w+|integra\w*|accorcia\w*|allung\w+|amplia\w*|"
+    r"update|modify|change|regenerate|redo|rewrite|revise|add|remove|replace|"
+    r"shorten|expand)\b", re.IGNORECASE)
+_DOC_REF_RE = re.compile(
+    r"\b(document\w*|file|word|pdf|excel|powerpoint|presentazion\w*|slide|"
+    r"report|relazion\w*|piano|bozza|version\w*|testo|guida|specific\w*|"
+    r"proposta|lettera|document|draft|guide|spec\w*)\b", re.IGNORECASE)
+# forme clitiche che si riferiscono direttamente al documento ("riscrivilo")
+_MOD_CLITIC_RE = re.compile(
+    r"^\s*(riscrivil[oa]|rifall[oa]|aggiornal[oa]|correggil[oa]|sistemal[oa]|"
+    r"modifical[oa]|rigeneral[oa]|accorcial[oa]|allungal[oa]|"
+    r"(redo|rewrite|update|revise)\s+it)\b", re.IGNORECASE)
+_EXT_TO_FMT = {"docx": "docx", "xlsx": "xlsx", "pptx": "pptx", "pdf": "pdf"}
+
+
 def detect_request_with_history(text: str, history: list | None = None) -> str | None:
     """Come detect_request, ma se il messaggio è una CONFERMA breve eredita il
     formato dai turni recenti della conversazione (utente o assistente)."""
     fmt = detect_request(text)
+    if fmt:
+        return fmt
+    fmt = _detect_modification(text, history)
     if fmt:
         return fmt
     tl = (text or "").strip()
@@ -276,6 +302,28 @@ def detect_request_with_history(text: str, history: list | None = None) -> str |
                     break
         if f:
             return f
+    return None
+
+
+def _detect_modification(text: str, history: list | None) -> str | None:
+    """Ramo MODIFICA: se nei turni recenti l'assistente ha generato un file
+    ("Ho preparato **nome.ext**") e il messaggio chiede una modifica riferita
+    al documento, la generazione riparte ereditando il formato dall'estensione
+    del file. Deterministico: senza marcatore di generazione, niente file."""
+    tl = (text or "").strip()
+    if not history or not tl or len(tl) > 400:
+        return None
+    if _EXPLAIN_RE.search(tl.lower()):
+        return None
+    if not (_MOD_CLITIC_RE.match(tl)
+            or (_MOD_VERB_RE.search(tl) and _DOC_REF_RE.search(tl))):
+        return None
+    for m in reversed(list(history)[-10:]):
+        if m.get("role") != "assistant":
+            continue
+        hit = _GEN_MARKER_RE.search(str(m.get("content", "")))
+        if hit:
+            return _EXT_TO_FMT.get(hit.group(2).lower())
     return None
 
 

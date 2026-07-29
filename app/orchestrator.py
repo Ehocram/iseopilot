@@ -50,6 +50,16 @@ def build_system(tone_key: str, reply_lang: str, context: str = "",
                  free_mode: bool = False, memory_context: str = "",
                  feedback_context: str = "") -> str:
     parts = [TONES.get(tone_key, TONES["Aziendale formale"])]
+    parts.append(
+        "SU ISEOPILOT STESSO: se l'utente segnala un problema o malfunzionamento "
+        "dell'applicazione (link di download mancante, errore, funzione che non "
+        "risponde) o chiede di aggiungere integrazioni/funzioni, NON inventare "
+        "procedure, impostazioni, tempi di attesa o canali di 'supporto tecnico': "
+        "non esistono. Riconosci la segnalazione e invita a inoltrarla "
+        "all'amministratore interno di ISEOPilot, che riceve anche i log. "
+        "Sulle capacità dell'applicazione dichiara solo ciò che risulta dal "
+        "contesto o ammetti di non saperlo.")
+
     li = LANG_INSTR.get(reply_lang, "")
     if li:
         parts.append(li)

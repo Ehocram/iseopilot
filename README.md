@@ -245,6 +245,14 @@ python tests/test_smoke.py
   aggiunta/rimozione/svuotamento. **Kill-switch admin `memoria_note_enabled`,
   SPENTO di default: deployabile subito, si accende in Motore solo dopo
   l'approvazione del Comitato AI.**
+- **Incremento 8b** ✓ — **Modifica di documenti generati (caso Laura)**. La
+  richiesta di modifica dopo un documento già generato ("togli la parte X e
+  aggiorna il documento", "riscrivilo più sintetico") ora RIGENERA il file con
+  link di download, ereditando il formato dall'estensione del marcatore "Ho
+  preparato **nome.ext**" negli ultimi 10 turni — deterministicamente: senza
+  generazione precedente, nessun file. In più, regola anti auto-supporto: se
+  l'utente segnala un malfunzionamento di ISEOPilot, l'assistente non inventa
+  procedure o "supporto tecnico" ma rimanda all'amministratore interno.
 - **Successivi** — Cronologia chat persistente per-utente; account Dynamics 365
   in sola lettura per-utente (migrazione dal System Administrator); re-rank semantico.
 
