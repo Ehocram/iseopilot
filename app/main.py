@@ -594,8 +594,22 @@ def api_chat(request: Request, body: ChatRequest):
         from . import cowork
         _audit(request, uid, "cowork", f"domanda={query[:160]}")
         dept = user.get("department") or ""
+        # Ultimi turni della conversazione: le CORREZIONI ("no, in spagnolo")
+        # devono arrivare all'agente col loro contesto, non come compito orfano.
+        _conv_rows = []
+        for _m in (body.messages or [])[:-1][-8:]:
+            _r = "UTENTE" if _m.get("role") == "user" else "ASSISTENTE"
+            _c = str(_m.get("content") or "").strip()
+            if _c:
+                _conv_rows.append(f"{_r}: {_c[:800]}")
+        _conv_txt = "\n".join(_conv_rows)[-4000:]
+        _note_cw = ""
+        try:
+            _note_cw = memory.build_note_context(uid)
+        except Exception:
+            _note_cw = ""
         return StreamingResponse(
-            cowork.run(dept, uid, query, _area_settings(settings, "claude_model_dynamics"), anon_names()),
+            cowork.run(dept, uid, query, _area_settings(settings, "claude_model_dynamics"), anon_names(), conversazione=_conv_txt, note_utente=_note_cw),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -754,6 +768,20 @@ def api_chat(request: Request, body: ChatRequest):
     # ── Generazione documenti su richiesta (Word/Excel/PPT/PDF) ──
     gen_fmt = docgen.detect_request_with_history(query, clean[:-1])
 
+    # NOTE PERSONALI (Incremento 8): cattura del trigger esplicito
+    # ("ricordati che…") PRIMA della risposta, con conferma visibile in chat.
+    _nota_conferma = ""
+    if memory.note_enabled():
+        _nota_testo = memory.estrai_nota(query)
+        if _nota_testo:
+            _esito = memory.note_add(uid, _nota_testo, origine="chat")
+            if _esito.get("ok"):
+                _audit(request, uid, "memoria_nota_aggiunta", f"testo={_nota_testo[:120]}")
+                _nota_conferma = ("📌 *Aggiunto alle tue note personali: "
+                                  f"«{_nota_testo}» — gestibile dalla pagina Connessioni.*\n\n")
+            else:
+                _nota_conferma = f"📌 *Nota NON salvata: {_esito.get('errore','')}*\n\n"
+
     # Memoria conversazionale + esempi promossi (solo per la chat normale).
     mem_ctx, fb_ctx = "", ""
     if not gen_fmt:
@@ -762,6 +790,14 @@ def api_chat(request: Request, body: ChatRequest):
             fb_ctx = memory.build_feedback_context(uid)
         except Exception:
             mem_ctx, fb_ctx = "", ""
+    # Le NOTE valgono in chat normale E in generazione documenti.
+    _note_ctx = ""
+    try:
+        _note_ctx = memory.build_note_context(uid)
+    except Exception:
+        _note_ctx = ""
+    if _note_ctx:
+        mem_ctx = (_note_ctx + ("\n\n" + mem_ctx if mem_ctx else ""))
 
     hist_text = ""
     if gen_fmt:
@@ -840,7 +876,7 @@ def api_chat(request: Request, body: ChatRequest):
                     if _t:
                         _tpls[_f], _tpl_names[_f] = _t[0], _t[1]
                 path, fname = None, None
-                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, _area_settings(settings, "claude_model_docgen"), hist_text, templates=_tpls)):
+                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, _area_settings(settings, "claude_model_docgen"), hist_text, templates=_tpls, note_utente=_note_ctx)):
                     if isinstance(item, tuple) and item[0] == "result":
                         path, fname = item[1]
                     else:
@@ -858,6 +894,9 @@ def api_chat(request: Request, body: ChatRequest):
         # Risposta in streaming (i link NON passano da Claude/anonimizzazione).
         # Accumulo il testo per selezionare poi solo le fonti CITATE.
         resp_parts = []
+        if _nota_conferma:
+            yield "data: " + json.dumps({"type": "delta", "text": _nota_conferma},
+                                        ensure_ascii=False) + "\n\n"
         for chunk in stream_reply(clean, settings, anon_names(), context,
                                   body.free_mode, mem_ctx, fb_ctx, images=images):
             yield chunk
@@ -1166,6 +1205,7 @@ def admin_page(request: Request):
         dyn_tenant_id=store.get_setting("dyn_tenant_id", DEF_DYN_TENANT_ID),
         dyn_resource_url=store.get_setting("dyn_resource_url", DEF_DYN_RESOURCE_URL),
         def_od_client_id=DEF_OD_CLIENT_ID, def_od_tenant_id=DEF_OD_TENANT_ID,
+        memoria_note_enabled=store.get_setting("memoria_note_enabled", "0") == "1",
         pbi_enabled=store.get_setting("pbi_enabled", "0") == "1",
         pbi_client_id=store.get_setting("pbi_client_id", DEF_PBI_CLIENT_ID),
         pbi_tenant_id=store.get_setting("pbi_tenant_id", DEF_PBI_TENANT_ID),
@@ -1205,6 +1245,7 @@ def admin_save(
     dyn_client_id: str = Form(""),
     dyn_tenant_id: str = Form(""),
     dyn_resource_url: str = Form(""),
+    memoria_note_enabled: str = Form("0"),
     pbi_enabled: str = Form("0"),
     pbi_client_id: str = Form(""),
     pbi_tenant_id: str = Form(""),
@@ -1237,6 +1278,7 @@ def admin_save(
     store.set_setting("dyn_client_id", dyn_client_id.strip() or DEF_DYN_CLIENT_ID)
     store.set_setting("dyn_tenant_id", dyn_tenant_id.strip() or DEF_DYN_TENANT_ID)
     store.set_setting("dyn_resource_url", dyn_resource_url.strip() or DEF_DYN_RESOURCE_URL)
+    store.set_setting("memoria_note_enabled", "1" if memoria_note_enabled == "1" else "0")
     store.set_setting("pbi_enabled", "1" if pbi_enabled == "1" else "0")
     store.set_setting("pbi_client_id", pbi_client_id.strip() or DEF_PBI_CLIENT_ID)
     store.set_setting("pbi_tenant_id", pbi_tenant_id.strip() or DEF_PBI_TENANT_ID)
@@ -1673,6 +1715,8 @@ def settings_page(request: Request):
         dyn_connected=connectors.is_connected(uname, "dynamics"),
         od_configured=connectors.is_configured("onedrive"),
         dyn_configured=connectors.is_configured("dynamics"),
+        note_enabled=memory.note_enabled(),
+        note_personali=memory.note_list(uname) if memory.note_enabled() else [],
         pbi_enabled=connectors.pbi_enabled(),
         pbi_connected=connectors.is_connected(uname, "powerbi"),
         pbi_configured=connectors.is_configured("powerbi"),
@@ -1791,6 +1835,43 @@ def admin_build_dyn_catalog(request: Request):
         return RedirectResponse(url="/admin?dyn_err=" + str(res["errore"]).replace(" ", "+")[:200], status_code=303)
     msg = f"Catalogo+generato:+{res.get('count',0)}+entità,+{res.get('relazioni',0)}+relazioni,+{res.get('schema_md',{}).get('file',0)}+schema."
     return RedirectResponse(url="/admin?saved=1&dyn_msg=" + msg, status_code=303)
+
+
+@app.get("/api/memoria/note")
+def memoria_note_list(request: Request):
+    user = auth.current_user(request)
+    if not user:
+        return JSONResponse({"error": "Sessione scaduta."}, status_code=401)
+    if not memory.note_enabled():
+        return JSONResponse({"enabled": False, "note": []})
+    return JSONResponse({"enabled": True, "note": memory.note_list(user["username"])})
+
+
+@app.post("/api/memoria/note")
+def memoria_note_add(request: Request, testo: str = Form(...)):
+    user = auth.current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Sessione scaduta."}, status_code=401)
+    esito = memory.note_add(user["username"], testo, origine="utente")
+    if esito.get("ok") and not esito.get("duplicata"):
+        _audit(request, user["username"], "memoria_nota_aggiunta", f"testo={testo[:120]}")
+    if not esito.get("ok"):
+        return JSONResponse({"ok": False, "error": esito.get("errore", "")})
+    return JSONResponse({"ok": True, "note": memory.note_list(user["username"])})
+
+
+@app.post("/api/memoria/note/delete")
+def memoria_note_delete(request: Request, nota_id: str = Form("")):
+    user = auth.current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Sessione scaduta."}, status_code=401)
+    if nota_id == "all":
+        n = memory.note_clear(user["username"])
+        _audit(request, user["username"], "memoria_note_svuotate", f"rimosse={n}")
+    else:
+        if memory.note_delete(user["username"], nota_id):
+            _audit(request, user["username"], "memoria_nota_rimossa", f"id={nota_id}")
+    return JSONResponse({"ok": True, "note": memory.note_list(user["username"])})
 
 
 @app.get("/api/template")

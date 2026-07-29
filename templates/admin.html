@@ -201,6 +201,13 @@
         </div>
         <div class="field">
           <div class="checkrow">
+            <input type="checkbox" id="memoria_note_enabled" name="memoria_note_enabled" value="1" {% if memoria_note_enabled %}checked{% endif %}>
+            <label for="memoria_note_enabled">Abilita le note di memoria personale per gli utenti</label>
+          </div>
+          <div class="hint">Spento (default): nessuna superficie e nessuna scrittura. Da acceso: ogni utente ha note durevoli tra le chat (preferenze/correzioni), aggiunte SOLO su sua azione esplicita («ricordati che…» o pagina Connessioni), cifrate a riposo, visibili e cancellabili dall'utente, con audit. <strong>Accendere solo dopo l'approvazione del Comitato AI.</strong></div>
+        </div>
+        <div class="field">
+          <div class="checkrow">
             <input type="checkbox" id="pbi_enabled" name="pbi_enabled" value="1" {% if pbi_enabled %}checked{% endif %}>
             <label for="pbi_enabled">Abilita il connettore Power BI per gli utenti</label>
           </div>

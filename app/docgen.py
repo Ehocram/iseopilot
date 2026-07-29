@@ -328,11 +328,14 @@ _SCHEMAS = {
 
 
 def build_spec(fmt: str, user_request: str, context: str, settings: dict,
-               history_text: str = "") -> dict:
+               history_text: str = "", note_utente: str = "") -> dict:
     schema = _SCHEMAS["docx"] if fmt in ("docx", "pdf") else _SCHEMAS[fmt]
     lang = settings.get("reply_lang", "Italiano")
     system = (
-        f"Sei un generatore di documenti aziendali ISEO. Rispondi nella lingua: {lang}. "
+        f"Sei un generatore di documenti aziendali ISEO. Scrivi i contenuti nella "
+        f"lingua: {lang}, SALVO che la RICHIESTA DELL'UTENTE o la conversazione "
+        "chiedano esplicitamente un'altra lingua: in quel caso PREVALE la lingua "
+        "richiesta. "
         "Produci ESCLUSIVAMENTE JSON valido secondo lo schema indicato, senza commenti, "
         "senza markdown, senza testo aggiuntivo. Il contenuto deve essere reale, utile e "
         "PERTINENTE alla richiesta specifica (mai generico), basato sul materiale e sulla "
@@ -341,7 +344,8 @@ def build_spec(fmt: str, user_request: str, context: str, settings: dict,
     ctx = ("\n\n=== MATERIALE DI RIFERIMENTO ===\n" + context.strip()) if context and context.strip() else ""
     hist = ("\n\n=== CONVERSAZIONE PRECEDENTE (per capire cosa vuole davvero l'utente) ===\n"
             + history_text.strip()) if history_text and history_text.strip() else ""
-    user = f"{schema}\n\nRICHIESTA DELL'UTENTE:\n{user_request}{hist}{ctx}"
+    note = ("\n\n" + note_utente.strip()) if note_utente and note_utente.strip() else ""
+    user = f"{schema}\n\nRICHIESTA DELL'UTENTE:\n{user_request}{note}{hist}{ctx}"
     raw = orchestrator.complete(system, user, settings, max_tokens=4000)
     return _parse_json(raw)
 
@@ -659,12 +663,14 @@ _BUILDERS = {"docx": gen_docx, "pptx": gen_pptx, "xlsx": gen_xlsx, "pdf": gen_pd
 
 
 def generate(fmt: str, user_request: str, context: str, settings: dict,
-             history_text: str = "", templates: dict | None = None) -> tuple[str, str]:
+             history_text: str = "", templates: dict | None = None,
+             note_utente: str = "") -> tuple[str, str]:
     """Genera il file richiesto. Ritorna (path, filename_visibile).
     `templates` = {"docx": path|None, "pptx": path|None}: template PERSONALI
     dell'utente che, se presenti, BYPASSANO quelli di default (pdf usa il
     template Word). Un template invalido interrompe con errore parlante."""
-    spec = build_spec(fmt, user_request, context, settings, history_text)
+    spec = build_spec(fmt, user_request, context, settings, history_text,
+                      note_utente=note_utente)
     tpl = templates or {}
     if fmt in ("docx", "pdf"):
         return _BUILDERS[fmt](spec, template_path=tpl.get("docx"))

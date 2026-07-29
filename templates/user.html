@@ -79,6 +79,29 @@
       </div>
     </div>
 
+    {% if note_enabled %}
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">{{ t("Memoria personale") }}</div><h2>{{ t("Note che l'assistente ricorda per te") }}</h2></div>
+      <div class="panel-body">
+        <p class="hint">{{ t("Preferenze e correzioni durevoli tra le chat (es. «le specifiche tecniche le voglio in spagnolo»). Si aggiungono qui o scrivendo in chat «ricordati che…». Sono visibili solo a te, cifrate sul server e cancellabili in ogni momento; una richiesta esplicita nel messaggio corrente prevale comunque.") }}</p>
+        <div id="note-list" style="display:flex; flex-direction:column; gap:8px; margin:10px 0;">
+          {% for n in note_personali %}
+          <div class="chip" style="justify-content:space-between; max-width:none;">
+            <span class="chip-name" style="white-space:normal;">📌 {{ n.testo }} <span class="hint">({{ n.creata }})</span></span>
+            <button type="button" class="chip-x nota-del" data-id="{{ n.id }}">×</button>
+          </div>
+          {% endfor %}
+          {% if not note_personali %}<span class="hint" id="note-empty">{{ t("Nessuna nota salvata.") }}</span>{% endif %}
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <input type="text" id="nota-nuova" maxlength="300" placeholder="{{ t("Es.: rispondimi sempre in spagnolo") }}" style="flex:1; min-width:220px;">
+          <button type="button" class="ghost" id="nota-add">{{ t("Aggiungi") }}</button>
+          <button type="button" class="ghost" id="note-clear">{{ t("Svuota tutto") }}</button>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     {% if pbi_enabled %}
     <div class="panel">
       <div class="panel-head"><div class="eyebrow">{{ t("Connettore Power BI") }}</div><h2>Power BI</h2></div>
@@ -155,6 +178,59 @@
   }
   document.querySelectorAll('input[name^="use_"]').forEach(function(cb){
     cb.addEventListener("change", saveSources);
+  });
+})();
+</script>
+
+<script>
+(function(){
+  // Note personali: gestione da pagina (aggiungi / elimina / svuota)
+  var list = document.getElementById("note-list");
+  if(!list) return;
+  function refresh(note){
+    list.innerHTML = "";
+    if(!note || !note.length){
+      var e = document.createElement("span");
+      e.className = "hint"; e.textContent = "{{ t('Nessuna nota salvata.') }}";
+      list.appendChild(e); return;
+    }
+    note.forEach(function(n){
+      var chip = document.createElement("div");
+      chip.className = "chip"; chip.style.justifyContent = "space-between"; chip.style.maxWidth = "none";
+      var span = document.createElement("span");
+      span.className = "chip-name"; span.style.whiteSpace = "normal";
+      span.textContent = "📌 " + n.testo + " (" + n.creata + ")";
+      var x = document.createElement("button");
+      x.className = "chip-x"; x.type = "button"; x.textContent = "×";
+      x.addEventListener("click", function(){ del(n.id); });
+      chip.appendChild(span); chip.appendChild(x); list.appendChild(chip);
+    });
+  }
+  function del(id){
+    var b = new URLSearchParams(); b.append("nota_id", id);
+    fetch("/api/memoria/note/delete", {method:"POST",
+      headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:b.toString()})
+      .then(function(r){return r.json();}).then(function(d){ refresh(d.note); }).catch(function(){});
+  }
+  document.querySelectorAll(".nota-del").forEach(function(btn){
+    btn.addEventListener("click", function(){ del(btn.dataset.id); });
+  });
+  var add = document.getElementById("nota-add");
+  var inp = document.getElementById("nota-nuova");
+  if(add) add.addEventListener("click", function(){
+    var t = (inp.value || "").trim();
+    if(!t) return;
+    var b = new URLSearchParams(); b.append("testo", t);
+    fetch("/api/memoria/note", {method:"POST",
+      headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:b.toString()})
+      .then(function(r){return r.json();})
+      .then(function(d){ if(d.ok){ inp.value=""; refresh(d.note); } else { alert(d.error || "Errore"); } })
+      .catch(function(){});
+  });
+  var clr = document.getElementById("note-clear");
+  if(clr) clr.addEventListener("click", function(){
+    if(!confirm("{{ t('Eliminare tutte le note personali?') }}")) return;
+    del("all");
   });
 })();
 </script>

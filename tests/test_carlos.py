@@ -240,7 +240,7 @@ def test_gen_pptx_bypass_e_fail_loud(tmp_path):
 def test_generate_instrada_template_per_formato(monkeypatch, tmp_path):
     visto = {}
     monkeypatch.setattr(docgen, "build_spec",
-                        lambda fmt, req, ctx, st, hist="": {"title": "T", "sections": [], "slides": []})
+                        lambda fmt, req, ctx, st, hist="", note_utente="": {"title": "T", "sections": [], "slides": []})
     monkeypatch.setattr(docgen, "gen_docx",
                         lambda spec, template_path=None: visto.setdefault("docx", template_path) or (str(tmp_path / "o.docx"), "o.docx"))
     monkeypatch.setattr(docgen, "_docx_to_pdf", lambda p: str(tmp_path / "o.pdf"))
@@ -292,7 +292,7 @@ def test_generazione_in_chat_usa_template_personale(monkeypatch, tmp_path):
     out = tmp_path / "gen.docx"
     out.write_bytes(_docx_bytes())
 
-    def fake_generate(fmt, req, ctx, st, hist="", templates=None):
+    def fake_generate(fmt, req, ctx, st, hist="", templates=None, note_utente=""):
         visto["fmt"], visto["templates"] = fmt, dict(templates or {})
         return str(out), "gen.docx"
 
@@ -445,6 +445,78 @@ def test_cowork_componi_usa_template_personale(monkeypatch):
     assert visto["tpl"] == atteso                       # bypass anche in Attività
     assert "template: SC.docx" in blob                  # dichiarato nel footer
     docgen.delete_user_template("cw_tpl@test", "docx")
+
+
+# ── Lingua: la richiesta esplicita PREVALE sull'impostazione ──
+def test_build_system_precedenza_lingua_esplicita():
+    from app.orchestrator import build_system
+    out = build_system("Aziendale formale", "Italiano")
+    assert "SOLO in italiano" in out          # il default resta
+    assert "PREVALE" in out                   # ...ma la richiesta esplicita vince
+    out_auto = build_system("Aziendale formale", "Auto")
+    assert "PREVALE" not in out_auto          # con Auto non serve l'eccezione
+
+
+def test_build_spec_dichiara_lingua_e_prevalenza(monkeypatch):
+    catturato = {}
+
+    def fake_complete(system, user, settings, max_tokens=4000, timeout=120):
+        catturato["system"] = system
+        return '{"title": "x", "sections": []}'
+
+    monkeypatch.setattr(docgen.orchestrator, "complete", fake_complete)
+    docgen.build_spec("docx", "redacta una especificación técnica", "",
+                      {"reply_lang": "Spagnolo", "claude_api_key": "k"})
+    assert "Spagnolo" in catturato["system"]
+    assert "PREVALE" in catturato["system"]
+
+
+def test_cowork_riceve_conversazione_e_regola_lingua(monkeypatch):
+    catture = []
+
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+        catture.append((system, user))
+        return '{"azione": "rispondi", "testo": "Hecho. [Fonte: NIS2 Guide.docx]"}'
+
+    from app import cowork
+    monkeypatch.setattr(cowork.knowledge, "kb_list",
+                        lambda dept: [{"name": "NIS2 Guide.docx"}])
+    monkeypatch.setattr(cowork, "complete", fake_complete)
+    events = list(cowork.run("IT", "cw_lang@test", "no, la volevo in spagnolo",
+                             {"claude_api_key": "k", "reply_lang": "Italiano"}, [],
+                             conversazione="UTENTE: bozza di specifica tecnica del cilindro\nASSISTENTE: Ecco la bozza…"))
+    system, user = catture[0]
+    assert "LINGUA" in system and "prevale" in system.lower()
+    assert "[CONVERSAZIONE PRECEDENTE" in user
+    assert "bozza di specifica tecnica del cilindro" in user   # la correzione ha il suo contesto
+    assert any('"type": "done"' in e for e in events)
+
+
+def test_api_chat_cowork_passa_gli_ultimi_turni(monkeypatch):
+    store.set_setting("cowork_enabled", "1")
+    try:
+        c = _mk_user("cw_hist@test")
+        catturato = {}
+
+        def fake_run(dept, uid, domanda, settings, anon_names, conversazione="", note_utente=""):
+            catturato["conv"] = conversazione
+            catturato["domanda"] = domanda
+            yield 'data: {"type": "done"}\n\n'
+
+        from app import cowork
+        monkeypatch.setattr(cowork, "run", fake_run)
+        r = c.post("/api/chat", json={"mode": "cowork", "engine": "claude",
+                   "messages": [
+                       {"role": "user", "content": "prepara la specifica tecnica X100"},
+                       {"role": "assistant", "content": "Ecco la specifica in italiano…"},
+                       {"role": "user", "content": "no, la volevo in spagnolo"}]})
+        assert r.status_code == 200
+        assert catturato["domanda"] == "no, la volevo in spagnolo"
+        assert "prepara la specifica tecnica X100" in catturato["conv"]
+        assert "UTENTE:" in catturato["conv"] and "ASSISTENTE:" in catturato["conv"]
+        assert "in spagnolo" not in catturato["conv"]   # l'ultimo messaggio è il COMPITO
+    finally:
+        store.set_setting("cowork_enabled", "0")
 
 
 # ── B) markup servito per il renderer/typography ────────────

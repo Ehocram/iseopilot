@@ -53,6 +53,15 @@ def build_system(tone_key: str, reply_lang: str, context: str = "",
     li = LANG_INSTR.get(reply_lang, "")
     if li:
         parts.append(li)
+        # La regola lingua è il DEFAULT, non una gabbia: se l'utente chiede
+        # esplicitamente un'altra lingua ("redigi in spagnolo", "draft it in
+        # Spanish"), quella prevale — caso Carlos: la regola CRITICAL faceva
+        # ignorare la richiesta e, nel conflitto, anche il compito.
+        parts.append(
+            "ECCEZIONE alla regola lingua: se l'utente chiede ESPLICITAMENTE che "
+            "la risposta o un contenuto sia in un'altra lingua, la sua richiesta "
+            "PREVALE su questa impostazione per quel contenuto, e il compito va "
+            "comunque eseguito per intero nella lingua richiesta.")
     # Evita che Claude aggiunga note di anonimizzazione: le gestiamo noi a valle.
     parts.append("Non aggiungere note o avvisi sull'anonimizzazione dei dati.")
     # Il modello vive dentro ISEOPilot, che SA generare file scaricabili: non

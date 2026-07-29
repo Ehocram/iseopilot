@@ -222,6 +222,17 @@ PAIRS = {
     "Il catalogo elenca i workspace e i dataset visibili alla TUA utenza (tabelle, colonne e, dove disponibili, misure): è ciò che permette all'assistente di costruire query DAX affidabili. Rigeneralo quando cambiano i tuoi permessi o i modelli.":
         "The catalog lists the workspaces and datasets visible to YOUR account (tables, columns and, where available, measures): it is what lets the assistant build reliable DAX queries. Regenerate it when your permissions or the models change.",
 
+    # ── Memoria personale (note) ──
+    "Memoria personale": "Personal memory",
+    "Note che l'assistente ricorda per te": "Notes the assistant remembers for you",
+    "Preferenze e correzioni durevoli tra le chat (es. «le specifiche tecniche le voglio in spagnolo»). Si aggiungono qui o scrivendo in chat «ricordati che…». Sono visibili solo a te, cifrate sul server e cancellabili in ogni momento; una richiesta esplicita nel messaggio corrente prevale comunque.":
+        "Durable preferences and corrections across chats (e.g. \u00abI want technical specifications in Spanish\u00bb). Add them here or by writing \u00abremember that\u2026\u00bb in chat. They are visible only to you, encrypted on the server and deletable at any time; an explicit request in the current message always prevails.",
+    "Nessuna nota salvata.": "No saved notes.",
+    "Es.: rispondimi sempre in spagnolo": "E.g.: always reply to me in Spanish",
+    "Aggiungi": "Add",
+    "Svuota tutto": "Clear all",
+    "Eliminare tutte le note personali?": "Delete all personal notes?",
+
     # ── Template documento personale ──
     "Template personale (.docx/.dotx/.pptx/.potx): se caricato, i documenti generati usano il TUO template al posto di quello ISEO. Niente macro.":
         "Personal template (.docx/.dotx/.pptx/.potx): when loaded, generated documents use YOUR template instead of the ISEO one. No macros.",

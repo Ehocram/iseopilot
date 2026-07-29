@@ -223,6 +223,28 @@ python tests/test_smoke.py
   budget passi (nudge deterministico all'ultimo passo disponibile; se anche la
   finalizzazione fallisce resta la dichiarazione onesta di parte mancante).
   Il template personale (📐) vale anche in Attività, dichiarato nel footer.
+- **Incremento 7c** ✓ — **Lingua e contesto (feedback Carlos)**. (1) La regola
+  lingua ("rispondi SOLO in …") diventa un DEFAULT con eccezione esplicita: se
+  l'utente chiede un contenuto in un'altra lingua ("redigi in spagnolo"), la
+  richiesta PREVALE e il compito va comunque eseguito — in chat, nella
+  generazione documenti e in Attività (che prima non aveva alcuna regola
+  lingua). (2) La modalità Attività riceve gli **ultimi 8 turni** della
+  conversazione: le correzioni ("no, in spagnolo") arrivano all'agente col loro
+  contesto, non come compito orfano — fine del "non ricordo di cosa parli".
+- **Incremento 8** ✓ (codice) — **Note di memoria personale** (richiesta
+  Carlos: "learn from mistakes beyond the chat"). Memoria di REGOLE per-utente
+  — preferenze e correzioni durevoli tra le chat ("le specifiche in
+  spagnolo") — distinta dalla memoria episodica di sessione già esistente.
+  Scritture SOLO su azione esplicita dell'utente: trigger deterministico in
+  chat («ricordati che…», «from now on…», «recuerda que…», con conferma 📌
+  visibile) o pagina Connessioni; mai il modello che decide da solo cosa
+  ricordare. Iniettate in chat, generazione documenti e Attività, con
+  precedenza sempre alla richiesta esplicita del messaggio corrente. GDPR by
+  design: visibili/modificabili/cancellabili dall'utente in Connessioni,
+  cifrate a riposo, limiti rigidi (20 note × 300 caratteri), audit su
+  aggiunta/rimozione/svuotamento. **Kill-switch admin `memoria_note_enabled`,
+  SPENTO di default: deployabile subito, si accende in Motore solo dopo
+  l'approvazione del Comitato AI.**
 - **Successivi** — Cronologia chat persistente per-utente; account Dynamics 365
   in sola lettura per-utente (migrazione dal System Administrator); re-rank semantico.
 

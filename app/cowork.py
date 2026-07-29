@@ -84,7 +84,8 @@ def _stream_testo(testo: str) -> Iterator[str]:
 
 
 def run(dept: str, uid: str, domanda: str, settings: dict,
-        anon_names: list) -> Iterator[str]:
+        anon_names: list, conversazione: str = "",
+        note_utente: str = "") -> Iterator[str]:
     """Esegue l'attività e produce eventi SSE (status/delta/sources/done)."""
     anon = Anonymizer()  # UNA mappa per l'intera attività: segnaposto coerenti tra i passi
     nomi = [d.get("name", "") for d in knowledge.kb_list(dept)]
@@ -93,8 +94,25 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
                     "La Conoscenza del tuo dipartimento è vuota: la modalità "
                     "Attività lavora sui documenti caricati in Conoscenza."})
         return
-    memoria = [f"COMPITO: {domanda}",
-               "DOCUMENTI DISPONIBILI (usa questi nomi esatti):\n- " + "\n- ".join(nomi)]
+    # Regola lingua per-esecuzione: default dell'utente, ma la richiesta
+    # esplicita nel compito/conversazione PREVALE (caso Carlos: "in Spanish").
+    _lingua = settings.get("reply_lang") or "Italiano"
+    _lingua_frase = ("la stessa lingua del compito" if _lingua == "Auto" else _lingua)
+    protocollo = PROTOCOLLO + (
+        f"\n\nLINGUA: scrivi risposte e documenti in {_lingua_frase}, SALVO che il "
+        "compito o la conversazione chiedano esplicitamente un'altra lingua: in "
+        "quel caso prevale quella richiesta. Se il compito è una correzione "
+        "(\"rifallo\", \"in spagnolo\", \"non così\"), interpretalo ALLA LUCE "
+        "della conversazione precedente.")
+    memoria = []
+    if note_utente.strip():
+        memoria.append(note_utente.strip())
+    if conversazione.strip():
+        memoria.append("[CONVERSAZIONE PRECEDENTE — contesto e correzioni: il "
+                       "COMPITO qui sotto è l'ultimo messaggio e va interpretato "
+                       "alla luce di questa conversazione]\n" + conversazione.strip())
+    memoria += [f"COMPITO: {domanda}",
+                "DOCUMENTI DISPONIBILI (usa questi nomi esatti):\n- " + "\n- ".join(nomi)]
     letture, ricerche, file_generato = [], 0, ""
     # Il compito chiede un file Word/PDF? Se sì, il documento è GARANTITO:
     # nudge all'ultimo passo e, se non basta, composizione in finalizzazione
@@ -115,7 +133,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         try:
             contesto_anon = anon.anonymize_names(anon.anonymize(contesto),
                                                  anon_names, use_nlp=False)
-            raw = complete(PROTOCOLLO, contesto_anon, settings, max_tokens=2500)
+            raw = complete(protocollo, contesto_anon, settings, max_tokens=2500)
             raw = anon.restore(raw)
         except Exception as e:
             _log(f"errore modello al passo {passo}: {type(e).__name__}: {e}")
@@ -199,7 +217,10 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         try:
             contesto = "\n\n".join(memoria)[-MEMORIA_MAX_CHARS:]
             sys_spec = ("Componi ORA il documento Word richiesto dal COMPITO, "
-                        "usando ESCLUSIVAMENTE il materiale raccolto qui sotto. " +
+                        "usando ESCLUSIVAMENTE il materiale raccolto qui sotto. "
+                        f"Scrivi i contenuti in {_lingua_frase}, salvo diversa "
+                        "lingua chiesta esplicitamente nel compito o nella "
+                        "conversazione: in quel caso prevale quella. " +
                         docgen._SCHEMAS["docx"])
             contesto_anon = anon.anonymize_names(anon.anonymize(contesto),
                                                  anon_names, use_nlp=False)
@@ -225,7 +246,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
                      "eventuali parti mancanti. Testo semplice, non JSON.]")
         contesto_anon = anon.anonymize_names(anon.anonymize(contesto),
                                              anon_names, use_nlp=False)
-        finale = anon.restore(complete(PROTOCOLLO, contesto_anon, settings,
+        finale = anon.restore(complete(protocollo, contesto_anon, settings,
                                        max_tokens=2500))
     except Exception as e:
         finale = (f"Ho raggiunto il limite di {MAX_PASSI} passi e non sono "
