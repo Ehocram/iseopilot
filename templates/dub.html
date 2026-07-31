@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+{% block title %}Dub Studio · ISEOPilot{% endblock %}
+{% block nav_dub %}active{% endblock %}
+{% block body %}
+<div class="page-wrap" style="max-width:980px; margin:0 auto;">
+
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">🎬 Dub Studio</div>
+      <h2>{{ t("Doppiaggio e sottotitoli dei video") }}</h2></div>
+    <div class="panel-body">
+      <p class="hint">{{ t("Due modalità: «Doppiaggio» sostituisce l'audio con la TUA voce clonata nella lingua scelta (serve il profilo voce registrato con consenso); «Sottotitoli» mantiene l'audio originale e imprime i sottotitoli tradotti nel video. In entrambe: trascrizione, traduzione e una revisione dei testi PRIMA di produrre il file.") }}</p>
+      {% if not worker_ok %}
+      <div class="notice">⚠️ {{ t("Il worker di elaborazione non risulta attivo: i job in coda non partiranno finché non viene avviato. Segnala all'amministratore.") }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">{{ t("Profilo voce") }}</div>
+      <h2>{{ t("La tua voce per il doppiaggio") }}</h2></div>
+    <div class="panel-body">
+      <p class="hint">{{ t("Registra 60–90 secondi leggendo il testo qui sotto. La voce usata nel doppiaggio è SOLO questa: registrata da te, con consenso esplicito, visibile e cancellabile in ogni momento. Mai clonata dall'audio dei video.") }}</p>
+      <div class="devicebox" style="max-height:150px; overflow:auto;"><pre style="white-space:pre-wrap; margin:0;">{% if ui_lang == 'en' %}{{ enroll_text_en }}{% else %}{{ enroll_text }}{% endif %}</pre></div>
+      <div id="voice-none" {% if voice.present %}hidden{% endif %}>
+        <div class="conn-actions" style="margin-top:10px;">
+          <button type="button" class="ghost" id="rec-start">🎙️ {{ t("Avvia registrazione") }}</button>
+          <button type="button" class="ghost" id="rec-stop" disabled>⏹ {{ t("Ferma") }}</button>
+          <span class="hint" id="rec-timer"></span>
+        </div>
+        <div class="devicebox" id="rec-verdicts" hidden></div>
+        <div class="conn-actions" id="rec-saverow" hidden style="align-items:center; gap:10px;">
+          <audio id="rec-play" controls style="height:32px;"></audio>
+          <label class="mini-check"><input type="checkbox" id="rec-consent"> {{ t("Acconsento all'uso di questa registrazione della mia voce per generare i doppiaggi dei MIEI video in Dub Studio.") }}</label>
+          <button type="button" class="primary" id="rec-save" disabled>{{ t("Salva profilo voce") }}</button>
+          <button type="button" class="ghost" id="rec-redo">{{ t("Riprova") }}</button>
+        </div>
+      </div>
+      <div id="voice-yes" {% if not voice.present %}hidden{% endif %}>
+        <span class="badge set">{{ t("Profilo voce presente") }} · {{ voice.duration_s }}s · {{ voice.created }}</span>
+        <div class="conn-actions" style="margin-top:8px;">
+          <button type="button" class="ghost" id="voice-del">{{ t("Elimina il mio profilo voce") }}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">{{ t("Nuovo lavoro") }}</div>
+      <h2>{{ t("Carica un video") }}</h2></div>
+    <div class="panel-body">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <input type="file" id="dub-file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v">
+        <select id="dub-src">{% for c, n in langs.items() %}<option value="{{ c }}" {% if c == 'it' %}selected{% endif %}>{{ t("Sorgente") }}: {{ n }}</option>{% endfor %}</select>
+        <select id="dub-dst">{% for c, n in langs.items() %}<option value="{{ c }}" {% if c == 'en' %}selected{% endif %}>{{ t("Destinazione") }}: {{ n }}</option>{% endfor %}</select>
+      </div>
+      <div style="display:flex; gap:18px; margin:10px 0;">
+        <label class="mini-check"><input type="radio" name="dub-mode" value="sottotitoli" checked> {{ t("Sottotitoli (audio originale + sottotitoli impressi)") }}</label>
+        <label class="mini-check"><input type="radio" name="dub-mode" value="doppiaggio"> {{ t("Doppiaggio (con la mia voce clonata)") }}</label>
+      </div>
+      <div class="conn-actions">
+        <button type="button" class="primary" id="dub-upload">{{ t("Avvia") }}</button>
+        <span class="hint">{{ t("Limiti") }}: {{ cfg.max_mb }} MB · {{ cfg.max_min }} {{ t("minuti") }}</span>
+      </div>
+      <div class="devicebox" id="dub-upmsg" hidden></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><div class="eyebrow">{{ t("Lavori") }}</div>
+      <h2>{{ t("I tuoi job") }}</h2></div>
+    <div class="panel-body">
+      <div id="jobs-list">{% if not jobs %}<span class="hint">{{ t("Nessun lavoro ancora.") }}</span>{% endif %}</div>
+    </div>
+  </div>
+
+  <div class="panel" id="review-panel" hidden>
+    <div class="panel-head"><div class="eyebrow">{{ t("Revisione") }}</div>
+      <h2 id="review-title">{{ t("Controlla e correggi le traduzioni") }}</h2></div>
+    <div class="panel-body">
+      <p class="hint">{{ t("Il testo verrà letto (o impresso) esattamente come lo confermi. Il budget indica i caratteri che stanno nei tempi del parlato: se lo superi, il doppiaggio accelera o sborda.") }}</p>
+      <div id="review-rows" style="display:flex; flex-direction:column; gap:10px;"></div>
+      <div class="conn-actions" style="margin-top:12px;">
+        <button type="button" class="ghost" id="review-save">{{ t("Salva le modifiche") }}</button>
+        <a class="ghost" id="review-srt" href="#" target="_blank" style="text-decoration:none;">{{ t("Scarica sottotitoli (.srt)") }}</a>
+        <button type="button" class="primary" id="review-go">{{ t("Conferma e produci il video") }}</button>
+      </div>
+      <div class="devicebox" id="review-msg" hidden></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  var I = {
+    stati: {
+      coda_trascrizione: "{{ t('in coda (trascrizione)') }}",
+      trascrizione: "{{ t('trascrizione in corso') }}",
+      tradurre: "{{ t('in coda (traduzione)') }}",
+      traduzione: "{{ t('traduzione in corso') }}",
+      revisione: "{{ t('in attesa della tua revisione') }}",
+      coda_sottotitoli: "{{ t('in coda (montaggio sottotitoli)') }}",
+      coda_sintesi: "{{ t('in coda (sintesi vocale)') }}",
+      montaggio: "{{ t('montaggio in corso') }}",
+      sintesi: "{{ t('sintesi vocale in corso (su CPU richiede tempo)') }}",
+      pronto: "{{ t('pronto') }}",
+      errore: "{{ t('errore') }}"
+    },
+    rev: "{{ t('Rivedi le traduzioni') }}",
+    dl: "{{ t('Scarica video') }}", dlsrt: "{{ t('Scarica .srt') }}",
+    del: "{{ t('Elimina') }}", delc: "{{ t('Eliminare questo lavoro e i suoi file?') }}",
+    budget: "{{ t('budget') }}", ch: "{{ t('caratteri') }}",
+    saved: "{{ t('Modifiche salvate.') }}",
+    upok: "{{ t('Video caricato: elaborazione avviata.') }}",
+    nofile: "{{ t('Seleziona un file video.') }}",
+    recerr: "{{ t('Microfono non disponibile o permesso negato.') }}"
+  };
+  var jobs = {{ jobs | tojson }};
+  var reviewJid = null;
+
+  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+  function renderJobs(){
+    var box = document.getElementById("jobs-list");
+    if(!jobs.length){ box.innerHTML = "<span class='hint'>{{ t('Nessun lavoro ancora.') }}</span>"; return; }
+    box.innerHTML = "";
+    jobs.forEach(function(j){
+      var d = document.createElement("div");
+      d.className = "devicebox"; d.style.display = "block";
+      var stato = I.stati[j.stato] || j.stato;
+      var badge = j.stato === "pronto" ? "set" : (j.stato === "errore" ? "unset" : "");
+      var h = "<div style='display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;'>"
+        + "<div><b>" + esc(j.nome_video) + "</b> · " + esc(j.src) + "→" + esc(j.dst)
+        + " · " + (j.mode === "doppiaggio" ? "🎙️" : "💬") + " " + esc(j.mode)
+        + "<div class='hint'>" + esc(j.creato) + " · " + (j.durata_s ? (Math.round(j.durata_s/60*10)/10 + " min") : "") + "</div></div>"
+        + "<div style='display:flex; gap:8px; align-items:center; flex-wrap:wrap;'>"
+        + "<span class='badge " + badge + "'>" + esc(stato) + (j.progress ? (" · " + j.progress + "%") : "") + "</span>";
+      if(j.stato === "revisione") h += "<button class='primary' data-rev='" + j.id + "'>" + I.rev + "</button>";
+      if(j.stato === "pronto"){
+        h += "<a class='ghost' style='text-decoration:none;' href='/dub/job/" + j.id + "/download/video'>" + I.dl + "</a>";
+        if(j.srt) h += "<a class='ghost' style='text-decoration:none;' href='/dub/job/" + j.id + "/download/srt'>" + I.dlsrt + "</a>";
+      }
+      h += "<button class='ghost' data-del='" + j.id + "'>" + I.del + "</button></div></div>";
+      if(j.stato === "errore" && j.errore) h += "<div class='dev-err' style='margin-top:8px;'>" + esc(j.errore) + "</div>";
+      if(j.log_tail && j.stato !== "pronto") h += "<pre class='hint' style='white-space:pre-wrap; margin:8px 0 0; max-height:110px; overflow:auto;'>" + esc(j.log_tail) + "</pre>";
+      d.innerHTML = h;
+      box.appendChild(d);
+    });
+    box.querySelectorAll("[data-rev]").forEach(function(b){
+      b.addEventListener("click", function(){ openReview(b.dataset.rev); });
+    });
+    box.querySelectorAll("[data-del]").forEach(function(b){
+      b.addEventListener("click", function(){
+        if(!confirm(I.delc)) return;
+        fetch("/dub/job/" + b.dataset.del + "/delete", {method: "POST"})
+          .then(function(){ jobs = jobs.filter(function(x){ return x.id !== b.dataset.del; }); renderJobs(); });
+      });
+    });
+  }
+
+  function poll(){
+    var attivi = jobs.filter(function(j){ return j.stato !== "pronto" && j.stato !== "errore"; });
+    attivi.forEach(function(j){
+      fetch("/dub/job/" + j.id + "/status").then(function(r){ return r.json(); })
+        .then(function(nj){
+          var i = jobs.findIndex(function(x){ return x.id === j.id; });
+          if(i >= 0 && nj.id){ jobs[i] = nj; renderJobs(); }
+        }).catch(function(){});
+    });
+  }
+  setInterval(poll, 4000);
+  renderJobs();
+
+  // ── Upload nuovo job ──
+  document.getElementById("dub-upload").addEventListener("click", function(){
+    var f = document.getElementById("dub-file").files[0];
+    var msg = document.getElementById("dub-upmsg");
+    msg.hidden = false;
+    if(!f){ msg.innerHTML = "<div class='dev-err'>" + I.nofile + "</div>"; return; }
+    var fd = new FormData();
+    fd.append("file", f, f.name);
+    fd.append("src", document.getElementById("dub-src").value);
+    fd.append("dst", document.getElementById("dub-dst").value);
+    fd.append("mode", document.querySelector("input[name=dub-mode]:checked").value);
+    msg.innerHTML = "<div class='dev-wait'>⏳ {{ t('Caricamento…') }}</div>";
+    this.disabled = true;
+    var btn = this;
+    fetch("/dub/job", {method: "POST", body: fd})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        btn.disabled = false;
+        if(!d.ok){ msg.innerHTML = "<div class='dev-err'>" + esc(d.errore || "Errore") + "</div>"; return; }
+        msg.innerHTML = "<div class='dev-step'>✓ " + I.upok + "</div>";
+        location.reload();
+      })
+      .catch(function(){ btn.disabled = false; msg.innerHTML = "<div class='dev-err'>{{ t('Errore di rete.') }}</div>"; });
+  });
+
+  // ── Revisione ──
+  function openReview(jid){
+    reviewJid = jid;
+    fetch("/dub/job/" + jid + "/review").then(function(r){ return r.json(); })
+      .then(function(d){
+        var rows = document.getElementById("review-rows");
+        rows.innerHTML = "";
+        var dst = d.job.dst;
+        (d.segments || []).forEach(function(s, i){
+          var bud = (d.budgets || [])[i] || 0;
+          var val = (s.tr && s.tr[dst]) || "";
+          var div = document.createElement("div");
+          div.innerHTML = "<div class='hint'>[" + s.start.toFixed(1) + "s → " + s.end.toFixed(1) + "s] "
+            + esc(s.text) + "</div>"
+            + "<textarea data-i='" + i + "' rows='2' style='width:100%;'>" + esc(val) + "</textarea>"
+            + "<div class='hint'><span data-cnt='" + i + "'>" + val.length + "</span> " + I.ch
+            + " · " + I.budget + " " + bud + "</div>";
+          rows.appendChild(div);
+          var ta = div.querySelector("textarea");
+          ta.addEventListener("input", function(){
+            div.querySelector("[data-cnt]").textContent = ta.value.length;
+          });
+        });
+        document.getElementById("review-srt").href = "/dub/job/" + jid + "/srt";
+        document.getElementById("review-panel").hidden = false;
+        document.getElementById("review-panel").scrollIntoView({behavior: "smooth"});
+      });
+  }
+
+  function collectTexts(){
+    return Array.prototype.map.call(
+      document.querySelectorAll("#review-rows textarea"),
+      function(t){ return t.value; });
+  }
+
+  document.getElementById("review-save").addEventListener("click", function(){
+    var msg = document.getElementById("review-msg");
+    fetch("/dub/job/" + reviewJid + "/review", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({testi: collectTexts()})})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        msg.hidden = false;
+        msg.innerHTML = d.ok ? "<div class='dev-step'>✓ " + I.saved + "</div>"
+                             : "<div class='dev-err'>" + esc(d.errore || "Errore") + "</div>";
+      });
+  });
+
+  document.getElementById("review-go").addEventListener("click", function(){
+    var msg = document.getElementById("review-msg");
+    fetch("/dub/job/" + reviewJid + "/review", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({testi: collectTexts()})})
+      .then(function(){ return fetch("/dub/job/" + reviewJid + "/continue", {method: "POST"}); })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!d.ok){ msg.hidden = false; msg.innerHTML = "<div class='dev-err'>" + esc(d.errore || "Errore") + "</div>"; return; }
+        location.reload();
+      });
+  });
+
+  // ── Registrazione voce (MediaRecorder) ──
+  var rec = null, chunks = [], blob = null, t0 = 0, timerId = null;
+  var bStart = document.getElementById("rec-start");
+  var bStop = document.getElementById("rec-stop");
+  if(bStart) bStart.addEventListener("click", function(){
+    navigator.mediaDevices.getUserMedia({audio: true}).then(function(stream){
+      chunks = [];
+      rec = new MediaRecorder(stream);
+      rec.ondataavailable = function(e){ if(e.data.size) chunks.push(e.data); };
+      rec.onstop = function(){
+        stream.getTracks().forEach(function(tr){ tr.stop(); });
+        blob = new Blob(chunks, {type: rec.mimeType || "audio/webm"});
+        document.getElementById("rec-play").src = URL.createObjectURL(blob);
+        var fd = new FormData();
+        fd.append("file", blob, "voce.webm");
+        fetch("/dub/voice/check", {method: "POST", body: fd})
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            var v = document.getElementById("rec-verdicts");
+            v.hidden = false;
+            v.innerHTML = (d.righe || [d.errore || "Errore"]).map(function(x){
+              return "<div>" + esc(x) + "</div>"; }).join("");
+            document.getElementById("rec-saverow").hidden = false;
+            document.getElementById("rec-save").disabled = !d.ok;
+          });
+      };
+      rec.start();
+      t0 = Date.now();
+      bStart.disabled = true; bStop.disabled = false;
+      timerId = setInterval(function(){
+        document.getElementById("rec-timer").textContent =
+          Math.round((Date.now() - t0) / 1000) + "s";
+      }, 500);
+    }).catch(function(){ alert(I.recerr); });
+  });
+  if(bStop) bStop.addEventListener("click", function(){
+    if(rec && rec.state !== "inactive") rec.stop();
+    bStart.disabled = false; bStop.disabled = true;
+    clearInterval(timerId);
+  });
+  var cons = document.getElementById("rec-consent");
+  if(cons) cons.addEventListener("change", function(){
+    var vOk = !document.getElementById("rec-save").dataset.badquality;
+    // il salvataggio resta legato ANCHE alla qualità: il check l'ha già deciso
+  });
+  var bSave = document.getElementById("rec-save");
+  if(bSave) bSave.addEventListener("click", function(){
+    if(!document.getElementById("rec-consent").checked){
+      alert("{{ t('Il consenso esplicito è obbligatorio per salvare la voce.') }}"); return;
+    }
+    var fd = new FormData();
+    fd.append("file", blob, "voce.webm");
+    fd.append("consent", "1");
+    bSave.disabled = true;
+    fetch("/dub/voice", {method: "POST", body: fd})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!d.ok){ bSave.disabled = false; alert(d.errore || "Errore"); return; }
+        location.reload();
+      });
+  });
+  var bRedo = document.getElementById("rec-redo");
+  if(bRedo) bRedo.addEventListener("click", function(){
+    document.getElementById("rec-saverow").hidden = true;
+    document.getElementById("rec-verdicts").hidden = true;
+    document.getElementById("rec-consent").checked = false;
+  });
+  var bDel = document.getElementById("voice-del");
+  if(bDel) bDel.addEventListener("click", function(){
+    if(!confirm("{{ t('Eliminare definitivamente il tuo profilo voce?') }}")) return;
+    fetch("/dub/voice/delete", {method: "POST"}).then(function(){ location.reload(); });
+  });
+})();
+</script>
+{% endblock %}

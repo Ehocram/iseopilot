@@ -14,7 +14,7 @@ WORKDIR /app
 # LibreOffice headless (solo Writer) per convertire Word->PDF mantenendo il
 # template ISEO; più i font. Senza, il PDF ricade su un layout reportlab.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libreoffice-writer fonts-dejavu \
+        libreoffice-writer fonts-dejavu ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Dipendenze prima del codice: sfrutta la cache dei layer.

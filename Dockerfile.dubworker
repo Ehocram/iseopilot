@@ -1,0 +1,29 @@
+# ============================================================
+# ISEO Dub Studio — WORKER ML (container separato dall'app).
+# Motivo: chatterbox-tts 0.1.7 pinna torch==2.6.0, torchaudio==2.6.0 e
+# transformers==5.2.0 ESATTI: incompatibili con lo stack dell'app
+# (sentence-transformers). Qui vivono SOLO trascrizione e sintesi.
+# ============================================================
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg fonts-dejavu \
+    && rm -rf /var/lib/apt/lists/*
+
+# torch/torchaudio CPU-only nelle versioni ESATTE richieste da chatterbox
+# (l'indice CPU evita i gigabyte dello stack CUDA: VM senza GPU).
+RUN pip install --no-cache-dir \
+        torch==2.6.0 torchaudio==2.6.0 \
+        --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir "setuptools<81" \
+ && pip install --no-cache-dir chatterbox-tts==0.1.7 faster-whisper "numpy<2"
+
+# cache modelli HuggingFace sulla volume dati (persistente tra i rebuild)
+ENV HF_HOME=/data/hf
+ENV APP_DATA_DIR=/data
+
+WORKDIR /srv
+COPY app/engines/dub_pipeline.py /srv/dub_pipeline.py
+COPY worker/dub_worker.py /srv/dub_worker.py
+
+CMD ["python", "-u", "dub_worker.py"]

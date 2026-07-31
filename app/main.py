@@ -12,7 +12,7 @@ import os
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -110,8 +110,14 @@ def _i18n_ctx(request: Request, user: dict | None = None) -> dict:
 
 
 def _ctx(request: Request, user: dict, **extra) -> dict:
+    try:
+        from . import dubstudio as _dub
+        _dub_nav = _dub.enabled() and _dub.user_allowed(user["username"])
+    except Exception:
+        _dub_nav = False
     base = {"user": user["username"], "is_admin": bool(user["is_admin"]),
-            "department": user.get("department") or "—"}
+            "department": user.get("department") or "—",
+            "dub_nav": _dub_nav}
     base.update(_i18n_ctx(request, user))
     base.update(extra)
     return base
@@ -1206,6 +1212,13 @@ def admin_page(request: Request):
         dyn_resource_url=store.get_setting("dyn_resource_url", DEF_DYN_RESOURCE_URL),
         def_od_client_id=DEF_OD_CLIENT_ID, def_od_tenant_id=DEF_OD_TENANT_ID,
         memoria_note_enabled=store.get_setting("memoria_note_enabled", "0") == "1",
+        dub_enabled=store.get_setting("dub_enabled", "0") == "1",
+        claude_model_dub=store.get_setting("claude_model_dub", "claude-sonnet-4-6"),
+        dub_whisper_model=store.get_setting("dub_whisper_model", "small"),
+        dub_max_mb=store.get_setting("dub_max_mb", "300"),
+        dub_max_min=store.get_setting("dub_max_min", "20"),
+        dub_tts_threads=store.get_setting("dub_tts_threads", "2"),
+        dub_whisper_threads=store.get_setting("dub_whisper_threads", "4"),
         pbi_enabled=store.get_setting("pbi_enabled", "0") == "1",
         pbi_client_id=store.get_setting("pbi_client_id", DEF_PBI_CLIENT_ID),
         pbi_tenant_id=store.get_setting("pbi_tenant_id", DEF_PBI_TENANT_ID),
@@ -1246,6 +1259,13 @@ def admin_save(
     dyn_tenant_id: str = Form(""),
     dyn_resource_url: str = Form(""),
     memoria_note_enabled: str = Form("0"),
+    dub_enabled: str = Form("0"),
+    claude_model_dub: str = Form(""),
+    dub_whisper_model: str = Form(""),
+    dub_max_mb: str = Form(""),
+    dub_max_min: str = Form(""),
+    dub_tts_threads: str = Form(""),
+    dub_whisper_threads: str = Form(""),
     pbi_enabled: str = Form("0"),
     pbi_client_id: str = Form(""),
     pbi_tenant_id: str = Form(""),
@@ -1279,6 +1299,15 @@ def admin_save(
     store.set_setting("dyn_tenant_id", dyn_tenant_id.strip() or DEF_DYN_TENANT_ID)
     store.set_setting("dyn_resource_url", dyn_resource_url.strip() or DEF_DYN_RESOURCE_URL)
     store.set_setting("memoria_note_enabled", "1" if memoria_note_enabled == "1" else "0")
+    store.set_setting("dub_enabled", "1" if dub_enabled == "1" else "0")
+    store.set_setting("claude_model_dub", claude_model_dub.strip() or "claude-sonnet-4-6")
+    store.set_setting("dub_whisper_model",
+                      dub_whisper_model.strip() if dub_whisper_model.strip() in ("small", "medium") else "small")
+    for _k, _v, _d in (("dub_max_mb", dub_max_mb, "300"), ("dub_max_min", dub_max_min, "20"),
+                       ("dub_tts_threads", dub_tts_threads, "2"),
+                       ("dub_whisper_threads", dub_whisper_threads, "4")):
+        _n = re.sub(r"[^0-9]", "", _v or "")
+        store.set_setting(_k, _n or _d)
     store.set_setting("pbi_enabled", "1" if pbi_enabled == "1" else "0")
     store.set_setting("pbi_client_id", pbi_client_id.strip() or DEF_PBI_CLIENT_ID)
     store.set_setting("pbi_tenant_id", pbi_tenant_id.strip() or DEF_PBI_TENANT_ID)
@@ -1296,6 +1325,8 @@ def users_page(request: Request):
     return templates.TemplateResponse(request, "admin_users.html", _ctx(
         request, user,
         users=store.list_users(), departments=store.list_departments(),
+        dub_grants={u["username"]: store.get_user_setting(u["username"], "dub_access", "0") == "1"
+                    for u in store.list_users()},
         msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""),
     ))
 
@@ -1332,6 +1363,7 @@ def users_update(
     department: str = Form(...),
     is_admin: str = Form("0"),
     active: str = Form("0"),
+    dub_access: str = Form("0"),
     reset_password: str = Form(""),
 ):
     admin = auth.current_user(request)
@@ -1343,6 +1375,12 @@ def users_update(
 
     want_admin = is_admin == "1"
     want_active = active == "1"
+    _dub_prima = store.get_user_setting(username, "dub_access", "0") == "1"
+    _dub_dopo = dub_access == "1"
+    if _dub_prima != _dub_dopo:
+        store.set_user_setting(username, "dub_access", "1" if _dub_dopo else "0")
+        _audit(request, admin["username"],
+               "dub_grant" if _dub_dopo else "dub_revoca", f"utente={username}")
 
     # Sicurezza: non lasciare l'app senza alcun amministratore attivo.
     losing_admin = target["is_admin"] and (not want_admin or not want_active)
@@ -1835,6 +1873,177 @@ def admin_build_dyn_catalog(request: Request):
         return RedirectResponse(url="/admin?dyn_err=" + str(res["errore"]).replace(" ", "+")[:200], status_code=303)
     msg = f"Catalogo+generato:+{res.get('count',0)}+entità,+{res.get('relazioni',0)}+relazioni,+{res.get('schema_md',{}).get('file',0)}+schema."
     return RedirectResponse(url="/admin?saved=1&dyn_msg=" + msg, status_code=303)
+
+
+# ════════════════════════════════════════════════════════════
+#  DUB STUDIO (Incremento 9) — gate: kill-switch + grant per-utente
+# ════════════════════════════════════════════════════════════
+def _dub_gate(request: Request):
+    """(user, dubstudio, errore_response). Import LAZY: a kill-switch spento
+    il modulo non viene caricato."""
+    user = auth.current_user(request)
+    if not user:
+        return None, None, RedirectResponse(url="/login", status_code=303)
+    from . import dubstudio
+    if not dubstudio.enabled():
+        return None, None, JSONResponse(
+            {"error": "Dub Studio non è abilitato."}, status_code=404)
+    if not dubstudio.user_allowed(user["username"]):
+        return None, None, JSONResponse(
+            {"error": "Dub Studio non è abilitato per il tuo account: "
+                      "chiedi all'amministratore."}, status_code=403)
+    dubstudio._ensure_runner()
+    return user, dubstudio, None
+
+
+@app.get("/dub", response_class=HTMLResponse)
+def dub_page(request: Request):
+    user, dub, err = _dub_gate(request)
+    if err:
+        if isinstance(err, RedirectResponse):
+            return err
+        u = auth.current_user(request)
+        raise HTTPException(status_code=err.status_code,
+                            detail=json.loads(bytes(err.body))["error"] if u else "")
+    from .engines import dub_enroll
+    return templates.TemplateResponse(request, "dub.html", _ctx(
+        request, user,
+        voice=dub.voice_status(user["username"]),
+        jobs=dub.job_list(user["username"]),
+        langs=dub.LANG_LABELS,
+        cfg=dub.settings(),
+        worker_ok=dub.worker_alive(),
+        enroll_text=dub_enroll.ENROLL_TEXT,
+        enroll_text_en=dub_enroll.ENROLL_TEXT_EN,
+    ))
+
+
+@app.post("/dub/voice/check")
+async def dub_voice_check(request: Request, file: UploadFile = File(...)):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    raw = await file.read()
+    try:
+        chk = dub.voice_check(raw, file.filename or "voce.webm")
+    except Exception as e:
+        return JSONResponse({"ok": False, "errore": f"Audio non leggibile: {e}"})
+    return JSONResponse({"ok": chk["ok"], "righe": chk["righe"]})
+
+
+@app.post("/dub/voice")
+async def dub_voice_save(request: Request, file: UploadFile = File(...),
+                         consent: str = Form("0")):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    raw = await file.read()
+    try:
+        esito = dub.voice_save(user["username"], raw, file.filename or "voce.webm",
+                               consent == "1")
+    except Exception as e:
+        return JSONResponse({"ok": False, "errore": f"Salvataggio fallito: {e}"})
+    if esito.get("ok"):
+        _audit(request, user["username"], "dub_voce_salvata",
+               f"durata={dub.voice_status(user['username']).get('duration_s')}s")
+    return JSONResponse(esito)
+
+
+@app.post("/dub/voice/delete")
+def dub_voice_delete(request: Request):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    if dub.voice_delete(user["username"]):
+        _audit(request, user["username"], "dub_voce_eliminata", "")
+    return JSONResponse({"ok": True, "status": dub.voice_status(user["username"])})
+
+
+@app.post("/dub/job")
+async def dub_job_create(request: Request, file: UploadFile = File(...),
+                         src: str = Form(...), dst: str = Form(...),
+                         mode: str = Form(...)):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    raw = await file.read()
+    esito = dub.job_create(user["username"], raw, file.filename or "video.mp4",
+                           src, dst, mode)
+    if esito.get("ok"):
+        _audit(request, user["username"], "dub_job_creato",
+               f"id={esito['jid']}, {src}→{dst}, modalità={mode}")
+    return JSONResponse(esito)
+
+
+@app.get("/dub/job/{jid}/status")
+def dub_job_status(request: Request, jid: str):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    return JSONResponse(dub.job_status(user["username"], jid))
+
+
+@app.get("/dub/job/{jid}/review")
+def dub_job_review(request: Request, jid: str):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    return JSONResponse(dub.review_get(user["username"], jid))
+
+
+@app.post("/dub/job/{jid}/review")
+async def dub_job_review_save(request: Request, jid: str):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    body = await request.json()
+    return JSONResponse(dub.review_save(user["username"], jid,
+                                        list(body.get("testi") or [])))
+
+
+@app.post("/dub/job/{jid}/continue")
+def dub_job_continue(request: Request, jid: str):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    esito = dub.job_continue(user["username"], jid)
+    if esito.get("ok"):
+        _audit(request, user["username"], "dub_job_confermato",
+               f"id={jid} → {esito.get('stato')}")
+    return JSONResponse(esito)
+
+
+@app.get("/dub/job/{jid}/srt")
+def dub_job_srt(request: Request, jid: str):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    testo = dub.srt_text(user["username"], jid)
+    j = dub.job_read(user["username"], jid)
+    nome = os.path.splitext(j.get("nome_video", "video"))[0] + f"_{j.get('dst','xx').upper()}.srt"
+    return Response(content=testo, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{nome}"'})
+
+
+@app.get("/dub/job/{jid}/download/{quale}")
+def dub_job_download(request: Request, jid: str, quale: str):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    p = dub.output_path(user["username"], jid, quale)
+    if not p:
+        raise HTTPException(status_code=404, detail="Output non ancora pronto.")
+    return FileResponse(str(p), filename=p.name)
+
+
+@app.post("/dub/job/{jid}/delete")
+def dub_job_delete(request: Request, jid: str):
+    user, dub, err = _dub_gate(request)
+    if err:
+        return err
+    if dub.job_delete(user["username"], jid):
+        _audit(request, user["username"], "dub_job_eliminato", f"id={jid}")
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/memoria/note")

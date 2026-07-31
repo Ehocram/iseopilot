@@ -32,6 +32,26 @@ services:
       retries: 3
       start_period: 40s
 
+  # ── Worker ML di Dub Studio (Incremento 9) ─────────────────
+  # Immagine SEPARATA (pin rigidi di chatterbox-tts), stessa volume dati,
+  # NESSUNA porta e nessuna rete proxy: parla con l'app solo via file su
+  # /data/dub. Tetti CPU/RAM: un job può essere lento, mai affamare la VM
+  # condivisa (Flusso-AI, iseo-training, chat ISEOPilot).
+  dubworker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dubworker
+    image: iseopilot-dubworker:latest
+    container_name: iseopilot-dubworker
+    restart: unless-stopped
+    volumes:
+      - iseopilot_data:/data
+    networks:
+      - internal
+    mem_limit: 6g
+    memswap_limit: 6g
+    cpus: 4.0
+
 networks:
   proxy-net:
     external: true                  # creata a mano (vedi DEPLOY.md)

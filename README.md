@@ -5,7 +5,7 @@ desktop "Chat Assistant" (PyQt6). Motore **Claude** (Anthropic) o **modello
 locale LM Studio**. Server-side: FastAPI + Jinja2 + JS vanilla + SSE.
 **Nessuna dipendenza da CDN esterni** (scelta di sicurezza).
 
-> Stato: **Incremento 7** completato (feedback Carlos: recall, leggibilità, template personali). Vedi *Roadmap* in fondo.
+> Stato: **Incremento 9** completato (Dub Studio: doppiaggio e sottotitoli in ISEOPilot, worker ML dedicato). Vedi *Roadmap* in fondo.
 
 ---
 
@@ -253,6 +253,28 @@ python tests/test_smoke.py
   generazione precedente, nessun file. In più, regola anti auto-supporto: se
   l'utente segnala un malfunzionamento di ISEOPilot, l'assistente non inventa
   procedure o "supporto tecnico" ma rimanda all'amministratore interno.
+- **Incremento 9** ✓ — **Dub Studio dentro ISEOPilot** (porting dell'app
+  desktop). Pagina `/dub` nel design system dell'app (🎬 in home), **due
+  modalità**: A) *doppiaggio* con voce SOLO dal profilo registrato
+  volontariamente con **consenso esplicito** (mai clonata dall'audio del
+  video); B) *sottotitoli* — audio originale + burn-in nella lingua scelta,
+  zero ML di sintesi. Percorso comune: upload → estrazione audio →
+  trascrizione (faster-whisper CPU int8) → traduzione (modello Claude scelto
+  dall'admin) → **revisione umana** con tabella editabile e budget caratteri →
+  SRT sempre esportabile → poi sintesi+time-fit (A) o burn-in ffmpeg (B).
+  **Worker ML in container separato** (`dubworker`, `Dockerfile.dubworker`):
+  chatterbox-tts pinna torch/torchaudio 2.6.0 e transformers 5.2.0 esatti,
+  incompatibili con sentence-transformers — l'isolamento evita ogni contagio
+  alle dipendenze dell'app. Protocollo file-based atomico su `/data/dub` con
+  heartbeat (worker giù = avviso in pagina, job in coda, mai errori muti).
+  Governance: kill-switch `dub_enabled` (default 0) **più grant per-utente**
+  `dub_access` dalla pagina Utenti (audit `dub_grant`/`dub_revoca`); limiti
+  MB e MINUTI alzabili da Motore; coda profondità 1 e cap thread
+  (`dub_tts_threads`, `dub_whisper_threads`) a protezione della VM condivisa;
+  ciclo modelli sequenziale (mai Whisper e TTS insieme in RAM). Prerequisito
+  modalità A: egress del server verso huggingface.co per il primo download
+  modelli (cache persistente su volume). Deploy: `docker compose -f
+  docker-compose.prod.yml up -d --build iseopilot dubworker`.
 - **Successivi** — Cronologia chat persistente per-utente; account Dynamics 365
   in sola lettura per-utente (migrazione dal System Administrator); re-rank semantico.
 

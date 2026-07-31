@@ -208,6 +208,52 @@
         </div>
         <div class="field">
           <div class="checkrow">
+            <input type="checkbox" id="dub_enabled" name="dub_enabled" value="1" {% if dub_enabled %}checked{% endif %}>
+            <label for="dub_enabled">Abilita Dub Studio (doppiaggio e sottotitoli video)</label>
+          </div>
+          <div class="hint">Spento (default) = superficie zero. Da acceso, la pagina compare SOLO agli utenti con la spunta «Dub» nella pagina <em>Utenti</em> (grant individuale, con audit). La voce del doppiaggio è esclusivamente il profilo che l'utente registra con consenso esplicito — mai clonata dai video. La modalità «sottotitoli» non usa modelli ML pesanti; il doppiaggio richiede il container <code>dubworker</code> attivo e l'egress verso huggingface.co per il primo download modelli. <strong>Accendere dopo l'approvazione del Comitato AI.</strong></div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="claude_model_dub">Modello traduzione Dub Studio</label>
+            <select id="claude_model_dub" name="claude_model_dub">
+              <option value="claude-sonnet-4-6" {% if claude_model_dub == 'claude-sonnet-4-6' %}selected{% endif %}>claude-sonnet-4-6 — consigliato (qualità/costo)</option>
+              <option value="claude-fable-5" {% if claude_model_dub == 'claude-fable-5' %}selected{% endif %}>claude-fable-5 — massima qualità</option>
+              <option value="claude-opus-4-8" {% if claude_model_dub == 'claude-opus-4-8' %}selected{% endif %}>claude-opus-4-8 — alta qualità</option>
+              <option value="claude-haiku-4-5-20251001" {% if claude_model_dub == 'claude-haiku-4-5-20251001' %}selected{% endif %}>claude-haiku-4-5 — economico</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="dub_whisper_model">Modello trascrizione (Whisper)</label>
+            <select id="dub_whisper_model" name="dub_whisper_model">
+              <option value="small" {% if dub_whisper_model == 'small' %}selected{% endif %}>small — veloce, consigliato su CPU</option>
+              <option value="medium" {% if dub_whisper_model == 'medium' %}selected{% endif %}>medium — più accurato, più lento</option>
+            </select>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="dub_max_mb">Limite dimensione video (MB)</label>
+            <input type="text" id="dub_max_mb" name="dub_max_mb" value="{{ dub_max_mb }}">
+          </div>
+          <div class="field">
+            <label for="dub_max_min">Limite durata video (minuti)</label>
+            <input type="text" id="dub_max_min" name="dub_max_min" value="{{ dub_max_min }}">
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="dub_whisper_threads">Thread CPU trascrizione</label>
+            <input type="text" id="dub_whisper_threads" name="dub_whisper_threads" value="{{ dub_whisper_threads }}">
+          </div>
+          <div class="field">
+            <label for="dub_tts_threads">Thread CPU sintesi vocale</label>
+            <input type="text" id="dub_tts_threads" name="dub_tts_threads" value="{{ dub_tts_threads }}">
+          </div>
+        </div>
+        <div class="hint">I tetti di thread proteggono la VM condivisa: un job può essere lento, mai affamare Flusso-AI, iseo-training o la chat.</div>
+        <div class="field">
+          <div class="checkrow">
             <input type="checkbox" id="pbi_enabled" name="pbi_enabled" value="1" {% if pbi_enabled %}checked{% endif %}>
             <label for="pbi_enabled">Abilita il connettore Power BI per gli utenti</label>
           </div>

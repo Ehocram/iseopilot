@@ -17,6 +17,7 @@
       <a href="/" class="{% block nav_chat %}{% endblock %}">{{ t("Chat") }}</a>
       <a href="/knowledge" data-wait="{{ t('Carico la base di conoscenza…') }}" class="{% block nav_knowledge %}{% endblock %}">{{ t("Conoscenza") }}</a>
       <a href="/settings" class="{% block nav_settings %}{% endblock %}">{{ t("Connessioni") }}</a>
+      {% if dub_nav %}<a href="/dub" class="{% block nav_dub %}{% endblock %}">🎬 Dub Studio</a>{% endif %}
       {% if is_admin %}
       <span class="sep"></span>
       <a href="/admin" class="{% block nav_admin %}{% endblock %}">{{ t("Motore") }}</a>

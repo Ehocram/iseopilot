@@ -69,6 +69,7 @@
                 </select>
                 <label class="mini-check"><input type="checkbox" name="is_admin" value="1" {% if u.is_admin %}checked{% endif %}>admin</label>
                 <label class="mini-check"><input type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}>attivo</label>
+                <label class="mini-check" title="Accesso a Dub Studio (se abilitato in Motore)"><input type="checkbox" name="dub_access" value="1" {% if dub_grants.get(u.username) %}checked{% endif %}>🎬 Dub</label>
                 <input type="password" name="reset_password" placeholder="nuova pwd">
                 <button type="submit" class="ghost">Aggiorna</button>
               </form>
