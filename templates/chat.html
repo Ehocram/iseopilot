@@ -35,6 +35,10 @@
           <input type="radio" name="datasource" value="onedrive" {% if pref_source == 'onedrive' %}checked{% endif %} {% if not src_onedrive_available %}disabled{% endif %}><span>OneDrive</span></label>
         <label class="src-pill {% if not src_dynamics_available %}off{% endif %}" {% if not src_dynamics_available %}title="{{ t('Dynamics 365 non è connesso: collegalo dalla pagina Connessioni.') }}"{% endif %}>
           <input type="radio" name="datasource" value="dynamics" {% if pref_source == 'dynamics' %}checked{% endif %} {% if not src_dynamics_available %}disabled{% endif %}><span>Dynamics 365</span></label>
+        {% if m365_enabled_ui %}
+        <label class="src-pill {% if not src_m365_available %}off{% endif %}" {% if not src_m365_available %}title="{{ t('Microsoft 365 non è connesso o non è abilitato per la tua utenza.') }}"{% else %}title="{{ t('Fonti attive:') }} {{ m365_fonti|join(', ') }}"{% endif %}>
+          <input type="radio" name="datasource" value="m365" {% if pref_source == 'm365' %}checked{% endif %} {% if not src_m365_available %}disabled{% endif %}><span>Microsoft 365</span></label>
+        {% endif %}
         {% if pbi_enabled %}
         <label class="src-pill {% if not src_powerbi_available %}off{% endif %}" {% if not src_powerbi_available %}title="{{ t('Power BI non è connesso: collegalo dalla pagina Connessioni.') }}"{% endif %}>
           <input type="radio" name="datasource" value="powerbi" {% if pref_source == 'powerbi' %}checked{% endif %} {% if not src_powerbi_available %}disabled{% endif %}><span>Power BI</span></label>

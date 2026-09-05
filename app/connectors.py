@@ -141,7 +141,7 @@ DEF_DYN_RESOURCE_URL = "https://isd365-prod.operations.eu.dynamics.com"
 DEF_PBI_CLIENT_ID    = "c5a90f54-d599-4f71-a98f-0fa0781145c1"
 DEF_PBI_TENANT_ID    = "a97887fe-14ea-46bc-afa8-f7b85f2164ff"
 
-CONNECTORS = ("onedrive", "dynamics", "powerbi")
+CONNECTORS = ("onedrive", "dynamics", "powerbi", "m365")
 # Il lock serializza SOLO OneDrive/Dynamics (moduli desktop col TOKEN_FILE di
 # modulo da reindirizzare). Power BI riceve i percorsi nel cfg dell'istanza:
 # nessun globale condiviso, nessun lock necessario.
@@ -156,6 +156,14 @@ def ms_cfg(conn: str) -> dict:
             "tenant_id": store.get_setting("od_tenant_id", DEF_OD_TENANT_ID),
             "resource_url": "",
             "scope": "Files.Read.All offline_access",
+        }
+    if conn == "m365":
+        from .engines import m365_search
+        return {
+            "client_id": store.get_setting("m365_client_id", DEF_OD_CLIENT_ID),
+            "tenant_id": store.get_setting("m365_tenant_id", DEF_OD_TENANT_ID),
+            "resource_url": "",
+            "scope": m365_search.M365_SCOPE,
         }
     if conn == "powerbi":
         return {
@@ -180,10 +188,39 @@ def pbi_enabled() -> bool:
     return store.get_setting("pbi_enabled", "0") == "1"
 
 
+def m365_enabled() -> bool:
+    """Kill-switch admin del connettore Microsoft 365 (Motore, default SPENTO)."""
+    return store.get_setting("m365_enabled", "0") == "1"
+
+
+def m365_fonti_attive() -> list:
+    """Fonti abilitate dall'amministratore. SharePoint è documentale come
+    OneDrive; Posta e Teams sono CORRISPONDENZA e nascono spente: si accendono
+    solo dopo DPIA e delibera del Comitato AI."""
+    from .engines import m365_search
+    default = {"sharepoint": "1", "mail": "0", "teams": "0"}
+    return [f for f in m365_search.FONTI
+            if store.get_setting(f"m365_src_{f}", default[f]) == "1"]
+
+
+def m365_user_allowed(user: str) -> bool:
+    """Concessione individuale: da spenta l'utente non vede il connettore e le
+    rotte rifiutano. Stesso schema del grant Dub Studio."""
+    return store.get_user_setting(user, "m365_access", "0") == "1"
+
+
+def m365_full_cfg(user: str) -> dict:
+    c = ms_cfg("m365")
+    return {"client_id": c["client_id"], "tenant_id": c["tenant_id"],
+            "token_path": str(_token_path(user, "m365"))}
+
+
 def is_configured(conn: str) -> bool:
     if conn not in CONNECTORS:
         return False
     c = ms_cfg(conn)
+    if conn == "m365":
+        return bool(c["client_id"]) and m365_enabled()
     if conn == "dynamics":
         return bool(c["client_id"] and c["resource_url"])
     if conn == "powerbi":
@@ -299,6 +336,9 @@ def search(user: str, conn: str, query: str, max_results: int = 3,
     Reindirizza il TOKEN_FILE del modulo al file dell'utente, sotto lock."""
     if conn not in CONNECTORS or not is_connected(user, conn):
         return ""
+    if conn == "m365":
+        return search_with_links(user, conn, query, max_results,
+                                 current_user_name, ai_settings)[0]
     if conn == "powerbi":
         if not is_configured("powerbi"):
             return "[Power BI] Connettore disabilitato dall'amministratore."
@@ -402,6 +442,29 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
     non sono applicabili e la lista è vuota."""
     if conn not in CONNECTORS or not is_connected(user, conn):
         return "", []
+    if conn == "m365":
+        if not is_configured("m365"):
+            return "[Microsoft 365] Connettore disabilitato dall'amministratore.", []
+        if not m365_user_allowed(user):
+            return "[Microsoft 365] Accesso non abilitato per la tua utenza.", []
+        fonti = m365_fonti_attive()
+        if not fonti:
+            return "[Microsoft 365] Nessuna fonte abilitata dall'amministratore.", []
+        try:
+            _dyn_log(f"[m365] search avviata | fonti={fonti} | query={query[:100]!r}")
+            from .engines import m365_search
+            testo, rif = m365_search.M365Search(m365_full_cfg(user)).search(
+                query, fonti, max_results=max_results)
+            links = []
+            for r in rif:
+                if r.get("kind") == "sharepoint" and r.get("url"):
+                    links.append({"name": r.get("titolo") or "documento", "url": r["url"]})
+            _dyn_log(f"[m365] search conclusa | caratteri={len(testo)} | riferimenti={len(rif)}")
+            return testo, links
+        except Exception:
+            import traceback
+            _dyn_log("ECCEZIONE durante la ricerca m365:\n" + traceback.format_exc())
+            return "[Microsoft 365] Errore interno del connettore: dettagli nel log connettori (Admin).", []
     if conn == "powerbi":
         if not is_configured("powerbi"):
             return "[Power BI] Connettore disabilitato dall'amministratore.", []

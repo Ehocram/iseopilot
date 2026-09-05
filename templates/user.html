@@ -102,6 +102,35 @@
     </div>
     {% endif %}
 
+    {% if m365_enabled and m365_allowed %}
+    <div class="panel">
+      <div class="panel-head"><div class="eyebrow">{{ t("Connettore Microsoft 365") }}</div><h2>Microsoft 365</h2></div>
+      <div class="panel-body">
+        <div class="toggle-row">
+          <label class="switch"><input type="checkbox" name="use_m365" value="1" {% if use_m365 %}checked{% endif %} {% if not m365_connected %}disabled{% endif %}><span class="slider"></span></label>
+          <div class="toggle-txt">
+            <b>Microsoft 365
+              {% if m365_connected %}<span class="badge set">{{ t("connesso") }}</span>{% else %}<span class="badge unset">{{ t("non connesso") }}</span>{% endif %}
+            </b>
+            <span>{{ t("Ricerca unificata con la TUA identità: vedi soltanto ciò a cui hai già accesso in Microsoft 365. All'assistente arrivano solo gli estratti dei risultati; il contenuto integrale resta scaricabile da te e non passa dal modello.") }}</span>
+            <div style="margin-top:8px;">
+              {% for f in m365_fonti %}<span class="badge set">{{ f }}</span> {% endfor %}
+              {% if not m365_fonti %}<span class="badge unset">{{ t("Nessuna fonte abilitata dall'amministratore") }}</span>{% endif %}
+            </div>
+            <div class="conn-actions">
+              {% if m365_connected %}
+                <button type="button" class="ghost" onclick="if(confirm('{{ t("Disconnettere questo account?") }}')){fetch('/connect/m365/logout',{method:'POST'}).then(function(){location.reload();});}">{{ t("Disconnetti") }}</button>
+              {% else %}
+                <button type="button" class="ghost connect-btn" data-conn="m365">{{ t("Connetti il mio account") }}</button>
+              {% endif %}
+            </div>
+            <div class="devicebox" id="box-m365" hidden></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     {% if pbi_enabled %}
     <div class="panel">
       <div class="panel-head"><div class="eyebrow">{{ t("Connettore Power BI") }}</div><h2>Power BI</h2></div>

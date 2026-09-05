@@ -546,7 +546,10 @@ def chat_page(request: Request):
     _dy = connectors.is_connected(uid, "dynamics")
     _pb_on = connectors.is_configured("powerbi")  # kill-switch admin incluso
     _pb = _pb_on and connectors.is_connected(uid, "powerbi")
-    _avail = {"kb": True, "folder": _fold, "onedrive": _od, "dynamics": _dy, "powerbi": _pb}
+    _m3_on = connectors.is_configured("m365") and connectors.m365_user_allowed(uid)
+    _m3 = _m3_on and connectors.is_connected(uid, "m365")
+    _avail = {"kb": True, "folder": _fold, "onedrive": _od, "dynamics": _dy,
+              "powerbi": _pb, "m365": _m3}
     pref_tone = store.get_user_setting(uid, "pref_tone", "Aziendale formale")
     pref_lang = store.get_user_setting(uid, "pref_lang", "Italiano")
     pref_source = store.get_user_setting(uid, "pref_source", "kb")
@@ -558,6 +561,9 @@ def chat_page(request: Request):
         src_onedrive_available=_od,
         src_dynamics_available=_dy,
         src_powerbi_available=_pb,
+        src_m365_available=_m3,
+        m365_enabled_ui=_m3_on,
+        m365_fonti=connectors.m365_fonti_attive() if _m3_on else [],
         pbi_enabled=_pb_on,
         pref_engine=store.get_user_setting(uid, "pref_engine", "claude"),
         pref_mode=(lambda _m, _cw: _m if (_m != "cowork" or _cw) else "kb")(store.get_user_setting(uid, "pref_mode", "kb"), store.get_setting("cowork_enabled", "0") == "1"),
@@ -683,12 +689,15 @@ def api_chat(request: Request, body: ChatRequest):
             "dynamics": connectors.is_connected(uid, "dynamics"),
             "powerbi": connectors.is_configured("powerbi")
                        and connectors.is_connected(uid, "powerbi"),
+            "m365": connectors.is_configured("m365")
+                    and connectors.m365_user_allowed(uid)
+                    and connectors.is_connected(uid, "m365"),
         }
         _err_msg = ""
         if src not in _available:
             _err_msg = ("Seleziona una fonte dati (Conoscenza, Cartelle, OneDrive, "
-                        "Dynamics 365 o Power BI) per la ricerca documentale, oppure "
-                        "passa alla modalità AI libera.")
+                        "Microsoft 365, Dynamics 365 o Power BI) per la ricerca "
+                        "documentale, oppure passa alla modalità AI libera.")
         elif not _available[src]:
             _err_msg = {
                 "folder": "Nessuna cartella è configurata per il tuo reparto: chiedi all'amministratore.",
@@ -697,6 +706,12 @@ def api_chat(request: Request, body: ChatRequest):
                 "powerbi": ("Il connettore Power BI è disabilitato dall'amministratore."
                             if not connectors.is_configured("powerbi")
                             else "Power BI non è connesso: collegalo dalla pagina Connessioni."),
+                "m365": ("Il connettore Microsoft 365 è disabilitato dall'amministratore."
+                         if not connectors.is_configured("m365")
+                         else ("L'accesso a Microsoft 365 non è abilitato per la tua "
+                               "utenza: chiedi all'amministratore."
+                               if not connectors.m365_user_allowed(uid)
+                               else "Microsoft 365 non è connesso: collegalo dalla pagina Connessioni.")),
             }.get(src, "Fonte dati non disponibile.")
         if _err_msg:
             _msg = _err_msg
@@ -782,6 +797,13 @@ def api_chat(request: Request, body: ChatRequest):
                     if dy.strip():
                         parts.append("[Dynamics 365]\n" + dy)
                     source_links.extend(dy_links)
+                elif src == "m365":
+                    m3, m3_links = connectors.search_with_links(
+                        uid, "m365", search_q, max_results=8)
+                    if m3.strip():
+                        parts.append(knowledge._fit_budget(
+                            ["[Microsoft 365 — risultati per " + uid + "]\n" + m3], 9500))
+                        source_links.extend(m3_links)
                 elif src == "powerbi":
                     # Query DETERMINISTICA (come Dynamics): il planner Power BI
                     # riceve la domanda arricchita e lavora coi permessi utente.
@@ -900,7 +922,7 @@ def api_chat(request: Request, body: ChatRequest):
         if not body.free_mode and not gen_fmt:
             _lbl = {"kb": i18n.t("Conoscenza", _lang), "folder": i18n.t("Cartelle", _lang),
                     "onedrive": "OneDrive", "dynamics": "Dynamics 365",
-                    "powerbi": "Power BI"}.get(src, "")
+                    "powerbi": "Power BI", "m365": "Microsoft 365"}.get(src, "")
             yield "data: " + json.dumps({"type": "status", "text":
                 i18n.t("Ricerca in corso su", _lang) + " " + _lbl + "… " +
                 i18n.t("l'operazione può richiedere qualche istante.", _lang)},
@@ -1072,7 +1094,7 @@ async def api_prefs(request: Request, body: PrefsBody):
         store.set_user_setting(uid, "pref_tone", body.tone)
     if body.lang in LANG_INSTR:
         store.set_user_setting(uid, "pref_lang", body.lang)
-    if body.source in ("kb", "folder", "onedrive", "dynamics", "powerbi"):
+    if body.source in ("kb", "folder", "onedrive", "dynamics", "powerbi", "m365"):
         store.set_user_setting(uid, "pref_source", body.source)
     return {"ok": True}
 
@@ -1297,6 +1319,10 @@ def admin_page(request: Request):
         dyn_tenant_id=store.get_setting("dyn_tenant_id", DEF_DYN_TENANT_ID),
         dyn_resource_url=store.get_setting("dyn_resource_url", DEF_DYN_RESOURCE_URL),
         def_od_client_id=DEF_OD_CLIENT_ID, def_od_tenant_id=DEF_OD_TENANT_ID,
+        m365_enabled=store.get_setting("m365_enabled", "0") == "1",
+        m365_src_sharepoint=store.get_setting("m365_src_sharepoint", "1") == "1",
+        m365_src_mail=store.get_setting("m365_src_mail", "0") == "1",
+        m365_src_teams=store.get_setting("m365_src_teams", "0") == "1",
         memoria_note_enabled=store.get_setting("memoria_note_enabled", "0") == "1",
         dub_enabled=store.get_setting("dub_enabled", "0") == "1",
         claude_model_dub=store.get_setting("claude_model_dub", "claude-sonnet-4-6"),
@@ -1344,6 +1370,10 @@ def admin_save(
     dyn_client_id: str = Form(""),
     dyn_tenant_id: str = Form(""),
     dyn_resource_url: str = Form(""),
+    m365_enabled: str = Form("0"),
+    m365_src_sharepoint: str = Form("0"),
+    m365_src_mail: str = Form("0"),
+    m365_src_teams: str = Form("0"),
     memoria_note_enabled: str = Form("0"),
     dub_enabled: str = Form("0"),
     claude_model_dub: str = Form(""),
@@ -1384,6 +1414,16 @@ def admin_save(
     store.set_setting("dyn_client_id", dyn_client_id.strip() or DEF_DYN_CLIENT_ID)
     store.set_setting("dyn_tenant_id", dyn_tenant_id.strip() or DEF_DYN_TENANT_ID)
     store.set_setting("dyn_resource_url", dyn_resource_url.strip() or DEF_DYN_RESOURCE_URL)
+    for _k, _v in (("m365_enabled", m365_enabled),
+                   ("m365_src_sharepoint", m365_src_sharepoint),
+                   ("m365_src_mail", m365_src_mail),
+                   ("m365_src_teams", m365_src_teams)):
+        _prec = store.get_setting(_k, "0")
+        _nuovo = "1" if _v == "1" else "0"
+        if _prec != _nuovo:
+            _audit(request, user["username"], "m365_config",
+                   f"{_k}: {_prec} -> {_nuovo}")
+        store.set_setting(_k, _nuovo)
     store.set_setting("memoria_note_enabled", "1" if memoria_note_enabled == "1" else "0")
     store.set_setting("dub_enabled", "1" if dub_enabled == "1" else "0")
     store.set_setting("claude_model_dub", claude_model_dub.strip() or "claude-sonnet-4-6")
@@ -1411,6 +1451,8 @@ def users_page(request: Request):
     return templates.TemplateResponse(request, "admin_users.html", _ctx(
         request, user,
         users=store.list_users(), departments=store.list_departments(),
+        m365_grants={u["username"]: store.get_user_setting(u["username"], "m365_access", "0") == "1"
+                     for u in store.list_users()},
         dub_grants={u["username"]: store.get_user_setting(u["username"], "dub_access", "0") == "1"
                     for u in store.list_users()},
         msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""),
@@ -1450,6 +1492,7 @@ def users_update(
     is_admin: str = Form("0"),
     active: str = Form("0"),
     dub_access: str = Form("0"),
+    m365_access: str = Form("0"),
     reset_password: str = Form(""),
 ):
     admin = auth.current_user(request)
@@ -1467,6 +1510,12 @@ def users_update(
         store.set_user_setting(username, "dub_access", "1" if _dub_dopo else "0")
         _audit(request, admin["username"],
                "dub_grant" if _dub_dopo else "dub_revoca", f"utente={username}")
+    _m3_prima = store.get_user_setting(username, "m365_access", "0") == "1"
+    _m3_dopo = m365_access == "1"
+    if _m3_prima != _m3_dopo:
+        store.set_user_setting(username, "m365_access", "1" if _m3_dopo else "0")
+        _audit(request, admin["username"],
+               "m365_grant" if _m3_dopo else "m365_revoca", f"utente={username}")
 
     # Sicurezza: non lasciare l'app senza alcun amministratore attivo.
     losing_admin = target["is_admin"] and (not want_admin or not want_active)
@@ -1832,9 +1881,14 @@ def settings_page(request: Request):
         use_onedrive=store.get_user_setting(uname, "use_onedrive", "0") == "1",
         use_dynamics=store.get_user_setting(uname, "use_dynamics", "0") == "1",
         use_powerbi=store.get_user_setting(uname, "use_powerbi", "0") == "1",
+        use_m365=store.get_user_setting(uname, "use_m365", "0") == "1",
         kb_count=knowledge.kb_count(dept),
         folders=store.department_folders(dept),
         # Connettori Microsoft: stato reale di connessione per-utente.
+        m365_enabled=connectors.is_configured("m365"),
+        m365_allowed=connectors.m365_user_allowed(uname),
+        m365_connected=connectors.is_connected(uname, "m365"),
+        m365_fonti=connectors.m365_fonti_attive(),
         od_connected=connectors.is_connected(uname, "onedrive"),
         dyn_connected=connectors.is_connected(uname, "dynamics"),
         od_configured=connectors.is_configured("onedrive"),
@@ -1852,7 +1906,8 @@ def settings_page(request: Request):
 @app.post("/settings")
 def settings_save(request: Request, use_kb: str = Form("0"), use_folder: str = Form("0"),
                   use_onedrive: str = Form("0"), use_dynamics: str = Form("0"),
-                  use_powerbi: str = Form("0"), ajax: str = Form("")):
+                  use_powerbi: str = Form("0"), use_m365: str = Form("0"),
+                  ajax: str = Form("")):
     user = auth.current_user(request)
     if not user:
         if ajax == "1":
@@ -1864,6 +1919,7 @@ def settings_save(request: Request, use_kb: str = Form("0"), use_folder: str = F
     store.set_user_setting(uname, "use_onedrive", "1" if use_onedrive == "1" else "0")
     store.set_user_setting(uname, "use_dynamics", "1" if use_dynamics == "1" else "0")
     store.set_user_setting(uname, "use_powerbi", "1" if use_powerbi == "1" else "0")
+    store.set_user_setting(uname, "use_m365", "1" if use_m365 == "1" else "0")
     if ajax == "1":
         # Salvataggio automatico (cambio toggle): nessun reload di pagina.
         return JSONResponse({"ok": True})
@@ -1877,6 +1933,16 @@ def connect_start(request: Request, conn: str):
         return JSONResponse({"ok": False, "error": "Sessione scaduta."}, status_code=401)
     if conn not in connectors.CONNECTORS:
         return JSONResponse({"ok": False, "error": "Connettore non valido."}, status_code=404)
+    # Microsoft 365: il consenso dell'utente si chiede solo se l'admin ha
+    # acceso il connettore E concesso l'accesso individuale. Il gate sta qui,
+    # non solo nella UI: nessuno può avviare il device flow scavalcando.
+    if conn == "m365":
+        if not connectors.is_configured("m365"):
+            return JSONResponse({"ok": False, "error":
+                "Connettore Microsoft 365 disabilitato dall'amministratore."}, status_code=403)
+        if not connectors.m365_user_allowed(user["username"]):
+            return JSONResponse({"ok": False, "error":
+                "Accesso a Microsoft 365 non abilitato per la tua utenza."}, status_code=403)
     return JSONResponse(connectors.start(user["username"], conn))
 
 
@@ -2130,6 +2196,38 @@ def dub_job_delete(request: Request, jid: str):
     if dub.job_delete(user["username"], jid):
         _audit(request, user["username"], "dub_job_eliminato", f"id={jid}")
     return JSONResponse({"ok": True})
+
+
+@app.get("/m365/full")
+def m365_full(request: Request, kind: str = "", id: str = "", ref: str = ""):
+    """Scarica il contenuto INTEGRALE di un risultato Microsoft 365 (messaggio
+    di posta come .eml, messaggio Teams come .txt, file SharePoint com'è).
+    Recuperato da Graph con il token DELL'UTENTE al momento del download: non
+    transita mai dall'API del modello. Ogni download è tracciato in audit."""
+    user = auth.current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sessione scaduta.")
+    uid = user["username"]
+    if not connectors.is_configured("m365"):
+        raise HTTPException(status_code=404, detail="Connettore non disponibile.")
+    if not connectors.m365_user_allowed(uid):
+        raise HTTPException(status_code=403, detail="Accesso non abilitato per la tua utenza.")
+    if not connectors.is_connected(uid, "m365"):
+        raise HTTPException(status_code=400, detail="Connettore Microsoft 365 non connesso.")
+    if kind not in ("mail", "teams", "sharepoint") or not id:
+        raise HTTPException(status_code=400, detail="Richiesta non valida.")
+    try:
+        from .engines import m365_search
+        m = m365_search.M365Search(connectors.m365_full_cfg(uid))
+        blob, fname, mime = m.fetch_full(kind, id, ref)
+    except Exception as e:
+        _audit(request, uid, "m365_download_fallito", f"tipo={kind}: {str(e)[:120]}")
+        raise HTTPException(status_code=502, detail=str(e)[:200])
+    _audit(request, uid, "m365_download", f"tipo={kind}, file={fname[:100]}")
+    from urllib.parse import quote
+    return Response(content=blob, media_type=mime, headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}",
+        "Cache-Control": "no-store"})
 
 
 @app.get("/api/memoria/note")

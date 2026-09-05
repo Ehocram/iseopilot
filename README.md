@@ -5,7 +5,7 @@ desktop "Chat Assistant" (PyQt6). Motore **Claude** (Anthropic) o **modello
 locale LM Studio**. Server-side: FastAPI + Jinja2 + JS vanilla + SSE.
 **Nessuna dipendenza da CDN esterni** (scelta di sicurezza).
 
-> Stato: **Incremento 10** completato (modifica in place dei documenti allegati, con revisioni tracciate). Vedi *Roadmap* in fondo.
+> Stato: **Incremento 11** completato (connettore Microsoft 365: SharePoint, Posta, Teams). Vedi *Roadmap* in fondo.
 
 ---
 
@@ -300,6 +300,30 @@ python tests/test_smoke.py
   conservati nel deposito per-utente con lo stesso TTL del testo (24h), mai
   cross-utente. Audit `modifica_documento`. Precedenza esplicita: una richiesta
   di CREAZIONE ("creami un word") resta di competenza della generazione.
+- **Incremento 11** ✓ — **Connettore Microsoft 365** (ricerca unificata Graph):
+  nuova fonte in chat che copre **SharePoint** (documenti e liste), **Posta**
+  (Outlook) e **Teams** (chat), con l'API `POST /search/query` e permessi
+  **delegati**: ogni utente vede esclusivamente cio' a cui ha gia' accesso in
+  Microsoft 365 — nessun account di servizio, nessuna elevazione di privilegio.
+  *Minimizzazione by design*: al modello vanno **solo gli snippet** restituiti
+  da Graph piu' i metadati (mittente, data, oggetto); il **contenuto integrale**
+  (messaggio `.eml`, chat Teams `.txt`, file SharePoint) e' scaricabile
+  dall'utente dalla rotta `/m365/full`, recuperato da Graph **al momento del
+  download con il token dell'utente**, e non transita mai dall'API del modello.
+  Ogni download e' tracciato (`m365_download`).
+  *Governance a tre livelli*: kill-switch globale `m365_enabled` (default
+  SPENTO) + **interruttori per singola fonte** + **concessione individuale**
+  `m365_access` dalla pagina Utenti (audit `m365_grant`/`m365_revoca`). Il gate
+  e' lato server su ricerca, connessione e download: la UI nasconde, il server
+  rifiuta. **SharePoint** e' documentale come OneDrive e nasce acceso;
+  **Posta e Teams sono corrispondenza** — contengono dati personali di terzi
+  che non hanno acconsentito — e nascono **SPENTE**: si accendono solo dopo
+  DPIA e delibera del Comitato AI. Ogni modifica degli interruttori e'
+  tracciata (`m365_config`).
+  *Prerequisito tenant*: permessi delegati `Sites.Read.All`, `Mail.Read`,
+  `Chat.Read`, `Files.Read.All`, `User.Read` con **consenso amministratore**
+  sulla app registration; poi ogni utente collega il proprio account con il
+  device code dalla pagina Connessioni.
 - **Successivi** — Traduzione integrale di un documento mantenendo il formato;
   modifiche strutturali (nuove sezioni/slide); cronologia chat persistente per-utente; account Dynamics 365
   in sola lettura per-utente (migrazione dal System Administrator); re-rank semantico.

@@ -254,6 +254,26 @@
         <div class="hint">I tetti di thread proteggono la VM condivisa: un job può essere lento, mai affamare Flusso-AI, iseo-training o la chat.</div>
         <div class="field">
           <div class="checkrow">
+            <input type="checkbox" id="m365_enabled" name="m365_enabled" value="1" {% if m365_enabled %}checked{% endif %}>
+            <label for="m365_enabled">Abilita il connettore Microsoft 365 (ricerca unificata)</label>
+          </div>
+          <div class="hint">Spento (default): nessuna superficie utente, rotte di ricerca e download rifiutate. Da acceso servono comunque la <strong>concessione individuale</strong> (pagina Utenti, spunta 🗂 M365) e la connessione dell'account da parte dell'utente. La ricerca usa permessi <strong>delegati</strong>: ognuno vede solo ciò a cui ha già accesso in Microsoft 365.</div>
+          <div class="checkrow" style="margin-top:10px;">
+            <input type="checkbox" id="m365_src_sharepoint" name="m365_src_sharepoint" value="1" {% if m365_src_sharepoint %}checked{% endif %}>
+            <label for="m365_src_sharepoint">Fonte: SharePoint (documenti e liste)</label>
+          </div>
+          <div class="checkrow">
+            <input type="checkbox" id="m365_src_mail" name="m365_src_mail" value="1" {% if m365_src_mail %}checked{% endif %}>
+            <label for="m365_src_mail">Fonte: Posta (Outlook)</label>
+          </div>
+          <div class="checkrow">
+            <input type="checkbox" id="m365_src_teams" name="m365_src_teams" value="1" {% if m365_src_teams %}checked{% endif %}>
+            <label for="m365_src_teams">Fonte: Teams (chat)</label>
+          </div>
+          <div class="hint"><strong>Posta e Teams sono corrispondenza</strong>, non documenti: contengono dati personali di terzi che non hanno acconsentito. Al modello vanno solo gli <em>snippet</em> restituiti dalla ricerca; il contenuto integrale è scaricabile dall'utente e non transita dall'API. Nascono <strong>spente</strong>: accenderle solo dopo DPIA e delibera del Comitato AI. Ogni modifica di questi interruttori è tracciata in audit.</div>
+        </div>
+        <div class="field">
+          <div class="checkrow">
             <input type="checkbox" id="pbi_enabled" name="pbi_enabled" value="1" {% if pbi_enabled %}checked{% endif %}>
             <label for="pbi_enabled">Abilita il connettore Power BI per gli utenti</label>
           </div>
