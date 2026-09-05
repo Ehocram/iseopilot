@@ -5,7 +5,7 @@ desktop "Chat Assistant" (PyQt6). Motore **Claude** (Anthropic) o **modello
 locale LM Studio**. Server-side: FastAPI + Jinja2 + JS vanilla + SSE.
 **Nessuna dipendenza da CDN esterni** (scelta di sicurezza).
 
-> Stato: **Incremento 9** completato (Dub Studio: doppiaggio e sottotitoli in ISEOPilot, worker ML dedicato). Vedi *Roadmap* in fondo.
+> Stato: **Incremento 10** completato (modifica in place dei documenti allegati, con revisioni tracciate). Vedi *Roadmap* in fondo.
 
 ---
 
@@ -275,7 +275,33 @@ python tests/test_smoke.py
   modalità A: egress del server verso huggingface.co per il primo download
   modelli (cache persistente su volume). Deploy: `docker compose -f
   docker-compose.prod.yml up -d --build iseopilot dubworker`.
-- **Successivi** — Cronologia chat persistente per-utente; account Dynamics 365
+- **Incremento 10** ✓ — **Modifica IN PLACE dei documenti allegati**. Fino a
+  ieri un allegato poteva solo essere *letto* e dare origine a un documento
+  NUOVO; ora l'utente carica un `.docx`/`.pptx`/`.xlsx`, chiede una revisione
+  mirata ("modifica il documento: il prezzo diventa 14.500 euro") e riceve
+  **quel file** modificato, con tutto il resto invariato — stili, intestazioni,
+  loghi, numerazione, tabelle, formule. L'originale non viene mai toccato: il
+  download e' una copia `nome (rev).ext`.
+  *Architettura*: l'AI **non scrive il file**. Produce un PIANO di modifiche
+  ancorate a testo esatto (`trova` -> `sostituisci`); un motore deterministico
+  lo applica al documento vero e, quando un ancoraggio non esiste, lo
+  **dichiara** invece di inventare. Ogni risposta elenca sempre modifiche
+  applicate **e** non applicate, con il motivo.
+  *Tracciatura per formato*: `.docx` -> **revisioni tracciate native**
+  (`w:ins`/`w:del`, autore ISEOPilot): si aprono in Word sotto Revisioni e si
+  accettano o rifiutano una per una, con la formattazione del testo originale
+  ereditata; `.pptx` -> il formato non prevede revisioni, quindi modifiche
+  applicate e **registrate nelle note del relatore**; `.xlsx` -> valore
+  aggiornato e **valore precedente conservato in un commento di cella**.
+  *Guardie non-distruttive*: le celle con **formule non vengono mai
+  sovrascritte** (dichiarate e lasciate intatte); un foglio con grafici,
+  immagini o pivot viene **rifiutato in blocco** perche' la libreria di
+  scrittura non e' in grado di preservarli. I byte originali dell'allegato sono
+  conservati nel deposito per-utente con lo stesso TTL del testo (24h), mai
+  cross-utente. Audit `modifica_documento`. Precedenza esplicita: una richiesta
+  di CREAZIONE ("creami un word") resta di competenza della generazione.
+- **Successivi** — Traduzione integrale di un documento mantenendo il formato;
+  modifiche strutturali (nuove sezioni/slide); cronologia chat persistente per-utente; account Dynamics 365
   in sola lettura per-utente (migrazione dal System Administrator); re-rank semantico.
 
 ---

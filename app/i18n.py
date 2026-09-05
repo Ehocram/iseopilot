@@ -222,6 +222,9 @@ PAIRS = {
     "Il catalogo elenca i workspace e i dataset visibili alla TUA utenza (tabelle, colonne e, dove disponibili, misure): è ciò che permette all'assistente di costruire query DAX affidabili. Rigeneralo quando cambiano i tuoi permessi o i modelli.":
         "The catalog lists the workspaces and datasets visible to YOUR account (tables, columns and, where available, measures): it is what lets the assistant build reliable DAX queries. Regenerate it when your permissions or the models change.",
 
+    # ── Modifica documenti allegati ──
+    "Sto modificando il documento…": "Editing the document…",
+
     # ── Memoria personale (note) ──
     "Memoria personale": "Personal memory",
     "Note che l'assistente ricorda per te": "Notes the assistant remembers for you",

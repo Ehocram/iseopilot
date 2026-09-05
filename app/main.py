@@ -23,7 +23,7 @@ from starlette.background import BackgroundTask
 from . import diag
 diag.install()
 
-from . import auth, connectors, docgen, i18n, knowledge, memory, store
+from . import auth, connectors, docedit, docgen, i18n, knowledge, memory, store
 from .connectors import (DEF_OD_CLIENT_ID, DEF_OD_TENANT_ID, DEF_DYN_CLIENT_ID,
                          DEF_DYN_TENANT_ID, DEF_DYN_RESOURCE_URL,
                          DEF_PBI_CLIENT_ID, DEF_PBI_TENANT_ID)
@@ -153,6 +153,38 @@ def _attach_save(uid: str, text: str, name: str = "") -> str:
     return aid
 
 
+def _attach_save_raw(uid: str, aid: str, raw: bytes, ext: str) -> None:
+    """Conserva i BYTE ORIGINALI dell'allegato accanto al testo estratto: sono
+    indispensabili per l'editing IN PLACE (Incremento 10), che apre il file
+    caricato invece di generarne uno nuovo. Stesso deposito per-utente, stesso
+    TTL: non è un archivio, è una cache di lavoro."""
+    try:
+        (_attach_user_dir(uid) / f"{aid}.bin").write_bytes(raw)
+        (_attach_user_dir(uid) / f"{aid}.ext").write_text(ext, encoding="utf-8")
+    except Exception as e:
+        import sys
+        print(f"[attach] sorgente NON conservato per {aid[:8]}: {e}", file=sys.stderr)
+
+
+def _attach_load_raw(uid: str, aid: str):
+    """(path_temporaneo, ext) dei byte originali, oppure None. L'id è vincolato
+    all'utente della sessione: nessun accesso cross-utente."""
+    if not re.fullmatch(r"[0-9a-f]{32}", str(aid or "")):
+        return None
+    d = _attach_user_dir(uid)
+    p, pe = d / f"{aid}.bin", d / f"{aid}.ext"
+    if not p.is_file():
+        return None
+    try:
+        ext = pe.read_text(encoding="utf-8").strip() if pe.is_file() else ""
+        import tempfile as _tf
+        tmp = Path(_tf.gettempdir()) / f"iseopilot_src_{aid[:12]}{ext}"
+        tmp.write_bytes(p.read_bytes())
+        return str(tmp), ext
+    except Exception:
+        return None
+
+
 def _attach_load(uid: str, aid: str) -> str:
     """Carica il testo di un allegato. L'id è vincolato all'UTENTE della
     sessione: nessun accesso cross-utente, id solo esadecimale.
@@ -221,12 +253,13 @@ def _attach_purge_old() -> None:
     import time as _t
     try:
         now = _t.time()
-        for f in ATTACH_DIR.rglob("*.txt"):
-            try:
-                if now - f.stat().st_mtime > ATTACH_TTL_SECONDS:
-                    f.unlink()
-            except Exception:
-                pass
+        for pat in ("*.txt", "*.bin", "*.ext"):
+            for f in ATTACH_DIR.rglob(pat):
+                try:
+                    if now - f.stat().st_mtime > ATTACH_TTL_SECONDS:
+                        f.unlink()
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -771,8 +804,18 @@ def api_chat(request: Request, body: ChatRequest):
             context = attach_block + ("\n\n" + context if context else "")
         return context, source_links
 
+    # ── Modifica IN PLACE di un documento ALLEGATO (Incremento 10) ──
+    # Precede la generazione: se c'è un allegato modificabile e l'utente chiede
+    # di correggerlo e riaverlo, si apre QUEL file invece di crearne uno nuovo.
+    edit_att = docedit.detect_edit_request(query, body.attachments)
+    edit_src = None
+    if edit_att:
+        edit_src = _attach_load_raw(uid, str(edit_att.get("id")))
+        if not edit_src:
+            edit_att = None      # sorgente scaduto dal deposito: nessuna finzione
+
     # ── Generazione documenti su richiesta (Word/Excel/PPT/PDF) ──
-    gen_fmt = docgen.detect_request_with_history(query, clean[:-1])
+    gen_fmt = None if edit_att else docgen.detect_request_with_history(query, clean[:-1])
 
     # NOTE PERSONALI (Incremento 8): cattura del trigger esplicito
     # ("ricordati che…") PRIMA della risposta, con conferma visibile in chat.
@@ -813,7 +856,10 @@ def api_chat(request: Request, body: ChatRequest):
             _turns.append(f"{_role}: {str(m.get('content', ''))[:800]}")
         hist_text = "\n".join(_turns)
 
-    if gen_fmt:
+    if edit_att:
+        _audit(request, uid, "modifica_documento",
+               f"file={str(edit_att.get('name'))[:120]}, formato={(edit_src[1] if edit_src else '')}")
+    elif gen_fmt:
         _audit(request, uid, "generazione_documento", f"formato={gen_fmt}, fonte={src or '-'}")
     else:
         _audit(request, uid, "chat",
@@ -868,6 +914,44 @@ def api_chat(request: Request, body: ChatRequest):
                     yield item
         except Exception:
             context, source_links = "", []
+
+        if edit_att:
+            try:
+                yield "data: " + json.dumps({"type": "status", "text":
+                    i18n.t("Sto modificando il documento…", _lang)},
+                    ensure_ascii=False) + "\n\n"
+                _src_path, _ext = edit_src
+                _fmt = _ext.lstrip(".")
+                _nome = str(edit_att.get("name") or f"documento{_ext}")
+                _testo = _attach_load(uid, str(edit_att.get("id")))
+
+                def _lavoro():
+                    plan = docedit.build_plan(
+                        _fmt, query, _testo,
+                        _area_settings(settings, "claude_model_docgen"),
+                        note_utente=_note_ctx)
+                    return plan, docedit.apply_plan(_fmt, _src_path, plan)
+
+                _res = None
+                for item in _in_thread_with_pings(_lavoro):
+                    if isinstance(item, tuple) and item[0] == "result":
+                        _res = item[1]
+                    else:
+                        yield item
+                plan, (out_path, ok, ko, avvisi) = _res
+                _stem = Path(_nome).stem
+                fname = f"{_stem} (rev).{_fmt}"
+                token = connectors.register_download(uid, out_path, fname)
+                yield "data: " + json.dumps({"type": "delta", "text": docedit.riepilogo(
+                    fname, _fmt, ok, ko, avvisi, plan.get("troncato", False),
+                    str(plan.get("note") or ""))}, ensure_ascii=False) + "\n\n"
+                yield "data: " + json.dumps({"type": "sources", "items": [
+                    {"name": fname, "url": "/download/" + token, "kind": "download"}]},
+                    ensure_ascii=False) + "\n\n"
+            except Exception as e:
+                yield "data: " + json.dumps({"type": "error", "text":
+                    "Modifica non riuscita: " + str(e)[:300]}, ensure_ascii=False) + "\n\n"
+            return
 
         if gen_fmt:
             try:
@@ -1056,8 +1140,10 @@ async def api_attach(request: Request, files: list[UploadFile] = File(...)):
             # domanda esiste — mai più tagli ciechi pre-domanda.
             aid = _attach_save(user["username"], text[:knowledge.ATTACHMENT_MAX_CHARS],
                                name=f.filename or "")
+            if ext in docedit.EDITABLE_EXT:
+                _attach_save_raw(user["username"], aid, raw, ext)
             out.append({"id": aid, "name": f.filename, "ok": True,
-                        "chars": len(text)})
+                        "chars": len(text), "editable": ext in docedit.EDITABLE_EXT})
         except Exception as e:
             out.append({"name": f.filename, "ok": False, "error": str(e)[:120]})
     return {"attachments": out}
