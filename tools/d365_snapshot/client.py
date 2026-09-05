@@ -33,10 +33,11 @@ class D365Client:
         self._pause_until = 0.0
 
     # ---------------------------------------------------------------- basso livello
-    def _raw(self, url: str, timeout: int) -> tuple[int, dict, bytes]:
+    def _raw(self, url: str, timeout: int,
+             accept: str = "application/json") -> tuple[int, dict, bytes]:
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {self.tp.token()}",
-            "Accept": "application/json",
+            "Accept": accept,
             "Accept-Encoding": "gzip",
             "OData-MaxVersion": "4.0",
             "OData-Version": "4.0",
@@ -57,8 +58,14 @@ class D365Client:
                     pass
             return e.code, dict(e.headers), data
 
-    def get(self, path: str, timeout: int | None = None, retries: int | None = None):
-        """GET su un percorso relativo. Ritorna JSON (dict/list) o testo."""
+    def get(self, path: str, timeout: int | None = None, retries: int | None = None,
+            accept: str = "application/json"):
+        """GET su un percorso relativo. Ritorna JSON (dict/list) o testo.
+
+        `accept` va forzato a application/xml per /data/$metadata: con
+        application/json il servizio risponde 400 (serializza l'EDMX come JSON
+        e incappa in un riferimento circolare).
+        """
         timeout = timeout or config.HTTP_TIMEOUT
         retries = config.MAX_RETRIES if retries is None else retries
         url = path if path.startswith("http") else self.base + path
@@ -67,7 +74,7 @@ class D365Client:
             wait = self._pause_until - time.time()
             if wait > 0:
                 time.sleep(min(wait, 60))
-            status, headers, body = self._raw(url, timeout)
+            status, headers, body = self._raw(url, timeout, accept)
             with self._lock:
                 self.calls += 1
             if status == 200:

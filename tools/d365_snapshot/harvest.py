@@ -84,7 +84,7 @@ def edmx(cli, raw: Path) -> str:
         return p.read_text()
     print("→ EDMX /data/$metadata")
     try:
-        txt = cli.get("/data/$metadata", timeout=300)
+        txt = cli.get("/data/$metadata", timeout=300, accept="application/xml")
         if isinstance(txt, str):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(txt)
@@ -225,6 +225,17 @@ def labels(cli, label_ids: set[str], raw: Path, lang: str = "it",
     """
     p = raw / f"labels_{lang}.json"
     cache: dict = _read(p, {}) or {}
+
+    # Parte dei metadati porta il TESTO dell'etichetta al posto di un id
+    # (@SYS123) — per esempio i fusi orari, "(GMT+01:00) Amsterdam, Berlin...".
+    # Non c'e' nulla da risolvere: il valore e' gia' quello.
+    letterali = 0
+    for x in label_ids:
+        if x and not str(x).startswith("@") and not cache.get(x):
+            cache[x] = x
+            letterali += 1
+    if letterali:
+        print(f"  {letterali} etichette gia' in chiaro nei metadati (nessuna chiamata)")
     todo = sorted(x for x in label_ids if x and not cache.get(x))
     if limit:
         todo = todo[:limit]
