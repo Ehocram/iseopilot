@@ -3320,7 +3320,12 @@ class DynamicsSearch:
             "servono i letterali enum esatti per un $filter o le chiavi/relazioni per un expand/join.\n"
             "Regole: preferisci 'expand' lungo le relazioni reali elencate; usa 'join' solo se non c'è "
             "relazione reale. Se per un'entità sono indicate 'Chiavi:' o 'Enum:', usa quei campi chiave "
-            "per i lookup e quei valori enum come letterali nei $filter. Concludi appena possibile. Sii essenziale."
+            "per i lookup e quei valori enum come letterali nei $filter. Concludi appena possibile. Sii essenziale.\n"
+            "IMPORTANTE su 'campi': determina il $select, cioè COSA VIENE LETTO dal gestionale. "
+            "Un campo che non elenchi non arriva nella risposta. La sua assenza NON significa che sia "
+            "vuoto nel gestionale: significa solo che non l'hai chiesto. Non dedurre mai che un dato "
+            "manchi da un campo che non hai selezionato; se serve, rifai la query includendolo. "
+            "Includi sempre i campi su cui verte la domanda dell'utente e quelli usati per gli agganci."
         )
 
         history = [f"DOMANDA UTENTE:\n{query}",
