@@ -13,6 +13,21 @@ import urllib.request
 from . import config
 
 
+def build_query(params: dict) -> str:
+    """Query string OData correttamente codificata.
+
+    I $filter contengono spazi ("Campo eq 'x'"): passati grezzi a urllib
+    sollevano InvalidURL e la richiesta non parte nemmeno. Gli apici singoli
+    restano leggibili, sono legali in una query string.
+    """
+    parti = []
+    for k, v in params.items():
+        if v is None or v == "":
+            continue
+        parti.append(f"{k}={urllib.parse.quote(str(v), safe=chr(39))}")
+    return "&".join(parti)
+
+
 class Throttled(Exception):
     pass
 

@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import config
+from .client import build_query
 
 SKIP_CATEGORIES = {"Parameters"}
 
@@ -28,7 +29,8 @@ def scope_query(entity: dict, company: str = "", cross_company: bool = True) -> 
     """Query string per limitare la misura a una societa'."""
     if company and is_company_scoped(entity):
         c = str(company).replace("'", "''")
-        return f"cross-company=true&$filter=dataAreaId eq '{c}'"
+        return build_query({"cross-company": "true",
+                            "$filter": f"dataAreaId eq '{c}'"})
     return "cross-company=true" if cross_company else ""
 
 
@@ -212,7 +214,8 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
             if not src_f or not dst_f:
                 continue
             key = f"{name}.{src_f}->{r['target']}.{dst_f}"
-            if key in res:
+            # gli esiti senza tasso sono tentativi falliti: si riprovano
+            if res.get(key, {}).get("tasso") is not None:
                 continue
             cand.append((key, e, r, tgt, src_f, dst_f))
     cand.sort(key=lambda c: -(counts.get(c[1]["name"]) or 0))
@@ -234,9 +237,9 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
             base_f = f"{src_f} ne ''"
             if company and is_company_scoped(e):
                 base_f += f" and dataAreaId eq '{str(company).replace(chr(39), chr(39)*2)}'"
-            rows = cli.get(
-                f"/data/{e['entity_set']}?$top={probe}&$select={src_f}"
-                f"&$filter={base_f}&cross-company=true", timeout=60, retries=1)
+            q = build_query({"$top": probe, "$select": src_f, "$filter": base_f,
+                             "cross-company": "true"})
+            rows = cli.get(f"/data/{e['entity_set']}?{q}", timeout=60, retries=1)
             vals = [x.get(src_f) for x in (rows.get("value") or []) if x.get(src_f)]
             vals = list(dict.fromkeys(vals))[:probe]
             if not vals:
@@ -244,8 +247,9 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
             flt = "(" + " or ".join(f"{dst_f} eq {esc(v)}" for v in vals) + ")"
             if company and is_company_scoped(tgt):
                 flt += f" and dataAreaId eq {esc(company)}"
-            hit = cli.get(f"/data/{tgt['entity_set']}?$top={probe*3}&$select={dst_f}"
-                          f"&$filter={flt}&cross-company=true", timeout=60, retries=1)
+            q = build_query({"$top": probe * 3, "$select": dst_f, "$filter": flt,
+                             "cross-company": "true"})
+            hit = cli.get(f"/data/{tgt['entity_set']}?{q}", timeout=60, retries=1)
             found = {str(x.get(dst_f)) for x in (hit.get("value") or [])}
             ok = sum(1 for v in vals if str(v) in found)
             return key, {"provati": len(vals), "risolti": ok,
