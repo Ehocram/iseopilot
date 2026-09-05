@@ -214,8 +214,9 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
             if not src_f or not dst_f:
                 continue
             key = f"{name}.{src_f}->{r['target']}.{dst_f}"
-            # gli esiti senza tasso sono tentativi falliti: si riprovano
-            if res.get(key, {}).get("tasso") is not None:
+            # si riprova solo cio' che e' fallito: un esito determinato resta
+            prec = res.get(key, {})
+            if prec.get("tasso") is not None or prec.get("definitivo"):
                 continue
             cand.append((key, e, r, tgt, src_f, dst_f))
     cand.sort(key=lambda c: -(counts.get(c[1]["name"]) or 0))
@@ -262,7 +263,7 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
                 # non e' un difetto della relazione: la colonna di aggancio
                 # esiste ma non e' mai valorizzata
                 return key, {"esito": "campo di partenza mai valorizzato",
-                             "tipo": r["kind"]}
+                             "tipo": r["kind"], "definitivo": True}
             t_dst = tipo_campo(tgt, dst_f)
             flt = "(" + " or ".join(f"{dst_f} eq {esc(v, t_dst)}" for v in vals) + ")"
             if company and is_company_scoped(tgt):

@@ -419,15 +419,45 @@ def write_report(model, counts, prof, checks, stats, out: Path, meta: dict,
         L += [""]
 
     if checks:
-        ok = [k for k, v in checks.items() if (v.get("tasso") or 0) >= 80]
-        ko = [k for k, v in checks.items() if v.get("tasso") is not None and v["tasso"] < 40]
+        # Cardinalita' per chiave, per non scambiare una relazione sparsa per rotta.
+        card = {}
+        for n, e in ents.items():
+            for r in e["relations"] + e["inferred"]:
+                if r["pairs"]:
+                    card[f"{n}.{r['pairs'][0][0]}->{r['target']}.{r['pairs'][0][1]}"] = \
+                        r.get("cardinality") or "Single"
+
+        ok, sparse, sospette, indeterminate = [], [], [], []
+        for k, v in checks.items():
+            t = v.get("tasso")
+            if t is None:
+                indeterminate.append(k)
+            elif t >= 80:
+                ok.append(k)
+            elif card.get(k) == "Multiple":
+                # A ha molti B: e' normale che gran parte degli A non abbia figli
+                sparse.append(k)
+            elif t < 40:
+                sospette.append(k)
         L += ["## Relazioni verificate sul dato reale", "",
+              "Per ogni relazione si prende un campione di valori dalla colonna di "
+              "partenza e si controlla quanti trovano corrispondenza a destinazione.",
+              "",
               f"- Verificate: **{len(checks)}**",
-              f"- Confermate (join valido >= 80%): **{len(ok)}**",
-              f"- Sospette (< 40%): **{len(ko)}**", ""]
-        if ko:
-            L += ["Relazioni da non usare a occhi chiusi:", ""]
-            L += [f"- `{k}` — {checks[k].get('tasso')}% ({checks[k].get('tipo')})" for k in ko[:25]]
+              f"- **Confermate** (join valido >= 80%): **{len(ok)}**",
+              f"- Sparse: **{len(sparse)}** — relazioni uno-a-molti in cui molti "
+              f"capofila non hanno righe collegate. Sono valide: un prodotto senza "
+              f"ordini pianificati non e' una relazione rotta.",
+              f"- **Sospette**: **{len(sospette)}** — puntano a un singolo record "
+              f"che spesso non esiste. Qui l'aggancio va guardato prima di usarlo.",
+              f"- Indeterminate: **{len(indeterminate)}** — colonna di partenza mai "
+              f"valorizzata, oppure servizio non raggiungibile al momento della prova.",
+              ""]
+        if sospette:
+            L += ["Le piu' rilevanti fra le sospette:", "",
+                  "| Relazione | Tasso | Origine |", "|---|---|---|"]
+            for k in sospette[:25]:
+                L.append(f"| `{k}` | {checks[k].get('tasso')}% | {checks[k].get('tipo')} |")
             L += [""]
 
     fams = model.get("famiglie") or []
