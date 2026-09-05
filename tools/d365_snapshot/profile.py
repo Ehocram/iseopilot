@@ -216,6 +216,22 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
         except Exception:
             res = {}
 
+    # Chiavi valide secondo il modello ATTUALE. Se una relazione cambia (per
+    # esempio dopo una correzione della grafia dei campi) la sua chiave cambia,
+    # e la voce precedente resta nel file senza corrispondere piu' a nulla:
+    # verrebbe contata all'infinito fra i fallimenti, senza mai essere
+    # ritentata perche' non e' piu' fra i candidati.
+    valide = set()
+    for name, e in model["entities"].items():
+        for r in e["relations"] + e["inferred"]:
+            if len(r["pairs"]) == 1 and r["pairs"][0][0] and r["pairs"][0][1]:
+                valide.add(f"{name}.{r['pairs'][0][0]}->{r['target']}.{r['pairs'][0][1]}")
+    orfane = [k for k in res if k not in valide]
+    if orfane:
+        for k in orfane:
+            del res[k]
+        print(f"  {len(orfane)} esiti orfani rimossi (relazioni non piu' nel modello)")
+
     cand = []
     for name, e in model["entities"].items():
         if not counts.get(name):
