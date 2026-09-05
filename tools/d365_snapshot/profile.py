@@ -243,15 +243,26 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
             vals = [x.get(src_f) for x in (rows.get("value") or []) if x.get(src_f)]
             vals = list(dict.fromkeys(vals))[:probe]
             if not vals:
-                return key, {"esito": "nessun valore di partenza"}
+                # non e' un difetto della relazione: la colonna di aggancio
+                # esiste ma non e' mai valorizzata
+                return key, {"esito": "campo di partenza mai valorizzato",
+                             "tipo": r["kind"]}
             flt = "(" + " or ".join(f"{dst_f} eq {esc(v)}" for v in vals) + ")"
             if company and is_company_scoped(tgt):
                 flt += f" and dataAreaId eq {esc(company)}"
             q = build_query({"$top": probe * 3, "$select": dst_f, "$filter": flt,
                              "cross-company": "true"})
             hit = cli.get(f"/data/{tgt['entity_set']}?{q}", timeout=60, retries=1)
-            found = {str(x.get(dst_f)) for x in (hit.get("value") or [])}
-            ok = sum(1 for v in vals if str(v) in found)
+            # Il confronto va fatto senza distinguere maiuscole: D365 salva il
+            # codice societa' minuscolo nelle tabelle transazionali e maiuscolo
+            # in LegalEntity, e il filtro OData e' gia' case-insensitive lato
+            # server. Confrontare alla lettera dava 0% a relazioni perfettamente
+            # valide.
+            def _norm(v):
+                return str(v).strip().casefold()
+
+            found = {_norm(x.get(dst_f)) for x in (hit.get("value") or [])}
+            ok = sum(1 for v in vals if _norm(v) in found)
             return key, {"provati": len(vals), "risolti": ok,
                          "tasso": round(100.0 * ok / len(vals)),
                          "tipo": r["kind"]}
