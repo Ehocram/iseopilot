@@ -124,27 +124,53 @@ def test_default_fonti_posta_e_teams_spente():
 
 
 # ── Motore: entità richieste e formattazione ────────────────
-def test_entita_richieste_seguono_le_fonti(monkeypatch):
-    catturato = {}
+def test_una_chiamata_per_fonte_mai_tipi_mescolati(monkeypatch):
+    """Graph combina solo driveItem/listItem: message e chatMessage vanno
+    richiesti SEPARATAMENTE, altrimenti risponde HTTP 400. Una chiamata per
+    fonte, mai entityTypes mescolati."""
+    chiamate = []
 
     def fake_post(url, headers=None, json=None, timeout=None):
-        catturato["url"] = url
-        catturato["body"] = json
+        chiamate.append(json["requests"][0]["entityTypes"])
         return _Resp(200, {"value": []})
 
     import requests
     monkeypatch.setattr(requests, "post", fake_post)
-    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t",
-                                "token_path": str(store.user_token_path("m3d@test", "m365"))})
-    _finto_token("m3d@test")
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
     m.tm._data = {"access_token": "T", "expires_at": 9e9}
+
     m.search("contratto", ["sharepoint"])
-    assert catturato["url"].endswith("/search/query")
-    ent = catturato["body"]["requests"][0]["entityTypes"]
-    assert set(ent) == {"driveItem", "listItem"}          # solo SharePoint
+    assert chiamate == [["driveItem", "listItem"]]
+
+    chiamate.clear()
     m.search("contratto", ["sharepoint", "mail", "teams"])
-    ent = catturato["body"]["requests"][0]["entityTypes"]
-    assert "message" in ent and "chatMessage" in ent
+    assert len(chiamate) == 3                       # una per fonte
+    assert ["driveItem", "listItem"] in chiamate
+    assert ["message"] in chiamate and ["chatMessage"] in chiamate
+    for ent in chiamate:                            # mai mescolati
+        assert not ({"message", "chatMessage"} & set(ent) and
+                    {"driveItem", "listItem"} & set(ent))
+
+
+def test_fonte_in_errore_non_azzera_le_altre(monkeypatch):
+    """Se Teams fallisce, SharePoint risponde comunque e il fallimento è
+    dichiarato nel contesto: mai un silenzio che sembra 'nessun risultato'."""
+    import requests
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        ent = json["requests"][0]["entityTypes"]
+        if "chatMessage" in ent:
+            return _Resp(400, {"error": {"message": "entity type not supported"}})
+        return _Resp(200, _GRAPH_HITS)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, rif = m.search("q", ["sharepoint", "teams"])
+    assert "[SharePoint — Contratto quadro.docx]" in testo      # l'altra fonte funziona
+    assert "fonti NON interrogate" in testo and "teams" in testo
+    assert "entity type not supported" in testo                 # dettaglio Graph riportato
+    assert rif
 
 
 def test_formattazione_e_riferimenti(monkeypatch):
@@ -187,7 +213,8 @@ def test_403_graph_messaggio_parlante(monkeypatch):
     m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
     m.tm._data = {"access_token": "T", "expires_at": 9e9}
     testo, rif = m.search("q", ["mail"])
-    assert "Permessi insufficienti" in testo and "Mail.Read" in testo
+    assert "fonti NON interrogate" in testo and "permessi insufficienti" in testo
+    assert "ricollega" in testo
     assert rif == []
 
 

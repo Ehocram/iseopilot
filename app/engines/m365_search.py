@@ -123,44 +123,76 @@ class M365Search:
     # ── ricerca ─────────────────────────────────────────────
     def search(self, query: str, fonti: list, max_results: int = 5) -> tuple:
         """Ritorna (testo_per_modello, riferimenti). I riferimenti portano gli
-        identificativi per l'eventuale download del contenuto integrale."""
+        identificativi per l'eventuale download del contenuto integrale.
+
+        UNA CHIAMATA PER FONTE: Graph consente di combinare fra loro solo
+        driveItem/listItem; message e chatMessage devono essere interrogati
+        separatamente, altrimenti la richiesta è respinta con HTTP 400. Le
+        fonti sono quindi indipendenti: se una fallisce le altre rispondono
+        comunque e il fallimento viene DICHIARATO, non nascosto."""
         fonti = [f for f in (fonti or []) if f in FONTI]
         if not fonti:
             return "", []
         tok = self.tm.access_token()
         if not tok:
             return "[Microsoft 365] Non connesso: collega il connettore dalla pagina Connessioni.", []
-        entita = []
+
+        blocchi, riferimenti, errori = [], [], []
         for f in fonti:
-            entita.extend(_ENTITY[f])
-        richieste = [{
-            "entityTypes": entita,
+            testo, rif, err = self._search_fonte(f, query, tok, max_results)
+            if err:
+                errori.append(f"{f}: {err}")
+            blocchi.extend(testo)
+            riferimenti.extend(rif)
+
+        coda = ""
+        if errori:
+            coda = ("\n\n[Microsoft 365 — fonti NON interrogate: "
+                    + "; ".join(errori) + ". Dichiaralo nella risposta.]")
+        if not blocchi:
+            return (coda.strip() or ""), []
+        _log(f"query={query[:60]!r} fonti={fonti} risultati={len(blocchi)} errori={len(errori)}")
+        return ("\n\n".join(blocchi))[:TESTO_MAX] + coda, riferimenti
+
+    def _search_fonte(self, fonte: str, query: str, tok: str, max_results: int):
+        """Interroga UNA fonte. Ritorna (blocchi, riferimenti, errore_o_vuoto)."""
+        corpo = {"requests": [{
+            "entityTypes": _ENTITY[fonte],
             "query": {"queryString": query},
             "from": 0,
             "size": max(1, min(int(max_results or 5), 25)),
-        }]
+        }]}
         try:
             import requests
             r = requests.post(f"{GRAPH}/search/query",
                               headers={"Authorization": "Bearer " + tok,
                                        "Content-Type": "application/json"},
-                              json={"requests": richieste}, timeout=45)
+                              json=corpo, timeout=45)
+        except Exception as e:
+            _log(f"[{fonte}] ECCEZIONE rete: {e}")
+            return [], [], f"errore di rete ({str(e)[:60]})"
+
+        if r.status_code >= 400:
+            dettaglio = ""
+            try:
+                dettaglio = str((r.json().get("error") or {}).get("message") or "")[:200]
+            except Exception:
+                dettaglio = r.text[:200]
+            _log(f"[{fonte}] HTTP {r.status_code}: {dettaglio}")
             if r.status_code == 403:
-                _log(f"403 su /search/query — permessi mancanti per {fonti}")
-                return ("[Microsoft 365] Permessi insufficienti per le fonti richieste: "
-                        "l'amministratore deve concedere il consenso ai permessi "
-                        "delegati (Sites.Read.All, Mail.Read, Chat.Read) e l'utente "
-                        "deve riconnettere il connettore.", [])
-            if r.status_code >= 400:
-                _log(f"HTTP {r.status_code}: {r.text[:300]}")
-                return (f"[Microsoft 365] Ricerca non riuscita (HTTP {r.status_code}). "
-                        "Dettagli nel log connettori.", [])
+                return [], [], ("permessi insufficienti — servono i permessi delegati "
+                                "con consenso amministratore, poi disconnetti e "
+                                "ricollega l'account")
+            if r.status_code == 401:
+                return [], [], "sessione scaduta: disconnetti e ricollega l'account"
+            return [], [], f"HTTP {r.status_code} da Graph ({dettaglio or 'nessun dettaglio'})"
+
+        try:
             data = r.json()
         except Exception as e:
-            _log(f"ECCEZIONE ricerca: {e}")
-            return f"[Microsoft 365] Errore di rete verso Graph: {str(e)[:120]}", []
+            return [], [], f"risposta non leggibile ({str(e)[:60]})"
 
-        blocchi, riferimenti = [], []
+        blocchi, rifs = [], []
         for gruppo in data.get("value", []):
             for hc in gruppo.get("hitsContainers", []):
                 for hit in hc.get("hits", []):
@@ -170,11 +202,8 @@ class M365Search:
                     testo, rif = voce
                     blocchi.append(testo)
                     if rif:
-                        riferimenti.append(rif)
-        if not blocchi:
-            return "", []
-        _log(f"query={query[:60]!r} fonti={fonti} risultati={len(blocchi)}")
-        return ("\n\n".join(blocchi))[:TESTO_MAX], riferimenti
+                        rifs.append(rif)
+        return blocchi, rifs, ""
 
     def _formatta(self, hit: dict):
         res = hit.get("resource") or {}
