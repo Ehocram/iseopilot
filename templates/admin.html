@@ -270,6 +270,17 @@
             <input type="checkbox" id="m365_src_teams" name="m365_src_teams" value="1" {% if m365_src_teams %}checked{% endif %}>
             <label for="m365_src_teams">Fonte: Teams (chat)</label>
           </div>
+          <div class="row2" style="margin-top:12px;">
+            <div class="field">
+              <label for="m365_client_id">Microsoft 365 — Client ID</label>
+              <input type="text" id="m365_client_id" name="m365_client_id" value="{{ m365_client_id }}" style="font-family:var(--mono);">
+            </div>
+            <div class="field">
+              <label for="m365_tenant_id">Microsoft 365 — Tenant ID</label>
+              <input type="text" id="m365_tenant_id" name="m365_tenant_id" value="{{ m365_tenant_id }}" style="font-family:var(--mono);">
+            </div>
+          </div>
+          <div class="hint">Il <strong>Tenant ID è sempre quello di ISEO</strong> e non cambia mai. Il <strong>Client ID</strong> va cambiato solo se registri una app dedicata per Microsoft 365 (consigliato: permette di revocare Posta/Teams senza toccare OneDrive); se riusi la app esistente lascia il valore di default. Cambiando il Client ID gli utenti già collegati devono <strong>disconnettere e ricollegare</strong> l'account: il token vecchio appartiene all'altra app.</div>
           <div class="hint"><strong>Posta e Teams sono corrispondenza</strong>, non documenti: contengono dati personali di terzi che non hanno acconsentito. Al modello vanno solo gli <em>snippet</em> restituiti dalla ricerca; il contenuto integrale è scaricabile dall'utente e non transita dall'API. Nascono <strong>spente</strong>: accenderle solo dopo DPIA e delibera del Comitato AI. Ogni modifica di questi interruttori è tracciata in audit.</div>
         </div>
         <div class="field">

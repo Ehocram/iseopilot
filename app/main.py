@@ -1320,6 +1320,8 @@ def admin_page(request: Request):
         dyn_resource_url=store.get_setting("dyn_resource_url", DEF_DYN_RESOURCE_URL),
         def_od_client_id=DEF_OD_CLIENT_ID, def_od_tenant_id=DEF_OD_TENANT_ID,
         m365_enabled=store.get_setting("m365_enabled", "0") == "1",
+        m365_client_id=store.get_setting("m365_client_id", DEF_OD_CLIENT_ID),
+        m365_tenant_id=store.get_setting("m365_tenant_id", DEF_OD_TENANT_ID),
         m365_src_sharepoint=store.get_setting("m365_src_sharepoint", "1") == "1",
         m365_src_mail=store.get_setting("m365_src_mail", "0") == "1",
         m365_src_teams=store.get_setting("m365_src_teams", "0") == "1",
@@ -1371,6 +1373,8 @@ def admin_save(
     dyn_tenant_id: str = Form(""),
     dyn_resource_url: str = Form(""),
     m365_enabled: str = Form("0"),
+    m365_client_id: str = Form(""),
+    m365_tenant_id: str = Form(""),
     m365_src_sharepoint: str = Form("0"),
     m365_src_mail: str = Form("0"),
     m365_src_teams: str = Form("0"),
@@ -1435,6 +1439,16 @@ def admin_save(
         _n = re.sub(r"[^0-9]", "", _v or "")
         store.set_setting(_k, _n or _d)
     store.set_setting("pbi_enabled", "1" if pbi_enabled == "1" else "0")
+    _m3c_prec = store.get_setting("m365_client_id", DEF_OD_CLIENT_ID)
+    _m3c_nuovo = m365_client_id.strip() or DEF_OD_CLIENT_ID
+    if _m3c_prec != _m3c_nuovo:
+        # cambiare app registration invalida i token già emessi: va detto,
+        # non scoperto dagli utenti con un errore di connessione.
+        _audit(request, user["username"], "m365_config",
+               f"client_id: {_m3c_prec[:8]}… -> {_m3c_nuovo[:8]}… "
+               "(gli utenti collegati devono riconnettere)")
+    store.set_setting("m365_client_id", _m3c_nuovo)
+    store.set_setting("m365_tenant_id", m365_tenant_id.strip() or DEF_OD_TENANT_ID)
     store.set_setting("pbi_client_id", pbi_client_id.strip() or DEF_PBI_CLIENT_ID)
     store.set_setting("pbi_tenant_id", pbi_tenant_id.strip() or DEF_PBI_TENANT_ID)
     return RedirectResponse(url="/admin?saved=1", status_code=303)

@@ -278,6 +278,24 @@ def test_pannello_connessioni_e_pill_chat_gated():
     _off()
 
 
+def test_admin_ha_campi_client_tenant_e_salva():
+    c = _mk_user("m3id@test", is_admin=True)
+    html = c.get("/admin").text
+    assert 'name="m365_client_id"' in html and 'name="m365_tenant_id"' in html
+    nuovo = "11111111-2222-3333-4444-555555555555"
+    c.post("/admin", data={"claude_model": "claude-opus-4-8",
+                           "m365_client_id": nuovo}, follow_redirects=False)
+    assert connectors.ms_cfg("m365")["client_id"] == nuovo
+    # il cambio di app registration invalida i token: deve restare traccia
+    det = " ".join(a["detail"] for a in store.audit_query(username="m3id@test")
+                   if a["action"] == "m365_config")
+    assert "client_id" in det and "riconnettere" in det
+    # campo vuoto = ritorno al default, non stringa vuota
+    c.post("/admin", data={"claude_model": "claude-opus-4-8", "m365_client_id": ""},
+           follow_redirects=False)
+    assert connectors.ms_cfg("m365")["client_id"]
+
+
 def test_admin_ha_kill_switch_e_interruttori():
     c = _mk_user("m3adm@test", is_admin=True)
     html = c.get("/admin").text
