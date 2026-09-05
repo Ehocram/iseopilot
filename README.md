@@ -334,7 +334,14 @@ python tests/test_smoke.py
   partecipante e filtrate sui suoi messaggi, SharePoint con KQL `author:`;
   **recency** — posta e documenti recenti per data, chat con l'anteprima
   dell'ultimo messaggio; **full-text** — la ricerca classica negli altri casi.
-  Tutto bounded: al massimo 3 chat interrogate, tetti su messaggi e risultati.
+  Sulle chat Teams: elenco **ordinato per data dell'ultimo messaggio e
+  paginato** (fino a 200 conversazioni) — senza ordinamento Graph non
+  garantisce che le prime siano le più recenti, e una conversazione poteva
+  restare invisibile; per la ricerca per persona si tenta prima il **filtro
+  lato Graph sui partecipanti** e solo in ripiego la scansione. Se la persona
+  esiste ma non c'è scambio su Teams, il connettore lo **dichiara** invece di
+  restituire il vuoto. Tutto bounded: max 3 chat interrogate, tetti su
+  messaggi e risultati.
   La risoluzione della persona degrada in silenzio (con log) se manca
   `People.Read`: le altre modalità continuano a funzionare.
   *Prerequisito tenant*: permessi delegati `Sites.Read.All`, `Mail.Read`,

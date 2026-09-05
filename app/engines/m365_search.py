@@ -42,7 +42,8 @@ _RECENTI_RE = re.compile(
     r"\b(ultim\w+|recent\w+|nuov\w+|scritto|scrive|inviato|manda\w*|"
     r"mandato|detto|ieri|oggi|stamattina|poco\s+fa|"
     r"last|latest|recent|wrote|sent|told|today|yesterday)\b", re.IGNORECASE)
-CHAT_RECENTI = 50           # chat esaminate per trovare quelle con la persona
+CHAT_RECENTI = 50           # chat per pagina
+CHAT_PAGINE = 4             # pagine massime (fino a 200 chat): bounded ma ampio
 MSG_PER_CHAT = 20           # messaggi letti per chat individuata
 # Parole da scartare quando si cerca il NOME di una persona nella domanda.
 _STOP = {
@@ -143,6 +144,7 @@ class M365Search:
     def __init__(self, cfg: dict):
         self.cfg = cfg or {}
         self.tm = TokenM365(self.cfg)
+        self._people_errore = ""
 
     # ── ricerca ─────────────────────────────────────────────
     def search(self, query: str, fonti: list, max_results: int = 5) -> tuple:
@@ -164,6 +166,7 @@ class M365Search:
             return "[Microsoft 365] Non connesso: collega il connettore dalla pagina Connessioni.", []
 
         recency = bool(_RECENTI_RE.search(query or ""))
+        self._people_errore = ""
         persona = self._risolvi_persona(tok, query)
 
         blocchi, riferimenti, errori = [], [], []
@@ -183,7 +186,17 @@ class M365Search:
             blocchi.extend(b)
             riferimenti.extend(r)
 
-        testa = ""
+        testa, avviso_people = "", ""
+        if not persona and self._people_errore:
+            # la domanda nominava una persona ma la rubrica non è interrogabile:
+            # senza questo avviso l'utente crede che i messaggi non esistano,
+            # mentre in realtà la ricerca mirata non è mai partita.
+            avviso_people = ("[Microsoft 365 — ATTENZIONE: la ricerca MIRATA per persona non è "
+                     f"disponibile ({self._people_errore}). I risultati qui sotto vengono "
+                     "da ricerca per parole ed elenchi recenti, quindi l'assenza di "
+                             "messaggi di una persona NON significa che non esistano. "
+                             "Dichiaralo esplicitamente nella risposta.]\n\n")
+        testa = avviso_people
         if persona:
             testa = (f"[Microsoft 365 — recupero MIRATO su «{persona['nome']}»"
                      f" ({persona['mail']}): i risultati qui sotto sono i suoi "
@@ -193,6 +206,8 @@ class M365Search:
             coda = ("\n\n[Microsoft 365 — fonti NON interrogate: "
                     + "; ".join(errori) + ". Dichiaralo nella risposta.]")
         if not blocchi:
+            if avviso_people:
+                return avviso_people.strip() + coda, []
             if persona:
                 coda = (f"\n\n[Microsoft 365 — nessun contenuto trovato da "
                         f"{persona['nome']} nelle fonti attive." + coda[2:] if coda
@@ -224,10 +239,19 @@ class M365Search:
                              headers={"Authorization": "Bearer " + tok}, timeout=25)
         except Exception as e:
             _log(f"[people] ECCEZIONE: {e}")
+            self._people_errore = f"rubrica non raggiungibile ({str(e)[:60]})"
             return None
         if r.status_code >= 400:
-            _log(f"[people] HTTP {r.status_code}: {r.text[:160]} "
+            det = _dettaglio(r)
+            _log(f"[people] HTTP {r.status_code}: {det} "
                  "(serve People.Read; senza, il recupero per persona è disattivo)")
+            if r.status_code in (401, 403):
+                self._people_errore = ("manca il permesso delegato People.Read, oppure "
+                                       "l'account è stato collegato prima della concessione: "
+                                       "serve il consenso amministratore e poi disconnettere "
+                                       "e ricollegare l'account dalla pagina Connessioni")
+            else:
+                self._people_errore = f"errore HTTP {r.status_code} dalla rubrica"
             return None
         ql = (query or "").lower()
         for p in (r.json() or {}).get("value", []):
@@ -244,7 +268,7 @@ class M365Search:
             if not indirizzo:
                 continue
             _log(f"[people] persona risolta: {nome} <{indirizzo}>")
-            return {"nome": nome, "mail": indirizzo}
+            return {"nome": nome, "mail": indirizzo, "id": p.get("id") or ""}
         return None
 
     # ── POSTA ───────────────────────────────────────────────
@@ -297,30 +321,46 @@ class M365Search:
         return b, r, e
 
     def _teams_da_persona(self, tok, persona, n):
-        """Chat con quella persona → suoi messaggi più recenti. Bounded: una
-        chiamata per l'elenco chat, al massimo 3 chat interrogate."""
+        """Chat con quella persona → suoi messaggi più recenti.
+        Prima si tenta il FILTRO lato Graph sui partecipanti (preciso e
+        immediato); se il tenant non lo supporta si ripiega sulla scansione
+        paginata dell'elenco chat. Al massimo 3 chat interrogate."""
         import requests
         h = {"Authorization": "Bearer " + tok}
-        try:
-            r = requests.get(f"{GRAPH}/me/chats?$expand=members,lastMessagePreview"
-                             f"&$top={CHAT_RECENTI}", headers=h, timeout=45)
-        except Exception as e:
-            return [], [], f"errore di rete ({str(e)[:60]})"
-        if r.status_code >= 400:
-            det = _dettaglio(r)
-            _log(f"[teams-persona] HTTP {r.status_code}: {det}")
-            if r.status_code in (401, 403):
-                return [], [], ("permessi insufficienti per le chat — serve Chat.Read "
-                                "con consenso amministratore, poi ricollega l'account")
-            return [], [], f"HTTP {r.status_code} ({det or 'nessun dettaglio'})"
         mail_p = (persona.get("mail") or "").lower()
         nome_p = (persona.get("nome") or "").lower()
+        uid_p = persona.get("id") or ""
+
+        chats, err = [], ""
+        if uid_p:
+            filtro = ("members/any(m:m/microsoft.graph.aadUserConversationMember"
+                      f"/userId eq '{uid_p}')")
+            try:
+                rf = requests.get(f"{GRAPH}/me/chats",
+                                  params={"$expand": "members,lastMessagePreview",
+                                          "$filter": filtro, "$top": str(CHAT_RECENTI)},
+                                  headers=h, timeout=45)
+                if rf.status_code < 400:
+                    chats = (rf.json() or {}).get("value", [])
+                    _log(f"[teams-persona] filtro per userId: {len(chats)} chat")
+                else:
+                    _log(f"[teams-persona] filtro non supportato "
+                         f"(HTTP {rf.status_code}): scansione elenco")
+            except Exception as e:
+                _log(f"[teams-persona] filtro fallito: {e}")
+        if not chats:
+            chats, err = self._chats(tok, con_membri=True)
+            if err and not chats:
+                return [], [], err
+
         candidate = []
-        for ch in (r.json() or {}).get("value", []):
+        for ch in chats:
             for mem in (ch.get("members") or []):
                 em = (mem.get("email") or "").lower()
                 dn = (mem.get("displayName") or "").lower()
-                if (em and em == mail_p) or (dn and dn == nome_p):
+                uid_m = (mem.get("userId") or "")
+                if ((em and em == mail_p) or (dn and dn == nome_p)
+                        or (uid_p and uid_m == uid_p)):
                     lmp = ch.get("lastMessagePreview") or {}
                     candidate.append((lmp.get("createdDateTime") or "",
                                       ch.get("id") or "", ch.get("topic") or ""))
@@ -357,8 +397,16 @@ class M365Search:
                 presi += 1
                 if presi >= max(1, min(int(n or 5), 10)):
                     break
-        if not blocchi and not candidate:
-            _log(f"[teams-persona] nessuna chat con {persona['nome']}")
+        if not blocchi:
+            _log(f"[teams-persona] nessun messaggio di {persona['nome']} "
+                 f"(chat candidate: {len(candidate)}, chat esaminate: {len(chats)})")
+            nota = (f"[Teams — nessun messaggio di {persona['nome']}: "
+                    + (f"trovate {len(candidate)} conversazioni con lui/lei ma nessun "
+                       "suo messaggio recente" if candidate
+                       else f"nessuna conversazione con lui/lei fra le {len(chats)} "
+                            "chat esaminate")
+                    + ". Potrebbe non esserci scambio su Teams: dichiaralo.]")
+            return [nota], [], ""
         return blocchi, rifs, ""
 
     # ── SHAREPOINT ──────────────────────────────────────────
@@ -439,33 +487,52 @@ class M365Search:
                         rifs.append(rif)
         return blocchi, rifs, ""
 
-    def _teams_recenti(self, tok: str, limite: int = CHAT_RECENTI):
-        """Ultimo messaggio di ciascuna chat recente dell'utente: UNA chiamata
-        a /me/chats con l'anteprima espansa, nessuna enumerazione dei messaggi.
-        Ritorna (blocchi, riferimenti, errore_o_vuoto)."""
-        try:
-            import requests
-            r = requests.get(
-                f"{GRAPH}/me/chats?$expand=lastMessagePreview&$top={int(limite)}",
-                headers={"Authorization": "Bearer " + tok}, timeout=45)
-        except Exception as e:
-            _log(f"[teams-recenti] ECCEZIONE rete: {e}")
-            return [], [], f"errore di rete ({str(e)[:60]})"
-        if r.status_code >= 400:
-            dettaglio = ""
+    def _chats(self, tok: str, con_membri: bool = False):
+        """Elenco chat dell'utente, ORDINATE per data dell'ultimo messaggio e
+        paginato (fino a CHAT_PAGINE pagine). Senza ordinamento Graph non
+        garantisce che le prime siano le più recenti: era il motivo per cui una
+        conversazione poteva restare invisibile. Ritorna (chats, errore)."""
+        import requests
+        h = {"Authorization": "Bearer " + tok}
+        exp = "members,lastMessagePreview" if con_membri else "lastMessagePreview"
+        url = (f"{GRAPH}/me/chats?$expand={exp}"
+               f"&$orderby=lastMessagePreview/createdDateTime desc"
+               f"&$top={CHAT_RECENTI}")
+        out, pagine = [], 0
+        while url and pagine < CHAT_PAGINE:
             try:
-                dettaglio = str((r.json().get("error") or {}).get("message") or "")[:200]
-            except Exception:
-                dettaglio = r.text[:200]
-            _log(f"[teams-recenti] HTTP {r.status_code}: {dettaglio}")
-            if r.status_code in (401, 403):
-                return [], [], ("permessi insufficienti per le chat — serve Chat.Read "
-                                "con consenso amministratore, poi ricollega l'account")
-            return [], [], f"HTTP {r.status_code} ({dettaglio or 'nessun dettaglio'})"
-        try:
-            chats = (r.json() or {}).get("value", [])
-        except Exception as e:
-            return [], [], f"risposta non leggibile ({str(e)[:60]})"
+                r = requests.get(url, headers=h, timeout=45)
+            except Exception as e:
+                return out, f"errore di rete ({str(e)[:60]})"
+            if r.status_code >= 400:
+                det = _dettaglio(r)
+                _log(f"[chats] HTTP {r.status_code}: {det}")
+                if pagine == 0 and "orderby" in det.lower():
+                    # alcuni tenant rifiutano l'ordinamento: ripiego non ordinato
+                    _log("[chats] ordinamento non supportato: ripiego senza $orderby")
+                    url = f"{GRAPH}/me/chats?$expand={exp}&$top={CHAT_RECENTI}"
+                    pagine += 1
+                    continue
+                if r.status_code in (401, 403):
+                    return out, ("permessi insufficienti per le chat — serve Chat.Read "
+                                 "con consenso amministratore, poi ricollega l'account")
+                return out, f"HTTP {r.status_code} ({det or 'nessun dettaglio'})"
+            try:
+                data = r.json() or {}
+            except Exception as e:
+                return out, f"risposta non leggibile ({str(e)[:60]})"
+            out.extend(data.get("value", []))
+            url = data.get("@odata.nextLink") or ""
+            pagine += 1
+        _log(f"[chats] esaminate {len(out)} chat in {pagine} pagine")
+        return out, ""
+
+    def _teams_recenti(self, tok: str, limite: int = CHAT_RECENTI):
+        """Ultimo messaggio di ciascuna chat recente dell'utente, dalla più
+        recente. Nessuna enumerazione dei messaggi: solo l'anteprima."""
+        chats, err = self._chats(tok)
+        if err:
+            return [], [], err
 
         righe = []
         for ch in chats:

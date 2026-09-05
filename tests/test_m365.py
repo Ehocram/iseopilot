@@ -72,10 +72,16 @@ _GRAPH_HITS = {"value": [{"hitsContainers": [{"hits": [
 
 
 _PEOPLE = {"value": [
+    {"id": "AAD-LS-0001", "displayName": "Leonardo Salcuni",
+     "scoredEmailAddresses": [{"address": "leonardo.salcuni@iseo.com"}]},
+    {"id": "AAD-AV-0002", "displayName": "Anna Verdi",
+     "scoredEmailAddresses": [{"address": "anna@cliente.it"}]},
+]}
+# stessa rubrica senza id AAD: il filtro lato Graph non è possibile e si deve
+# ripiegare sulla scansione paginata dell'elenco chat
+_PEOPLE_NO_ID = {"value": [
     {"displayName": "Leonardo Salcuni",
      "scoredEmailAddresses": [{"address": "leonardo.salcuni@iseo.com"}]},
-    {"displayName": "Anna Verdi",
-     "scoredEmailAddresses": [{"address": "anna@cliente.it"}]},
 ]}
 
 
@@ -421,6 +427,125 @@ def test_scope_include_people_read():
     assert "People.Read" in m365_search.M365_SCOPE
     for s_ in ("Mail.Read", "Chat.Read", "Sites.Read.All", "Files.Read.All"):
         assert s_ in m365_search.M365_SCOPE
+
+
+def test_chats_ordinate_e_paginate(monkeypatch):
+    """Senza ordinamento Graph non garantisce che le prime chat siano le più
+    recenti: una conversazione poteva restare invisibile (caso Salcuni)."""
+    import requests
+    urls = []
+    pagina2 = {"value": [{"id": "CID_Z", "topic": "",
+                          "lastMessagePreview": {"id": "MZ",
+                              "createdDateTime": "2026-08-01T09:00:00Z",
+                              "from": {"user": {"displayName": "Zeta"}},
+                              "body": {"content": "vecchio ma presente"}}}]}
+    stato = {"n": 0}
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        urls.append(url)
+        if "/me/people" in url:
+            return _Resp(200, {"value": []})
+        stato["n"] += 1
+        if stato["n"] == 1:
+            d = dict(_CHATS)
+            d["@odata.nextLink"] = "https://graph.microsoft.com/v1.0/me/chats?page=2"
+            return _Resp(200, d)
+        return _Resp(200, pagina2)
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, _ = m.search("ultimi messaggi", ["teams"])
+    prima = next(u for u in urls if "/me/chats" in u)
+    assert "$orderby=lastMessagePreview/createdDateTime desc" in prima
+    assert "vecchio ma presente" in testo          # la seconda pagina è stata letta
+
+
+def test_teams_persona_filtro_per_partecipante(monkeypatch):
+    """Prima si tenta il filtro lato Graph sui membri: preciso e immediato."""
+    import requests
+    params_visti = []
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        if "/me/people" in url:
+            return _Resp(200, _PEOPLE)
+        if "/messages" in url:
+            return _Resp(200, _MSG_CHAT)
+        params_visti.append(params or {})
+        return _Resp(200, _CHATS_MEMBRI)
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, _ = m.search("cosa mi ha scritto leonardo salcuni?", ["teams"])
+    assert params_visti and "$filter" in params_visti[0]
+    assert "aadUserConversationMember" in params_visti[0]["$filter"]
+    assert "Ci vediamo lunedì" in testo
+
+
+def test_teams_persona_senza_id_ripiega_su_scansione(monkeypatch):
+    """Senza id AAD il filtro non è possibile: si scandisce l'elenco chat e la
+    persona va comunque trovata (per email o nome del partecipante)."""
+    import requests
+    urls = []
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        urls.append(url)
+        if "/me/people" in url:
+            return _Resp(200, _PEOPLE_NO_ID)
+        if "/messages" in url:
+            return _Resp(200, _MSG_CHAT)
+        return _Resp(200, _CHATS_MEMBRI)
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, _ = m.search("cosa mi ha scritto leonardo salcuni?", ["teams"])
+    assert "Ci vediamo lunedì" in testo
+    assert any("$orderby" in u for u in urls if "/me/chats" in u)   # scansione ordinata
+
+
+def test_people_non_disponibile_viene_dichiarato(monkeypatch):
+    """Se la rubrica non è interrogabile, l'assenza di messaggi di una persona
+    NON deve sembrare un'assenza di fatti: va detto che la ricerca mirata non
+    è mai partita, con il rimedio."""
+    import requests
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        if "/me/people" in url:
+            return _Resp(403, {"error": {"message": "Insufficient privileges"}})
+        return _Resp(200, _CHATS)
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, _ = m.search("cosa mi ha scritto leonardo salcuni?", ["teams"])
+    assert "ricerca MIRATA per persona non è disponibile" in testo
+    assert "People.Read" in testo and "ricollegare l'account" in testo
+    assert "NON significa che non esistano" in testo
+
+
+def test_teams_persona_senza_chat_lo_dichiara(monkeypatch):
+    """Se non c'è scambio su Teams con quella persona va DETTO, non lasciato
+    intendere come assenza di dati."""
+    import requests
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        if "/me/people" in url:
+            return _Resp(200, _PEOPLE)
+        return _Resp(200, {"value": []})
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, _ = m.search("cosa mi ha scritto leonardo salcuni su teams?", ["teams"])
+    assert "nessun messaggio di Leonardo Salcuni" in testo
+    assert "nessuna conversazione" in testo and "dichiaralo" in testo.lower()
 
 
 def test_snippet_troncato_verso_il_modello(monkeypatch):
