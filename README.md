@@ -342,8 +342,15 @@ python tests/test_smoke.py
   esiste ma non c'è scambio su Teams, il connettore lo **dichiara** invece di
   restituire il vuoto. Tutto bounded: max 3 chat interrogate, tetti su
   messaggi e risultati.
-  La risoluzione della persona degrada in silenzio (con log) se manca
-  `People.Read`: le altre modalità continuano a funzionare.
+  La persona si individua per due vie indipendenti: la rubrica di rilevanza
+  (`/me/people`) e, se questa non la conosce, i **partecipanti delle chat** già
+  scaricate — così la ricerca mirata funziona anche senza `People.Read`. Se il
+  permesso manca del tutto il limite viene **dichiarato nel contesto** ("la
+  ricerca mirata non è disponibile: l'assenza non prova che i messaggi non
+  esistano"), invece di degradare in silenzio. Quando invece la scansione dei
+  partecipanti si completa senza trovare la persona, il risultato è un **dato
+  accertato** ("nessuna conversazione su Teams con X fra le N chat esaminate")
+  e viene distinto dal limite di ricerca.
   *Prerequisito tenant*: permessi delegati `Sites.Read.All`, `Mail.Read`,
   `Chat.Read`, `Files.Read.All`, `People.Read`, `User.Read` con **consenso amministratore**
   sulla app registration; poi ogni utente collega il proprio account con il

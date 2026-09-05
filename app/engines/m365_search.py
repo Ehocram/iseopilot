@@ -58,6 +58,13 @@ _STOP = {
     "wrote", "told", "documento", "documenti", "file", "sharepoint", "riassumi",
     "trova", "cerca", "cercami", "mostrami", "leggimi", "una", "uno", "gli", "lui",
     "lei", "loro", "quel", "quello", "questa", "questo", "nostro", "nostra",
+    # articoli elisi e preposizioni articolate spezzate dall'apostrofo
+    "nell", "dell", "sull", "all", "dall", "quell", "quest", "coll", "coi",
+    "coni", "gli", "gia", "già", "gliel", "gliela", "coso", "gliene",
+    "qual", "qualè", "sono", "essere", "stato", "stata", "molto", "poco",
+    "anche", "solo", "ancora", "sempre", "mai", "piu", "più", "meno",
+    "ricevuti", "ricevute", "ricevuto", "inviati", "inviate", "mandati",
+    "arrivati", "arrivate", "letti", "nuovi", "nuove", "tutti", "tutte",
 }
 SNIPPET_MAX = 1200          # per singolo risultato, verso il modello
 TESTO_MAX = 14000           # totale del blocco di contesto
@@ -220,9 +227,15 @@ class M365Search:
 
     # ── risoluzione della PERSONA (come fa Copilot) ─────────
     def _termini_nome(self, query: str) -> str:
-        parole = re.findall(r"[A-Za-zÀ-ÿ']{3,}", query or "")
+        """Parole della domanda che possono essere un NOME. L'apostrofo separa
+        (altrimenti "nell'ultimo" entrava intero nella ricerca in rubrica e la
+        mandava a vuoto); gli articoli elisi sono scartati."""
+        parole = re.findall(r"[A-Za-zÀ-ÿ]{3,}", query or "")
         utili = [p for p in parole if p.lower() not in _STOP]
         return " ".join(utili[:6])
+
+    def _token_nome(self, query: str) -> list:
+        return [p.lower() for p in self._termini_nome(query).split() if len(p) >= 3]
 
     def _risolvi_persona(self, tok: str, query: str):
         """Trova la persona nominata nella domanda usando la rubrica di
@@ -271,6 +284,27 @@ class M365Search:
             return {"nome": nome, "mail": indirizzo, "id": p.get("id") or ""}
         return None
 
+    def _persona_da_chat(self, chats: list, query: str):
+        """Individua la persona fra i PARTECIPANTI delle chat già scaricate:
+        non dipende dalla rubrica, quindi funziona anche se /me/people non
+        conosce quella persona. Richiede che TUTTI i token del nome cercato
+        compaiano nel nome del partecipante: niente omonimie approssimate."""
+        token = self._token_nome(query)
+        if not token:
+            return None
+        for ch in chats:
+            for mem in (ch.get("members") or []):
+                dn = (mem.get("displayName") or "").lower()
+                if not dn:
+                    continue
+                if all(t in dn for t in token):
+                    persona = {"nome": mem.get("displayName") or "",
+                               "mail": (mem.get("email") or ""),
+                               "id": mem.get("userId") or ""}
+                    _log(f"[persona-da-chat] individuata: {persona['nome']}")
+                    return persona
+        return None
+
     # ── POSTA ───────────────────────────────────────────────
     def _mail(self, tok, query, persona, recency, n):
         import requests
@@ -313,6 +347,31 @@ class M365Search:
     def _teams(self, tok, query, persona, recency, n):
         if persona:
             return self._teams_da_persona(tok, persona, n)
+        token = self._token_nome(query)
+        # La scansione dei partecipanti si fa solo quando la domanda parla di
+        # messaggi scambiati ("cosa mi ha scritto…", "ultimo messaggio di…"):
+        # su una domanda di contenuto ("clausola del contratto") resta la
+        # ricerca full-text, senza chiamate inutili.
+        if recency and token:
+            chats, err = self._chats(tok, con_membri=True)
+            if err and not chats:
+                return [], [], err
+            p2 = self._persona_da_chat(chats, query)
+            if p2:
+                return self._teams_da_persona(tok, p2, n, chats=chats)
+            if len(token) < 2:
+                # un solo termine che non corrisponde a nessuno: non è un nome
+                # (es. "ultimi messaggi ricevuti"). Nessuna nota fuorviante.
+                return self._teams_recenti(tok, chats=chats)
+            nomi = sorted({(m.get("displayName") or "")
+                           for ch in chats for m in (ch.get("members") or [])
+                           if m.get("displayName")})
+            nota = (f"[Teams — nessun partecipante corrispondente a «{' '.join(token)}» "
+                    f"fra le {len(chats)} chat esaminate ({len(nomi)} persone distinte). "
+                    "Con quella persona NON risulta alcuna conversazione su Teams: "
+                    "dichiaralo come dato accertato, non come limite di ricerca.]")
+            b, r, e = self._teams_recenti(tok, chats=chats)
+            return ([nota] + b), r, e
         if recency:
             return self._teams_recenti(tok)
         b, r, e = self._search_fonte("teams", query, tok, n)
@@ -320,7 +379,7 @@ class M365Search:
             return self._teams_recenti(tok)
         return b, r, e
 
-    def _teams_da_persona(self, tok, persona, n):
+    def _teams_da_persona(self, tok, persona, n, chats=None):
         """Chat con quella persona → suoi messaggi più recenti.
         Prima si tenta il FILTRO lato Graph sui partecipanti (preciso e
         immediato); se il tenant non lo supporta si ripiega sulla scansione
@@ -331,8 +390,8 @@ class M365Search:
         nome_p = (persona.get("nome") or "").lower()
         uid_p = persona.get("id") or ""
 
-        chats, err = [], ""
-        if uid_p:
+        chats, err = (chats or []), ""
+        if not chats and uid_p:
             filtro = ("members/any(m:m/microsoft.graph.aadUserConversationMember"
                       f"/userId eq '{uid_p}')")
             try:
@@ -527,12 +586,13 @@ class M365Search:
         _log(f"[chats] esaminate {len(out)} chat in {pagine} pagine")
         return out, ""
 
-    def _teams_recenti(self, tok: str, limite: int = CHAT_RECENTI):
+    def _teams_recenti(self, tok: str, limite: int = CHAT_RECENTI, chats=None):
         """Ultimo messaggio di ciascuna chat recente dell'utente, dalla più
         recente. Nessuna enumerazione dei messaggi: solo l'anteprima."""
-        chats, err = self._chats(tok)
-        if err:
-            return [], [], err
+        if chats is None:
+            chats, err = self._chats(tok)
+            if err:
+                return [], [], err
 
         righe = []
         for ch in chats:

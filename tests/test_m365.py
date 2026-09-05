@@ -508,6 +508,59 @@ def test_teams_persona_senza_id_ripiega_su_scansione(monkeypatch):
     assert any("$orderby" in u for u in urls if "/me/chats" in u)   # scansione ordinata
 
 
+def test_estrazione_nome_ignora_articoli_elisi():
+    """Il bug che mandava a vuoto la rubrica: da «nell'ultimo» si ricavava un
+    finto pezzo di nome, e la ricerca in rubrica non trovava più nessuno."""
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    q = "mi dici cosa scrive in teams leonardo salcuni nell'ultimo messaggio che mi ha inviato?"
+    assert m._termini_nome(q) == "leonardo salcuni"
+    assert m._token_nome("qual e' la clausola dell'accordo?") == ["clausola", "accordo"]
+    # un singolo termine residuo non è un nome: la nota di assenza NON si emette
+    assert len(m._token_nome("ultimi messaggi ricevuti")) < 2
+
+
+def test_persona_individuata_fra_i_partecipanti(monkeypatch):
+    """Se la rubrica non conosce la persona, la si individua fra i PARTECIPANTI
+    delle chat: la ricerca mirata funziona lo stesso."""
+    import requests
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        if "/me/people" in url:
+            return _Resp(200, {"value": []})        # rubrica muta
+        if "/messages" in url:
+            return _Resp(200, _MSG_CHAT)
+        return _Resp(200, _CHATS_MEMBRI)
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, rif = m.search("cosa mi ha scritto leonardo salcuni nell'ultimo messaggio?", ["teams"])
+    assert "Ci vediamo lunedì" in testo
+    assert "ok perfetto" not in testo               # solo i suoi messaggi
+    assert rif and rif[0]["chat_id"] == "CID_LS"
+
+
+def test_assenza_accertata_non_confusa_con_limite(monkeypatch):
+    """Scansionati TUTTI i partecipanti senza trovarlo: è un dato accertato,
+    e va detto così — non come «forse non riesco a cercare»."""
+    import requests
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        if "/me/people" in url:
+            return _Resp(200, {"value": []})
+        return _Resp(200, _CHATS_MEMBRI)
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, _ = m.search("cosa mi ha scritto mario rossi nell'ultimo messaggio?", ["teams"])
+    assert "nessun partecipante corrispondente a «mario rossi»" in testo
+    assert "chat esaminate" in testo and "persone distinte" in testo
+    assert "dato accertato" in testo
+
+
 def test_people_non_disponibile_viene_dichiarato(monkeypatch):
     """Se la rubrica non è interrogabile, l'assenza di messaggi di una persona
     NON deve sembrare un'assenza di fatti: va detto che la ricerca mirata non
