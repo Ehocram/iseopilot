@@ -3308,6 +3308,62 @@ class DynamicsSearch:
             _dbg(f"_valida_campi: scartati (inesistenti su {entity}): {fuori[:6]}")
         return [c for c in campi if c in noti][:40]
 
+    AGG_MAX_RIGHE = 25000    # tetto di righe scandite per una aggregazione
+    AGG_MAX_SEC = 45         # e tetto di tempo: meglio parziale dichiarato che attesa
+
+    def _aggrega(self, entity: str, campo: str, filtro: str, token: str,
+                 catalog: dict) -> dict:
+        """Conta le occorrenze di un campo su TUTTE le righe, non su un campione.
+
+        D365 F&O non implementa $apply: passandolo, il servizio non da' errore,
+        lo ignora e restituisce le righe grezze. Costruirci sopra significherebbe
+        scambiare righe non aggregate per aggregati. L'unica via corretta e'
+        leggere la sola colonna che serve e contare qui.
+
+        Ritorna {ok, gruppi, distinti, righe, completo}. 'completo' e' falso se
+        si e' toccato un tetto: in quel caso il risultato e' un parziale e va
+        dichiarato tale, mai presentato come totale.
+        """
+        import time as _t
+        if entity not in catalog:
+            return {"ok": False, "errore": f"entità {entity} inesistente"}
+        if not self._valida_campi(entity, [campo], catalog):
+            return {"ok": False, "errore": f"campo {campo} inesistente su {entity}"}
+        if filtro and not self._is_readonly_filter(filtro):
+            _dbg(f"[READ-ONLY] _aggrega filtro scartato: {filtro[:80]}")
+            filtro = ""
+
+        params = [f"$select={campo}"]
+        if filtro:
+            params.insert(0, f"$filter={quote(filtro)}")
+        if bool(self.cfg.get("dyn_cross_company", False)):
+            params.append("cross-company=true")
+        url = self._data_url(f"/{entity}?" + "&".join(params))
+
+        conta, righe, completo, t0 = {}, 0, True, _t.time()
+        while url:
+            if righe >= self.AGG_MAX_RIGHE or (_t.time() - t0) > self.AGG_MAX_SEC:
+                completo = False
+                break
+            try:
+                r = self._dyn_get(url, token, timeout=30)
+            except Exception as e:
+                return {"ok": False, "errore": str(e)}
+            if r.status_code != 200:
+                return {"ok": False, "errore": f"HTTP {r.status_code}"}
+            body = r.json()
+            for x in body.get("value", []):
+                righe += 1
+                v = x.get(campo)
+                if v not in (None, ""):
+                    conta[v] = conta.get(v, 0) + 1
+            url = body.get("@odata.nextLink")
+        gruppi = sorted(conta.items(), key=lambda kv: -kv[1])
+        _dbg(f"_aggrega {entity}.{campo}: {righe} righe, {len(gruppi)} distinti, "
+             f"completo={completo}, {_t.time()-t0:.1f}s")
+        return {"ok": True, "gruppi": gruppi, "distinti": len(gruppi),
+                "righe": righe, "completo": completo}
+
     def _avviso_troncamento(self, entity: str, filtro: str, records: list,
                             token: str) -> str:
         """Se la lettura ha toccato il tetto, dirlo senza ambiguita'.
@@ -3382,6 +3438,10 @@ class DynamicsSearch:
             '6) {"azione":"schema","entita":["E1","E2"],"motivo":"..."}\n'
             "   Chiede la SCHEDA TECNICA di una o più entità (chiavi, valori enum, relazioni): usala quando ti "
             "servono i letterali enum esatti per un $filter o le chiavi/relazioni per un expand/join.\n"
+            '7) {"azione":"aggrega","entita":"E","campo":"C","filtro":"<o vuoto>","motivo":"..."}\n'
+            "   Conta le occorrenze di un campo su TUTTE le righe, non su un campione. "
+            "Usala SEMPRE per domande su quanti, quali valori distinti, classifiche o "
+            "totali: una query normale legge solo le prime righe e da' un numero sbagliato.\n"
             "Regole: preferisci 'expand' lungo le relazioni reali elencate; usa 'join' solo se non c'è "
             "relazione reale. Se per un'entità sono indicate 'Chiavi:' o 'Enum:', usa quei campi chiave "
             "per i lookup e quei valori enum come letterali nei $filter. Concludi appena possibile. Sii essenziale.\n"
@@ -3507,6 +3567,28 @@ class DynamicsSearch:
                     s = self._entity_schema_full(e)
                     schede.append(s if s else f"SCHEDA {e}: non disponibile (schema .md assente).")
                 history.append(f"\n[OSSERVAZIONE passo {step+1}]\n" + "\n".join(schede))
+
+            elif azione == "aggrega":
+                ent = (act.get("entita") or "").strip()
+                campo = (act.get("campo") or "").strip()
+                agg = self._aggrega(ent, campo, (act.get("filtro") or "").strip(),
+                                    token, full_catalog)
+                if not agg.get("ok"):
+                    history.append(f"\n[OSSERVAZIONE passo {step+1}] Aggregazione non "
+                                   f"riuscita: {agg.get('errore')}. Riprova diversamente.")
+                    continue
+                testa = agg["gruppi"][:40]
+                righe_txt = "; ".join(f"{v}={n}" for v, n in testa)
+                stato = ("su TUTTE le righe dell'interrogazione"
+                         if agg["completo"] else
+                         f"PARZIALE: scansione interrotta al tetto dopo {agg['righe']} "
+                         f"righe, quindi i conteggi sono un minimo e i valori distinti "
+                         f"possono essere di piu'")
+                history.append(
+                    f"\n[OSSERVAZIONE passo {step+1}] Aggregazione {ent}.{campo} "
+                    f"({stato}): {agg['righe']} righe lette, {agg['distinti']} valori "
+                    f"distinti.\nPrimi {len(testa)} per frequenza: {righe_txt}\n"
+                    f"Usa questi numeri per la risposta: sono contati, non stimati.")
 
             elif azione == "cerca_entita":
                 parola = (act.get("parola") or "").strip()
