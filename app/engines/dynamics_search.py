@@ -3278,6 +3278,20 @@ class DynamicsSearch:
         except Exception as e:
             return {"ok": False, "status": 0, "rows": [], "count": 0, "errore": str(e)}
 
+    def _conteggio_reale(self, entity: str, filtro: str, token: str) -> int:
+        """Righe totali dell'entità (con l'eventuale filtro). None se il
+        servizio non risponde in fretta: su tabelle enormi $count e' lento e
+        non vale la pena farci aspettare l'utente."""
+        try:
+            url = self._data_url(f"/{entity}/$count"
+                                 + (f"?$filter={quote(filtro)}" if filtro else ""))
+            r = self._dyn_get(url, token, timeout=12)
+            if r.status_code == 200:
+                return int(r.text.strip())
+        except Exception:
+            pass
+        return None
+
     @staticmethod
     def _valida_campi(entity: str, campi, catalog: dict) -> list:
         """Tiene solo i campi che esistono davvero sull'entità: un nome
@@ -3293,6 +3307,25 @@ class DynamicsSearch:
         if fuori:
             _dbg(f"_valida_campi: scartati (inesistenti su {entity}): {fuori[:6]}")
         return [c for c in campi if c in noti][:40]
+
+    def _avviso_troncamento(self, entity: str, filtro: str, records: list,
+                            token: str) -> str:
+        """Se la lettura ha toccato il tetto, dirlo senza ambiguita'.
+
+        Con la sola frase "N record" un campione da 50 righe viene letto come
+        l'insieme completo: si finisce per dichiarare "in tutto 23 fornitori"
+        su un'entita' che ne ha centinaia. Il tetto non e' negoziabile, ma va
+        almeno dichiarato."""
+        if len(records) < self.HARD_LIMIT:
+            return ""
+        tot = self._conteggio_reale(entity, filtro, token)
+        quanti = (f" L'interrogazione completa ne conta {tot}."
+                  if tot is not None else "")
+        return ("\n\n⚠️ RISULTATO TRONCATO: sono le prime "
+                f"{len(records)} righe, NON l'elenco completo.{quanti} "
+                "Non ricavare da questo campione totali, conteggi di valori "
+                "distinti, intervalli di date o espressioni come 'in tutto': "
+                "presentalo esplicitamente come un campione parziale.")
 
     def _compact_obs(self, rows: list, max_rows: int = None) -> list:
         """Riduce le righe a un campione compatto (poche righe, solo campi non-@)
@@ -3415,6 +3448,7 @@ class DynamicsSearch:
                           f"{len(records)} record. {spieg}\n"
                           f"⚠️ Dati prodotti da una query dinamica multi-step; verifica prima di usarli "
                           f"per decisioni operative.")
+                header += self._avviso_troncamento(ent, filtro, records, token)
                 html_path = self._write_generic_html(f"Ricerca dinamica v2.0 — {ent}", records, spieg)
                 body = header + "\n" + self._format_records_list(records, campi_richiesti)
                 if html_path:
@@ -3866,6 +3900,7 @@ class DynamicsSearch:
                       f"{len(records)} record. {spiegazione}\n"
                       f"NOTA: questa risposta NON proviene da un modulo dedicato ma da una query "
                       f"dinamica; verifica i dati prima di usarli per decisioni operative.")
+            header += self._avviso_troncamento(ent, filtro, records, token)
             body = header + "\n" + self._format_records_list(records, campi)
             html_path = self._write_generic_html(f"Ricerca dinamica — {ent}", records, spiegazione)
             if html_path:
