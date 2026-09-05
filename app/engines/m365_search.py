@@ -34,6 +34,15 @@ _ENTITY = {
     "mail": ["message"],
     "teams": ["chatMessage"],
 }
+# La ricerca Graph su chatMessage indicizza il TESTO del messaggio, non il
+# mittente: "cosa mi ha scritto Leonardo" non trova nulla, perché nei suoi
+# messaggi il suo nome non compare. Per queste domande serve l'elenco delle
+# chat recenti con l'anteprima dell'ultimo messaggio (una sola chiamata).
+_RECENTI_RE = re.compile(
+    r"\b(ultim\w+|recent\w+|nuov\w+|scritto|scrive|inviato|manda\w*|"
+    r"mandato|detto|ieri|oggi|stamattina|poco\s+fa|"
+    r"last|latest|recent|wrote|sent|told|today|yesterday)\b", re.IGNORECASE)
+CHAT_RECENTI = 20           # tetto di chat esaminate: chiamata bounded
 SNIPPET_MAX = 1200          # per singolo risultato, verso il modello
 TESTO_MAX = 14000           # totale del blocco di contesto
 
@@ -144,6 +153,15 @@ class M365Search:
                 errori.append(f"{f}: {err}")
             blocchi.extend(testo)
             riferimenti.extend(rif)
+            # Teams: la ricerca full-text non copre le domande "chi mi ha
+            # scritto per ultimo". Si completa con le chat recenti quando la
+            # domanda è di recency o quando la ricerca non ha trovato nulla.
+            if f == "teams" and not err and (not testo or _RECENTI_RE.search(query or "")):
+                t2, r2, e2 = self._teams_recenti(tok)
+                if e2:
+                    errori.append(f"teams (chat recenti): {e2}")
+                blocchi.extend(t2)
+                riferimenti.extend(r2)
 
         coda = ""
         if errori:
@@ -203,6 +221,69 @@ class M365Search:
                     blocchi.append(testo)
                     if rif:
                         rifs.append(rif)
+        return blocchi, rifs, ""
+
+    def _teams_recenti(self, tok: str, limite: int = CHAT_RECENTI):
+        """Ultimo messaggio di ciascuna chat recente dell'utente: UNA chiamata
+        a /me/chats con l'anteprima espansa, nessuna enumerazione dei messaggi.
+        Ritorna (blocchi, riferimenti, errore_o_vuoto)."""
+        try:
+            import requests
+            r = requests.get(
+                f"{GRAPH}/me/chats?$expand=lastMessagePreview&$top={int(limite)}",
+                headers={"Authorization": "Bearer " + tok}, timeout=45)
+        except Exception as e:
+            _log(f"[teams-recenti] ECCEZIONE rete: {e}")
+            return [], [], f"errore di rete ({str(e)[:60]})"
+        if r.status_code >= 400:
+            dettaglio = ""
+            try:
+                dettaglio = str((r.json().get("error") or {}).get("message") or "")[:200]
+            except Exception:
+                dettaglio = r.text[:200]
+            _log(f"[teams-recenti] HTTP {r.status_code}: {dettaglio}")
+            if r.status_code in (401, 403):
+                return [], [], ("permessi insufficienti per le chat — serve Chat.Read "
+                                "con consenso amministratore, poi ricollega l'account")
+            return [], [], f"HTTP {r.status_code} ({dettaglio or 'nessun dettaglio'})"
+        try:
+            chats = (r.json() or {}).get("value", [])
+        except Exception as e:
+            return [], [], f"risposta non leggibile ({str(e)[:60]})"
+
+        righe = []
+        for ch in chats:
+            lmp = ch.get("lastMessagePreview") or {}
+            if not lmp:
+                continue
+            mitt = (((lmp.get("from") or {}).get("user") or {}).get("displayName") or "")
+            if not mitt:
+                continue                     # messaggi di sistema: ignorati
+            corpo = _strip_html(((lmp.get("body") or {}).get("content") or ""))
+            if not corpo:
+                continue
+            quando_iso = lmp.get("createdDateTime") or ""
+            righe.append({
+                "quando_iso": quando_iso,
+                "quando": _data_breve(quando_iso),
+                "mitt": mitt,
+                "corpo": corpo[:SNIPPET_MAX],
+                "chat_id": ch.get("id") or "",
+                "msg_id": lmp.get("id") or "",
+                "topic": ch.get("topic") or "",
+            })
+        righe.sort(key=lambda x: x["quando_iso"], reverse=True)
+
+        blocchi, rifs = [], []
+        for x in righe:
+            dove = f" · {x['topic']}" if x["topic"] else ""
+            blocchi.append(f"[Teams — ultimo messaggio della chat con {x['mitt']}"
+                           f"{dove} · {x['quando']}]\n{x['corpo']}")
+            rifs.append({"kind": "teams", "id": x["msg_id"], "chat_id": x["chat_id"],
+                         "titolo": f"Chat Teams con {x['mitt']}",
+                         "quando": x["quando"], "da": x["mitt"]})
+        if blocchi:
+            _log(f"[teams-recenti] chat con anteprima: {len(blocchi)}")
         return blocchi, rifs, ""
 
     def _formatta(self, hit: dict):

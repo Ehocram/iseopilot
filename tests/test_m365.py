@@ -193,6 +193,85 @@ def test_formattazione_e_riferimenti(monkeypatch):
     assert teams["chat_id"] == "CID1"
 
 
+_CHATS = {"value": [
+    {"id": "CID_A", "topic": "",
+     "lastMessagePreview": {"id": "M_A", "createdDateTime": "2026-09-04T17:30:00Z",
+                            "from": {"user": {"displayName": "Leonardo Salcuni"}},
+                            "body": {"content": "<p>Ci vediamo <b>lunedì</b> per il piano manufacturing.</p>"}}},
+    {"id": "CID_B", "topic": "Progetto NIS2",
+     "lastMessagePreview": {"id": "M_B", "createdDateTime": "2026-09-05T08:00:00Z",
+                            "from": {"user": {"displayName": "Samir"}},
+                            "body": {"content": "VM riavviata, tutto ok."}}},
+    {"id": "CID_C", "topic": "",
+     "lastMessagePreview": {"id": "M_C", "createdDateTime": "2026-09-03T10:00:00Z",
+                            "from": {}, "body": {"content": "utente aggiunto"}}},
+]}
+
+
+def test_teams_chat_recenti_per_domande_di_recency(monkeypatch):
+    """Caso reale: la ricerca full-text su chatMessage non trova i messaggi di
+    una persona (il suo nome non è nel testo). Le domande di recency devono
+    essere completate con l'ultimo messaggio delle chat."""
+    import requests
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(200, _CHATS))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, rif = m.search("cosa mi ha scritto Leonardo nell'ultimo messaggio?", ["teams"])
+    assert "Leonardo Salcuni" in testo and "Ci vediamo lunedì" in testo
+    assert "<b>" not in testo                      # HTML ripulito
+    assert "Progetto NIS2" in testo                # topic della chat riportato
+    assert "utente aggiunto" not in testo          # messaggi di sistema esclusi
+    # ordinamento dal più recente
+    assert testo.index("Samir") < testo.index("Leonardo Salcuni")
+    # riferimenti scaricabili con chat_id valorizzato
+    t = [r for r in rif if r["kind"] == "teams"]
+    assert t and all(r["chat_id"] for r in t)
+
+
+def test_teams_una_sola_chiamata_bounded(monkeypatch):
+    import requests
+    chiamate = []
+
+    def fake_get(url, headers=None, timeout=None):
+        chiamate.append(url)
+        return _Resp(200, _CHATS)
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    m.search("ultimo messaggio", ["teams"])
+    assert len(chiamate) == 1                      # nessuna enumerazione dei messaggi
+    assert "/me/chats" in chiamate[0] and "lastMessagePreview" in chiamate[0]
+    assert f"$top={m365_search.CHAT_RECENTI}" in chiamate[0]
+
+
+def test_teams_recenti_non_scatta_se_la_ricerca_basta(monkeypatch):
+    """Domanda NON di recency con risultati dalla ricerca: nessuna chiamata
+    supplementare, niente contesto gonfiato."""
+    import requests
+    chiamate = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, _GRAPH_HITS))
+    monkeypatch.setattr(requests, "get",
+                        lambda *a, **k: chiamate.append(1) or _Resp(200, _CHATS))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    m.search("clausola di adeguamento del contratto", ["teams"])
+    assert chiamate == []
+
+
+def test_teams_recenti_errore_dichiarato(monkeypatch):
+    import requests
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get",
+                        lambda *a, **k: _Resp(403, {"error": {"message": "no Chat.Read"}}))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, _ = m.search("ultimo messaggio", ["teams"])
+    assert "chat recenti" in testo and "Chat.Read" in testo
+
+
 def test_snippet_troncato_verso_il_modello(monkeypatch):
     lungo = {"value": [{"hitsContainers": [{"hits": [
         {"summary": "x" * 5000,

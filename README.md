@@ -320,6 +320,16 @@ python tests/test_smoke.py
   che non hanno acconsentito — e nascono **SPENTE**: si accendono solo dopo
   DPIA e delibera del Comitato AI. Ogni modifica degli interruttori e'
   tracciata (`m365_config`).
+  *Due accortezze imparate sul campo*: (a) Graph consente di combinare solo
+  `driveItem`/`listItem` — `message` e `chatMessage` vanno interrogati in
+  richieste SEPARATE, altrimenti risponde `HTTP 400`: il connettore fa **una
+  chiamata per fonte**, e una fonte in errore non azzera le altre (il
+  fallimento viene dichiarato nel contesto, con il messaggio vero di Graph).
+  (b) La ricerca su `chatMessage` indicizza il **testo** dei messaggi, non il
+  mittente: "cosa mi ha scritto Leonardo" non trova nulla. Per le domande di
+  recency il connettore completa con le **chat recenti** — una sola chiamata a
+  `/me/chats?$expand=lastMessagePreview` (nessuna enumerazione dei messaggi),
+  ordinate dal piu' recente, messaggi di sistema esclusi.
   *Prerequisito tenant*: permessi delegati `Sites.Read.All`, `Mail.Read`,
   `Chat.Read`, `Files.Read.All`, `User.Read` con **consenso amministratore**
   sulla app registration; poi ogni utente collega il proprio account con il
