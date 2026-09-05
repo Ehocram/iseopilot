@@ -6,6 +6,7 @@ Ricerca (sola lettura) nei Data Entity di D365 F&O tramite OData,
 con autenticazione Microsoft OAuth2 Device Code Flow (come OneDrive).
 """
 import json
+import os
 import re
 import threading
 import time
@@ -14,6 +15,13 @@ from urllib.parse import quote
 from pathlib import Path
 
 TOKEN_FILE = Path.home() / ".chat_assistant_dyn_token.json"
+
+# Relazioni dedotte dai nomi e confermate misurando il join sul dato reale
+# (catalogo v3.0). Sono subordinate a quelle dichiarate nei metadati: entrano
+# in gioco solo dove i metadati non dichiarano alcun arco.
+# Per disattivarle: DYN_USE_INFERRED_RELATIONS=0
+USE_INFERRED_RELATIONS = os.environ.get("DYN_USE_INFERRED_RELATIONS", "1") != "0"
+INFERRED_MIN_RATE = int(os.environ.get("DYN_INFERRED_MIN_RATE", "80"))
 # Path del catalogo entità e degli schema .md. Costanti di modulo così la
 # web app può reindirizzarli sotto il volume dati (come TOKEN_FILE).
 CATALOG_FILE = Path.home() / ".chat_assistant_dyn_catalog.json"
@@ -1382,6 +1390,26 @@ class DynamicsSearch:
         ent = catalog.get(entity) or {}
         return ent.get("rel", []) or []
 
+    def _inferred_relations_of(self, entity: str, catalog: dict = None) -> list:
+        """Relazioni NON dichiarate nei metadati, dedotte dal confronto fra nomi
+        campo e chiavi altrui e poi CONFERMATE misurando il join sul dato reale
+        (catalogo v3.0, campo 'rel_inferite').
+
+        In F&O moltissimi legami esistono solo come convenzione di naming: non
+        c'è navigation property e non c'è foreign key nel database. Ignorarli
+        lascia isole scollegate; usarli senza prove sarebbe inventare. Qui si
+        usano solo quelli il cui tasso di join misurato supera la soglia.
+
+        Restano comunque subordinati: non sostituiscono mai un arco dichiarato.
+        Vuota se il catalogo è precedente alla v3.0.
+        """
+        if not USE_INFERRED_RELATIONS:
+            return []
+        catalog = catalog if catalog is not None else self.load_catalog()
+        ent = catalog.get(entity) or {}
+        return [r for r in (ent.get("rel_inferite") or [])
+                if (r.get("tasso") or 0) >= INFERRED_MIN_RATE]
+
     def _find_relation(self, ent_a: str, ent_b: str, catalog: dict = None) -> dict:
         """Cerca una relazione DIRETTA tra due entità (in entrambe le direzioni).
         Ritorna {nav, target, pairs, direction} oppure {} se non esiste un arco
@@ -1395,6 +1423,14 @@ class DynamicsSearch:
         for rel in self._relations_of(ent_b, catalog):
             if rel.get("target") == ent_a:
                 return {**rel, "direction": "b_to_a"}
+        # Nessun arco dichiarato: si ricade sulle relazioni dedotte e verificate.
+        # L'ordine conta — i metadati hanno sempre la precedenza.
+        for rel in self._inferred_relations_of(ent_a, catalog):
+            if rel.get("target") == ent_b:
+                return {**rel, "direction": "a_to_b", "inferita": True}
+        for rel in self._inferred_relations_of(ent_b, catalog):
+            if rel.get("target") == ent_a:
+                return {**rel, "direction": "b_to_a", "inferita": True}
         return {}
 
     def _relations_summary(self, entities: list, catalog: dict = None) -> str:
@@ -1419,6 +1455,25 @@ class DynamicsSearch:
                         righe.append(f"{e} ⋈ {tgt} (via {rel['nav']}): {coppie}")
                     else:
                         righe.append(f"{e} ⋈ {tgt} (via {rel['nav']}, chiave non dichiarata)")
+        # Archi dedotti e confermati sul dato: elencati DOPO i dichiarati e
+        # marcati, così il modello sa che sono deduzioni misurate e non
+        # navigation property. Senza questo elenco non verrebbero mai proposti,
+        # e la ricaduta in _find_relation resterebbe lettera morta.
+        for e in entities:
+            for rel in self._inferred_relations_of(e, catalog):
+                tgt = rel.get("target")
+                if tgt not in cand or tgt == e:
+                    continue
+                key = tuple(sorted([e, tgt]) + [rel.get("nav", "")])
+                if key in visti:
+                    continue
+                visti.add(key)
+                pairs = rel.get("pairs") or []
+                if not pairs:
+                    continue
+                coppie = ", ".join(f"{e}.{lo}={tgt}.{re_}" for lo, re_ in pairs)
+                righe.append(f"{e} ⋈ {tgt} ({coppie}) [dedotto, join verificato "
+                             f"al {rel.get('tasso')}% sul dato reale]")
         return "\n".join(righe)
 
     def _semantic_candidates(self, query: str, full_catalog: dict, top_k: int = 15) -> list:
