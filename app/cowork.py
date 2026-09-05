@@ -88,6 +88,18 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         note_utente: str = "") -> Iterator[str]:
     """Esegue l'attività e produce eventi SSE (status/delta/sources/done)."""
     anon = Anonymizer()  # UNA mappa per l'intera attività: segnaposto coerenti tra i passi
+    # L'interruttore Admin "Anonimizza i dati tecnici" era rispettato solo da
+    # orchestrator.py: qui l'anonimizzazione veniva applicata comunque, quindi
+    # spegnerla dal pannello non disattivava questo percorso.
+    do_anon = bool(settings.get("claude_anonymize", True))
+
+    def _mascherato(testo: str) -> str:
+        """Maschera solo se l'amministratore ha lasciato attiva l'opzione.
+        Con l'opzione spenta anon.restore() resta un'operazione a vuoto, perché
+        la mappa dei segnaposto è vuota."""
+        if not do_anon:
+            return testo
+        return anon.anonymize_names(anon.anonymize(testo), anon_names, use_nlp=False)
     nomi = [d.get("name", "") for d in knowledge.kb_list(dept)]
     if not nomi:
         yield _sse({"type": "error", "text":
@@ -131,8 +143,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
                            "contenuto già raccolto.]")
         contesto = "\n\n".join(memoria)[-MEMORIA_MAX_CHARS:]
         try:
-            contesto_anon = anon.anonymize_names(anon.anonymize(contesto),
-                                                 anon_names, use_nlp=False)
+            contesto_anon = _mascherato(contesto)
             raw = complete(protocollo, contesto_anon, settings, max_tokens=2500)
             raw = anon.restore(raw)
         except Exception as e:
@@ -222,8 +233,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
                         "lingua chiesta esplicitamente nel compito o nella "
                         "conversazione: in quel caso prevale quella. " +
                         docgen._SCHEMAS["docx"])
-            contesto_anon = anon.anonymize_names(anon.anonymize(contesto),
-                                                 anon_names, use_nlp=False)
+            contesto_anon = _mascherato(contesto)
             raw = complete(sys_spec, contesto_anon, settings, max_tokens=3500)
             spec = docgen._parse_json(anon.restore(raw))
             path, fname = docgen.gen_docx(spec, template_path=tpl_docx)
@@ -244,8 +254,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         contesto += ("\n\n[LIMITE PASSI RAGGIUNTO: rispondi ORA all'utente con la "
                      "migliore sintesi possibile di quanto raccolto, dichiarando "
                      "eventuali parti mancanti. Testo semplice, non JSON.]")
-        contesto_anon = anon.anonymize_names(anon.anonymize(contesto),
-                                             anon_names, use_nlp=False)
+        contesto_anon = _mascherato(contesto)
         finale = anon.restore(complete(protocollo, contesto_anon, settings,
                                        max_tokens=2500))
     except Exception as e:
