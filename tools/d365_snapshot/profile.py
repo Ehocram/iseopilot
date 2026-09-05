@@ -264,15 +264,42 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
         key, e, r, tgt, src_f, dst_f = item
         try:
             t_src = tipo_campo(e, src_f)
-            # "ne ''" vale solo per le stringhe: su un numerico e' errore di tipo
-            base_f = f"{src_f} ne ''" if t_src not in NUMERICI else f"{src_f} ne null"
+            filtro_soc = ""
             if company and is_company_scoped(e):
-                base_f += f" and dataAreaId eq '{str(company).replace(chr(39), chr(39)*2)}'"
-            q = build_query({"$top": probe, "$select": src_f, "$filter": base_f,
-                             "cross-company": "true"})
-            rows = cli.get(f"/data/{e['entity_set']}?{q}", timeout=60, retries=1)
-            vals = [x.get(src_f) for x in (rows.get("value") or []) if x.get(src_f)]
-            vals = list(dict.fromkeys(vals))[:probe]
+                filtro_soc = f"dataAreaId eq '{str(company).replace(chr(39), chr(39)*2)}'"
+
+            def campiona(con_filtro: bool, quante: int, timeout: int):
+                """Preleva valori dalla colonna di partenza."""
+                f = []
+                if con_filtro:
+                    f.append(f"{src_f} ne ''" if t_src not in NUMERICI
+                             else f"{src_f} ne null")
+                if filtro_soc:
+                    f.append(filtro_soc)
+                q = build_query({"$top": quante, "$select": src_f,
+                                 "$filter": " and ".join(f), "cross-company": "true"})
+                r = cli.get(f"/data/{e['entity_set']}?{q}", timeout=timeout, retries=1)
+                v = [x.get(src_f) for x in (r.get("value") or []) if x.get(src_f)]
+                return list(dict.fromkeys(v))[:probe]
+
+            # Su tabelle da decine di milioni di righe "Campo ne ''" impone una
+            # scansione e la richiesta scade. Prima si prendono le prime righe
+            # senza filtro scartando i vuoti in Python; solo se non basta si
+            # ricorre al filtro, che e' la via lenta.
+            # Il campione senza filtro costa 0,3 s anche su 28 milioni di righe:
+            # conviene prenderlo largo.
+            largo = max(probe * 40, 200)
+            vals = campiona(False, largo, 60)
+            if not vals:
+                righe = counts.get(name) or 0
+                if righe > 1_000_000:
+                    # La via col filtro imporrebbe una scansione: su questa mole
+                    # scade sempre. Meglio dichiarare cio' che si e' visto.
+                    return key, {"esito": f"colonna vuota nelle prime {largo} righe "
+                                          f"(tabella da {righe:,} righe, ".replace(",", ".")
+                                          + "scansione non tentata)",
+                                 "tipo": r["kind"], "definitivo": True}
+                vals = campiona(True, probe, 120)
             if not vals:
                 # non e' un difetto della relazione: la colonna di aggancio
                 # esiste ma non e' mai valorizzata
