@@ -1,0 +1,14 @@
+# Ambiente di sviluppo locale (mai nel repo)
+.venv/
+__pycache__/
+*.py[cod]
+
+# Dati di test generati dalla suite
+data_test/
+data_test*/
+
+# Dati applicativi e segreti: NON devono mai finire committati
+.env
+data/
+*.sqlite
+*.db
