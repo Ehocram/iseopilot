@@ -2097,14 +2097,21 @@ class DynamicsSearch:
                     "ci sono record corrispondenti.")
         return ""
 
-    def _format_records_list(self, records: list) -> str:
+    def _format_records_list(self, records: list, preferiti: list = None) -> str:
         """Formatta i record per una richiesta di lista: una riga per record,
-        solo i campi non-null e non-interni, primi 8 campi."""
+        solo i campi non-null e non-interni.
+
+        I campi esplicitamente richiesti vengono per primi: prendere i primi N
+        nell'ordine del payload significa perdere proprio quelli su cui verte
+        la domanda, se sono lontani nello schema dell'entità."""
+        pref = [c for c in (preferiti or [])]
         lines = []
         for rec in records:
             fields = {k: v for k, v in rec.items()
                       if not k.startswith("@") and v not in (None, "", [])}
-            shown = list(fields.items())[:8]
+            ordinati = ([(k, fields[k]) for k in pref if k in fields]
+                        + [(k, v) for k, v in fields.items() if k not in pref])
+            shown = ordinati[:12]
             row = "; ".join(f"{k}={v}" for k, v in shown)
             lines.append(f"  - {row}")
         return "\n".join(lines)
@@ -3222,7 +3229,7 @@ class DynamicsSearch:
     SAMPLE_ROWS = 3          # righe di campione restituite all'AI per osservazione
 
     def _exec_query(self, entity: str, filtro: str, expand: str, token: str,
-                    catalog: dict, top: int = None) -> dict:
+                    catalog: dict, top: int = None, campi: list = None) -> dict:
         """Esegue UNA lettura su una entità, con eventuale $filter e $expand
         (server-side join lungo una navigation property REALE). Valida i campi e
         applica read-only. Ritorna {ok, status, rows, count, url}.
@@ -3236,6 +3243,13 @@ class DynamicsSearch:
             _dbg(f"[READ-ONLY] _exec_query filtro scartato: {filtro[:80]}")
             filtro = ""
         params = [f"$top={top}"]
+        # $select: i campi chiesti dall'AI vanno onorati. Senza, la risposta
+        # arriva con tutti i campi e il rendering ne mostra solo i primi: un
+        # campo richiesto ma lontano nell'ordine sparisce, e chi legge conclude
+        # che il dato non esista.
+        sel = self._valida_campi(entity, campi, catalog)
+        if sel:
+            params.append("$select=" + quote(",".join(sel), safe=","))
         if filtro:
             params.insert(0, f"$filter={quote(filtro)}")
         if expand:
@@ -3250,9 +3264,10 @@ class DynamicsSearch:
             params.append("cross-company=true")
         url = self._data_url(f"/{entity}?" + "&".join(params))
         try:
+            _dbg(f"_exec_query: {url[:400]}")
             r = self._dyn_get(url, token, timeout=30)
-            if r.status_code == 400 and (filtro or expand):
-                # ritenta senza filtro/expand per degradare invece di fallire
+            if r.status_code == 400 and (filtro or expand or sel):
+                # ritenta senza filtro/expand/select per degradare invece di fallire
                 r = self._dyn_get(self._data_url(f"/{entity}?$top={top}"
                                                  + ("&cross-company=true" if cross_company else "")),
                                   token, timeout=30)
@@ -3262,6 +3277,22 @@ class DynamicsSearch:
             return {"ok": True, "status": 200, "rows": rows, "count": len(rows), "url": url}
         except Exception as e:
             return {"ok": False, "status": 0, "rows": [], "count": 0, "errore": str(e)}
+
+    @staticmethod
+    def _valida_campi(entity: str, campi, catalog: dict) -> list:
+        """Tiene solo i campi che esistono davvero sull'entità: un nome
+        inventato in $select fa fallire la richiesta con HTTP 400."""
+        if not campi:
+            return []
+        ent = catalog.get(entity) or {}
+        noti = set(ent.get("string") or []) | set(ent.get("date") or []) \
+            | set(ent.get("num") or []) | set((ent.get("enum") or {}).keys())
+        if not noti:
+            return []
+        fuori = [c for c in campi if c not in noti]
+        if fuori:
+            _dbg(f"_valida_campi: scartati (inesistenti su {entity}): {fuori[:6]}")
+        return [c for c in campi if c in noti][:40]
 
     def _compact_obs(self, rows: list, max_rows: int = None) -> list:
         """Riduce le righe a un campione compatto (poche righe, solo campi non-@)
@@ -3368,7 +3399,9 @@ class DynamicsSearch:
                     continue
                 filtro = (act.get("filtro") or "").strip()
                 expand = (act.get("expand") or "").strip()
-                res = self._exec_query(ent, filtro, expand, token, full_catalog)
+                campi_richiesti = act.get("campi") or []
+                res = self._exec_query(ent, filtro, expand, token, full_catalog,
+                                       campi=campi_richiesti)
                 if not res["ok"]:
                     history.append(f"\n[OSSERVAZIONE] Query finale fallita (HTTP {res['status']}). Riprova diversamente.")
                     continue
@@ -3383,7 +3416,7 @@ class DynamicsSearch:
                           f"⚠️ Dati prodotti da una query dinamica multi-step; verifica prima di usarli "
                           f"per decisioni operative.")
                 html_path = self._write_generic_html(f"Ricerca dinamica v2.0 — {ent}", records, spieg)
-                body = header + "\n" + self._format_records_list(records)
+                body = header + "\n" + self._format_records_list(records, campi_richiesti)
                 if html_path:
                     body = f"[REPORT_HTML: {html_path}]\n" + body
                 return body
@@ -3396,7 +3429,8 @@ class DynamicsSearch:
                 if "{codici}" in filtro and resolved_codes:
                     vals = list(resolved_codes.values())[0]
                     ors = " or ".join(f"{c}" for c in vals) if vals else ""
-                res = self._exec_query(ent, filtro, expand, token, full_catalog)
+                res = self._exec_query(ent, filtro, expand, token, full_catalog,
+                                       campi=act.get("campi") or [])
                 obs = (f"\n[OSSERVAZIONE passo {step+1}] query {ent}: "
                        f"{'OK' if res['ok'] else 'FALLITA HTTP '+str(res['status'])}, "
                        f"{res['count']} righe. Campione: {json.dumps(self._compact_obs(res['rows']), ensure_ascii=False)[:600]}")
@@ -3832,7 +3866,7 @@ class DynamicsSearch:
                       f"{len(records)} record. {spiegazione}\n"
                       f"NOTA: questa risposta NON proviene da un modulo dedicato ma da una query "
                       f"dinamica; verifica i dati prima di usarli per decisioni operative.")
-            body = header + "\n" + self._format_records_list(records)
+            body = header + "\n" + self._format_records_list(records, campi)
             html_path = self._write_generic_html(f"Ricerca dinamica — {ent}", records, spiegazione)
             if html_path:
                 body = f"[REPORT_HTML: {html_path}]\n" + body
