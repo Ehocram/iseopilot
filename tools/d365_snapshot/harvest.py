@@ -114,14 +114,37 @@ def public_entity_details(cli, index: list, raw: Path,
     names = [e["Name"] for e in index if e.get("Name")]
     if only:
         names = [n for n in names if n in only]
-    todo = [n for n in names if n not in done]
-    if not todo:
-        print(f"→ Dettagli entita': {len(done)} gia' presenti, nulla da fare")
-        return done
 
-    print(f"→ Dettagli entita': {len(todo)} da scaricare ({len(done)} in cache)")
+    # /metadata/PublicEntities restituisce gia' l'entita' COMPLETA nella
+    # risposta di lista: Properties, NavigationProperties, Actions. Rifare una
+    # GET per entita' significherebbe 4.707 chiamate identiche a dati che
+    # abbiamo gia'. Si scarica solo cio' che manca davvero.
     lock = threading.Lock()
     fh = out.open("a", encoding="utf-8")
+    seeded = 0
+    for e in index:
+        n = e.get("Name")
+        if not n or n in done or (only and n not in only):
+            continue
+        if e.get("Properties"):
+            d = dict(e)
+            d.pop("@odata.context", None)
+            fh.write(json.dumps(d, ensure_ascii=False) + "\n")
+            done[n] = d
+            seeded += 1
+    fh.flush()
+    if seeded:
+        print(f"→ Dettagli entita': {seeded} gia' completi nella risposta di lista "
+              f"(nessuna chiamata aggiuntiva)")
+
+    todo = [n for n in names if n not in done]
+    if not todo:
+        fh.close()
+        _write(out.parent / "entities_failed.json", [])
+        print(f"  Totale con dettaglio: {len(done)} · nessuna mancante")
+        return done
+
+    print(f"→ Dettagli entita' mancanti: {len(todo)} da scaricare")
 
     def fetch(name: str):
         esc = name.replace("'", "''")
@@ -183,7 +206,7 @@ def detect_language(cli, sample_label: str) -> str:
         try:
             r = cli.get(f"/metadata/Labels(Id='{sample_label}',Language='{lang}')",
                         timeout=30, retries=1)
-            val = r.get("value") if isinstance(r, dict) else r
+            val = r.get("Value") if isinstance(r, dict) else r
             if val and not str(val).lower().startswith("label '"):
                 print(f"  lingua etichette: {lang}")
                 return lang
@@ -202,14 +225,18 @@ def labels(cli, label_ids: set[str], raw: Path, lang: str = "it",
     """
     p = raw / f"labels_{lang}.json"
     cache: dict = _read(p, {}) or {}
-    todo = sorted(x for x in label_ids if x and x not in cache)
+    todo = sorted(x for x in label_ids if x and not cache.get(x))
     if limit:
         todo = todo[:limit]
     if not todo:
         print(f"→ Etichette: {len(cache)} in cache, nulla da risolvere")
         return cache
+    gia_tentate = sum(1 for x in todo if x in cache)
+    if gia_tentate:
+        print(f"  ({gia_tentate} gia' tentate senza esito: si ritenta)")
 
-    print(f"→ Etichette [{lang}]: {len(todo)} da risolvere ({len(cache)} in cache)")
+    print(f"→ Etichette [{lang}]: {len(todo)} da risolvere ({len(cache)} in cache, "
+          f"concorrenza {config.LABEL_CONCURRENCY})")
     lock = threading.Lock()
     t0 = time.time()
 
@@ -218,7 +245,7 @@ def labels(cli, label_ids: set[str], raw: Path, lang: str = "it",
         try:
             r = cli.get(f"/metadata/Labels(Id='{esc}',Language='{lang}')",
                         timeout=30, retries=1)
-            v = r.get("value") if isinstance(r, dict) else r
+            v = r.get("Value") if isinstance(r, dict) else r
             if isinstance(v, str) and v and not v.lower().startswith("label '"):
                 return lid, v
         except Exception:
@@ -226,7 +253,7 @@ def labels(cli, label_ids: set[str], raw: Path, lang: str = "it",
         return lid, None
 
     try:
-        with ThreadPoolExecutor(max_workers=config.HARVEST_CONCURRENCY) as ex:
+        with ThreadPoolExecutor(max_workers=config.LABEL_CONCURRENCY) as ex:
             futs = [ex.submit(one, l) for l in todo]
             for i, f in enumerate(as_completed(futs), 1):
                 lid, val = f.result()

@@ -35,6 +35,9 @@ OUT_DIR = Path(
 # Prudenza verso la PRODUZIONE: poche richieste in volo, backoff generoso.
 HARVEST_CONCURRENCY = int(os.environ.get("D365_HARVEST_CONCURRENCY", "6"))
 PROFILE_CONCURRENCY = int(os.environ.get("D365_PROFILE_CONCURRENCY", "3"))
+# Le etichette sono GET minuscole sul servizio metadati (nessun accesso ai dati
+# applicativi): si puo' spingere di piu' senza pesare sul gestionale.
+LABEL_CONCURRENCY = int(os.environ.get("D365_LABEL_CONCURRENCY", "12"))
 HTTP_TIMEOUT = int(os.environ.get("D365_HTTP_TIMEOUT", "90"))
 MAX_RETRIES = 4
 

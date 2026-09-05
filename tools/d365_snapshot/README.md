@@ -55,10 +55,16 @@ Oppure in un colpo solo:
 python3 -m d365_snapshot all --verify-relations
 ```
 
-Tempi indicativi sull'ambiente ISEO: metadati strutturali 20-40 min, etichette
-45-90 min (una chiamata per etichetta, è il collo di bottiglia dell'API, ma la
-cache è definitiva), conteggi 1-2 h, profilo campi e verifica join 1-3 h.
-Conviene lanciarlo fuori orario.
+Tempi sull'ambiente ISEO — le prime due misurate, le altre stimate:
+
+| Fase | Durata | Note |
+|---|---|---|
+| Metadati strutturali | ~1 min | `/metadata/PublicEntities` restituisce già l'entità completa nella risposta di lista: 4.707 entità, 86.597 campi, 7.646 relazioni in una sola paginazione. Nessuna GET per entità. |
+| Etichette italiane | ~40-60 min | 29.611 etichette distinte, una chiamata ciascuna: è l'unico collo di bottiglia, l'API non accetta filtri. Cache definitiva. |
+| Conteggi righe | 1-2 h | tocca il piano dati, tenuto a bassa concorrenza |
+| Profilo campi + verifica join | 1-3 h | |
+
+Conviene lanciare le ultime due fasi fuori orario.
 
 Ogni fase è **ripartibile**: la cache è su disco, un'interruzione non fa perdere
 lavoro e basta rilanciare lo stesso comando.
