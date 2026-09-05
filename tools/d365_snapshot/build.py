@@ -101,6 +101,13 @@ def write_sqlite(model, counts, prof, checks, path: Path, meta: dict) -> None:
     db.close()
 
 
+def _safe_filename(name: str) -> str:
+    """Identica a dynamics_search._safe_entity_filename: i due lati devono
+    concordare sul nome del file, altrimenti la scheda non viene mai trovata."""
+    keep = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(name))
+    return (keep[:120] or "entita") + ".md"
+
+
 def _scoped(e) -> bool:
     return any((f.get("name") or "").lower() == "dataareaid" for f in e.get("fields") or [])
 
@@ -147,8 +154,11 @@ def write_entity_cards(model, counts, prof, checks, out: Path, only_populated=Fa
                           f"`{pref}`, che è l'entità di riferimento. Preferire quella."]
         L += ["", f"**Chiave**: {', '.join(f'`{k}`' for k in e['keys']) or 'nessuna'}", ""]
 
-        L += ["## Campi", "",
-              "| Campo | Etichetta | Tipo | Chiave | Obbl. | Riemp. | Valori tipici |",
+        # L'ordine delle prime tre colonne e il marcatore chiave non sono
+        # estetica: _entity_schema_extra() estrae le chiavi con una regex che
+        # pretende "| Campo | Tipo | 🔑 |".
+        L += ["**Campi**", "",
+              "| Campo | Tipo | Chiave | Etichetta | Obbl. | Riemp. | Valori tipici |",
               "|---|---|---|---|---|---|---|"]
         flds = e["fields"]
         if pfields:
@@ -161,8 +171,8 @@ def write_entity_cards(model, counts, prof, checks, out: Path, only_populated=Fa
             vals = ", ".join(str(v)[:22] for v in (i.get("valori") or [])[:5])
             if i.get("min"):
                 vals = f"{i['min']} → {i['max']}"
-            L.append(f"| `{f['name']}` | {f['label']} | {t} | "
-                     f"{'SI' if f['is_key'] else ''} | {'SI' if f['is_mandatory'] else ''} | "
+            L.append(f"| {f['name']} | {t} | {'\U0001F511' if f['is_key'] else ''} | "
+                     f"{f['label']} | {'SI' if f['is_mandatory'] else ''} | "
                      f"{fill} | {vals} |")
 
         rels = e["relations"] + e["inferred"]
@@ -183,17 +193,21 @@ def write_entity_cards(model, counts, prof, checks, out: Path, only_populated=Fa
         enums_used = {f["enum"] for f in e["fields"] if f.get("enum")}
         shown = [x for x in sorted(enums_used) if x in model["enums"]][:12]
         if shown:
-            L += ["", "## Enumerazioni usate", ""]
+            L += ["", "**Valori enum**", ""]
             for en in shown:
+                campi = [f["name"] for f in e["fields"] if f.get("enum") == en][:4]
                 mm = model["enums"][en]["members"][:20]
-                vals = " · ".join(f"`{m['name']}`={m['label']}" for m in mm)
-                L.append(f"- **{en}** ({model['enums'][en]['label']}): {vals}")
+                vals = ", ".join(f"{m['name']}={m['label']}" for m in mm)
+                L.append(f"- `{en}` (campo/i: {', '.join(campi)}): {vals}")
 
         L += ["", "## Esempio di query OData", "", "```",
               f"GET /data/{e['entity_set']}?$top=10"
               + (f"&$select={','.join(f['name'] for f in flds[:6])}" if flds else "")
               + "&cross-company=true", "```", ""]
-        (out / f"{name}.md").write_text("\n".join(L), encoding="utf-8")
+        # Il loader cerca il file col nome dell'ENTITY SET, non del tipo:
+        # _entity_schema_extra() apre <entity_set>.md. Un file chiamato col nome
+        # tecnico non verrebbe mai letto.
+        (out / _safe_filename(e["entity_set"])).write_text("\n".join(L), encoding="utf-8")
         n += 1
     return n
 
