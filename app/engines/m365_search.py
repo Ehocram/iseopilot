@@ -307,32 +307,60 @@ class M365Search:
 
     # ── POSTA ───────────────────────────────────────────────
     def _mail(self, tok, query, persona, recency, n):
+        """Posta mirata per mittente o per data.
+
+        Exchange NON accetta filtro su una proprietà annidata (il mittente) e
+        ordinamento per data nella stessa richiesta: risponde 400 «The
+        restriction or sort order is too complex». Si tenta con l'ordinamento e,
+        su quell'errore, si ripiega su filtro senza ordinamento con una finestra
+        più ampia, riordinando poi lato nostro. Nessun silenzio: l'esito è lo
+        stesso, la strada cambia."""
         import requests
         h = {"Authorization": "Bearer " + tok}
         sel = "id,subject,receivedDateTime,from,bodyPreview"
+        top = max(1, min(int(n or 5), 15))
         if persona:
             indirizzo = persona["mail"].replace("'", "''")
-            url = (f"{GRAPH}/me/messages?$filter=from/emailAddress/address eq "
-                   f"'{indirizzo}'&$orderby=receivedDateTime desc"
-                   f"&$top={max(1, min(int(n or 5), 15))}&$select={sel}")
+            filtro = f"from/emailAddress/address eq '{indirizzo}'"
+            tentativi = [
+                f"{GRAPH}/me/messages?$filter={filtro}"
+                f"&$orderby=receivedDateTime desc&$top={top}&$select={sel}",
+                # ripiego: niente $orderby, finestra più ampia, riordino locale
+                f"{GRAPH}/me/messages?$filter={filtro}&$top={max(top, 50)}&$select={sel}",
+            ]
         elif recency:
-            url = (f"{GRAPH}/me/messages?$orderby=receivedDateTime desc"
-                   f"&$top={max(1, min(int(n or 5), 15))}&$select={sel}")
+            tentativi = [f"{GRAPH}/me/messages?$orderby=receivedDateTime desc"
+                         f"&$top={top}&$select={sel}"]
         else:
             return self._search_fonte("mail", query, tok, n)
-        try:
-            r = requests.get(url, headers=h, timeout=45)
-        except Exception as e:
-            return [], [], f"errore di rete ({str(e)[:60]})"
-        if r.status_code >= 400:
+
+        ultimo_err = ""
+        dati = None
+        for i, url in enumerate(tentativi):
+            try:
+                r = requests.get(url, headers=h, timeout=45)
+            except Exception as e:
+                return [], [], f"errore di rete ({str(e)[:60]})"
+            if r.status_code < 400:
+                dati = (r.json() or {}).get("value", [])
+                if i > 0:
+                    _log("[mail-mirato] ordinamento non supportato con il filtro: "
+                         "ripiego riuscito, riordino locale")
+                break
             det = _dettaglio(r)
-            _log(f"[mail-mirato] HTTP {r.status_code}: {det}")
+            ultimo_err = f"HTTP {r.status_code} ({det or 'nessun dettaglio'})"
+            _log(f"[mail-mirato] {ultimo_err}")
             if r.status_code in (401, 403):
                 return [], [], ("permessi insufficienti — serve Mail.Read con consenso "
                                 "amministratore, poi ricollega l'account")
-            return [], [], f"HTTP {r.status_code} ({det or 'nessun dettaglio'})"
+            if r.status_code != 400:
+                return [], [], ultimo_err
+        if dati is None:
+            return [], [], ultimo_err
+
+        dati.sort(key=lambda m: m.get("receivedDateTime") or "", reverse=True)
         blocchi, rifs = [], []
-        for m in (r.json() or {}).get("value", []):
+        for m in dati[:top]:
             ea = ((m.get("from") or {}).get("emailAddress") or {})
             quando = _data_breve(m.get("receivedDateTime") or "")
             ogg = m.get("subject") or "(senza oggetto)"

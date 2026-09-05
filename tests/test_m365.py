@@ -380,6 +380,41 @@ def test_mail_recupero_mirato_per_mittente(monkeypatch):
     assert rif and rif[0]["kind"] == "mail" and rif[0]["id"] == "E1"
 
 
+def test_mail_ripiego_su_ordinamento_troppo_complesso(monkeypatch):
+    """Exchange rifiuta filtro sul mittente + ordinamento per data insieme
+    («The restriction or sort order is too complex»). Il connettore ripiega su
+    filtro senza ordinamento e riordina lato proprio: stesso risultato."""
+    import requests
+    urls = []
+    fuori_ordine = {"value": [
+        {"id": "E_OLD", "subject": "Vecchia", "receivedDateTime": "2025-05-16T09:00:00Z",
+         "from": {"emailAddress": {"name": "Leonardo Salcuni", "address": "leonardo.salcuni@iseo.com"}},
+         "bodyPreview": "vecchio messaggio"},
+        {"id": "E_NEW", "subject": "Recente", "receivedDateTime": "2026-09-02T09:00:00Z",
+         "from": {"emailAddress": {"name": "Leonardo Salcuni", "address": "leonardo.salcuni@iseo.com"}},
+         "bodyPreview": "messaggio recente"},
+    ]}
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        if "/me/people" in url:
+            return _Resp(200, _PEOPLE)
+        urls.append(url)
+        if "$orderby" in url:
+            return _Resp(400, {"error": {"message":
+                "The restriction or sort order is too complex for this operation."}})
+        return _Resp(200, fuori_ordine)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, rif = m.search("ultima mail di leonardo salcuni", ["mail"])
+    assert len(urls) == 2                                   # tentativo + ripiego
+    assert "$orderby" in urls[0] and "$orderby" not in urls[1]
+    assert "$filter" in urls[1]
+    assert testo.index("Recente") < testo.index("Vecchia")  # riordino locale
+    assert rif and rif[0]["id"] == "E_NEW"
+
+
 def test_mail_recency_senza_persona(monkeypatch):
     import requests
     urls = []

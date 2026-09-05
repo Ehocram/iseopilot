@@ -334,6 +334,10 @@ python tests/test_smoke.py
   partecipante e filtrate sui suoi messaggi, SharePoint con KQL `author:`;
   **recency** — posta e documenti recenti per data, chat con l'anteprima
   dell'ultimo messaggio; **full-text** — la ricerca classica negli altri casi.
+  Sulla posta: Exchange non accetta filtro sul mittente e ordinamento per data
+  nella stessa richiesta (400 «restriction or sort order is too complex»), quindi
+  il connettore **ripiega automaticamente** su filtro senza ordinamento con
+  finestra più ampia e riordina lato proprio.
   Sulle chat Teams: elenco **ordinato per data dell'ultimo messaggio e
   paginato** (fino a 200 conversazioni) — senza ordinamento Graph non
   garantisce che le prime siano le più recenti, e una conversazione poteva
