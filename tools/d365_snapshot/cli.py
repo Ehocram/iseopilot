@@ -161,7 +161,7 @@ def cmd_build(args):
     n_md = build.write_entity_cards(model, counts, prof, checks, out / "schema",
                                     only_populated=args.only_populated,
                                     company=args.company)
-    n_erd = build.write_mermaid(model, counts, out / "erd")
+    n_erd = build.write_mermaid(model, counts, out / "erd", prof=prof)
     build.write_iseopilot_catalog(model, counts, prof, out / "catalog_iseopilot.json",
                                   checks=checks, schema_dir=str(out / "schema"), n_md=n_md)
     build.write_report(model, counts, prof, checks, st, out / "REPORT.md", meta,

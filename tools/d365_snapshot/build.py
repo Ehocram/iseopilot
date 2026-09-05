@@ -198,14 +198,35 @@ def write_entity_cards(model, counts, prof, checks, out: Path, only_populated=Fa
     return n
 
 
-def write_mermaid(model, counts, out: Path, min_rows=1, max_per_dom=28) -> int:
+def _campi_salienti(e, prof, quanti=8):
+    """Campi che descrivono davvero l'entita': prima le chiavi, poi gli
+    obbligatori, poi i piu' valorizzati sul dato reale. L'ordine di sorgente
+    metteva in vetrina campi marginali."""
+    pf = (prof.get(e["name"]) or {}).get("campi") or {}
+
+    def peso(f):
+        return (0 if f["is_key"] else (1 if f["is_mandatory"] else 2),
+                -(pf.get(f["name"], {}).get("riempimento_pct") or 0),
+                len(f["name"]))
+
+    return sorted(e["fields"], key=peso)[:quanti]
+
+
+def write_mermaid(model, counts, out: Path, min_rows=1, max_per_dom=22,
+                  prof: dict | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     for f in out.glob("*.mmd"):
         f.unlink()
+    prof = prof or {}
+    # Le varianti equivalenti raddoppiano i nodi senza aggiungere informazione:
+    # nel diagramma resta solo l'entita' di riferimento della famiglia.
+    def tenere(e):
+        return e.get("preferita", True) or not e.get("famiglia")
+
     by_dom = defaultdict(list)
     for name, e in model["entities"].items():
         c = counts.get(name) or 0
-        if c >= min_rows:
+        if c >= min_rows and tenere(e):
             by_dom[e["domain"]].append((c, name, e))
     n = 0
     for dom, items in by_dom.items():
@@ -216,7 +237,7 @@ def write_mermaid(model, counts, out: Path, min_rows=1, max_per_dom=28) -> int:
              "erDiagram"]
         for c, name, e in sel:
             L.append(f"    {name} {{")
-            for f in e["fields"][:12]:
+            for f in _campi_salienti(e, prof):
                 t = (f["type"] or "string").replace(" ", "")
                 L.append(f"        {t} {f['name']}{' PK' if f['is_key'] else ''}")
             L.append("    }")
@@ -238,14 +259,16 @@ def write_mermaid(model, counts, out: Path, min_rows=1, max_per_dom=28) -> int:
     # ERD trasversale: i legami veri attraversano i domini (un ordine di acquisto
     # punta a un fornitore e a un articolo), quindi serve una vista unica.
     core = sorted(((counts.get(k) or 0, k, v) for k, v in model["entities"].items()
-                   if (counts.get(k) or 0) >= min_rows), reverse=True)[:45]
+                   if (counts.get(k) or 0) >= min_rows and tenere(v)),
+                  key=lambda x: -x[0])[:40]
     if core:
         names = {x[1] for x in core}
         L = ["%% ERD trasversale — le 45 entita' con piu' righe in produzione",
              "erDiagram"]
         for c, name, e in core:
             L.append(f"    {name} {{")
-            for f in [x for x in e["fields"] if x["is_key"]][:5] or e["fields"][:5]:
+            for f in ([x for x in e["fields"] if x["is_key"]][:5]
+                      or _campi_salienti(e, prof, 5)):
                 L.append(f"        {(f['type'] or 'string').replace(' ', '')} {f['name']}"
                          f"{' PK' if f['is_key'] else ''}")
             L.append("    }")
