@@ -143,10 +143,24 @@ def profile_fields(cli, model: dict, counts: dict, out: Path, sample: int = 200,
     def one(name):
         e = model["entities"][name]
         q = scope_query(e, company, cross_company)
-        rows = cli.get(f"/data/{e['entity_set']}?$top={sample}" + (f"&{q}" if q else ""),
-                       timeout=90, retries=1)
-        rows = rows.get("value", []) if isinstance(rows, dict) else []
+        # Alcune entita' trasportano allegati binari: con 200 righe la richiesta
+        # non rientra nei limiti, con poche si'. Meglio un campione piccolo che
+        # nessun profilo.
+        rows = []
+        ultimo = None
+        for n in (sample, max(sample // 8, 25), 5):
+            try:
+                r = cli.get(f"/data/{e['entity_set']}?$top={n}" + (f"&{q}" if q else ""),
+                            timeout=90, retries=1)
+                rows = r.get("value", []) if isinstance(r, dict) else []
+                break
+            except Exception as ex_:
+                ultimo = ex_
+                continue
         if not rows:
+            if ultimo is not None:
+                return name, {"campione": 0, "campi": {}, "societa_nel_campione": [],
+                              "esito": f"non profilabile ({type(ultimo).__name__})"}
             return name, None
         n = len(rows)
         fields = {}
