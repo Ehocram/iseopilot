@@ -159,13 +159,18 @@ def _infer_relations(entities: dict) -> None:
     chiavi delle altre entita'. In F&O moltissimi legami reali esistono solo
     come convenzione di naming (nessuna FK fisica in SQL), quindi senza questo
     passaggio la mappa resta piena di isole."""
-    key_index: dict[str, list[str]] = defaultdict(list)
+    # Si indicizza per nome minuscolo ma si conserva la grafia REALE della
+    # chiave: OData e' case-sensitive sui nomi di proprieta', e in D365 capita
+    # che la stessa colonna sia InventDimId in un'entita' e inventDimId in
+    # un'altra. Usare la grafia dell'origine su entrambi i lati produce una
+    # query che il servizio rifiuta.
+    key_index: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for name, e in entities.items():
         real_keys = [k for k in e["keys"] if k and k.lower() != "dataareaid"]
         if len(real_keys) == 1:
             k = real_keys[0].lower()
             if k not in config.NOISE_FIELDS and len(k) > 4:
-                key_index[k].append(name)
+                key_index[k].append((name, real_keys[0]))
 
     ftype = {(n, f["name"].lower()): f["type"]
              for n, e in entities.items() for f in e["fields"]}
@@ -185,7 +190,7 @@ def _infer_relations(entities: dict) -> None:
             # troppi candidati = nome poco distintivo, la relazione non e' affidabile
             if len(targets) > 6:
                 continue
-            for t in targets:
+            for t, chiave_reale in targets:
                 if t == name:
                     continue
                 tt = ftype.get((t, fl))
@@ -202,7 +207,7 @@ def _infer_relations(entities: dict) -> None:
                     "name": f"{f['name']}→{t}",
                     "target": t,
                     "cardinality": "Single",
-                    "pairs": [[f["name"], f["name"]]],
+                    "pairs": [[f["name"], chiave_reale]],
                     "kind": "inferita",
                     "confidenza": min(score, 99),
                 })
