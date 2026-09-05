@@ -228,13 +228,29 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
     print(f"→ Verifica relazioni sul dato reale: {len(cand)} da controllare")
     lock = threading.Lock()
 
-    def esc(v):
+    NUMERICI = {"Int32", "Int64", "Decimal", "Real", "Double", "Int"}
+
+    def tipo_campo(entity: dict, campo: str) -> str:
+        for f in entity.get("fields") or []:
+            if f["name"] == campo:
+                return f.get("type") or "String"
+        return "String"
+
+    def esc(v, tipo: str = "String"):
+        """Letterale OData del tipo giusto: un intero fra apici fa fallire la
+        richiesta con un errore di tipo, non con zero risultati."""
+        if tipo in NUMERICI:
+            return str(v)
+        if tipo in ("Guid",):
+            return str(v)
         return "'" + str(v).replace("'", "''") + "'"
 
     def one(item):
         key, e, r, tgt, src_f, dst_f = item
         try:
-            base_f = f"{src_f} ne ''"
+            t_src = tipo_campo(e, src_f)
+            # "ne ''" vale solo per le stringhe: su un numerico e' errore di tipo
+            base_f = f"{src_f} ne ''" if t_src not in NUMERICI else f"{src_f} ne null"
             if company and is_company_scoped(e):
                 base_f += f" and dataAreaId eq '{str(company).replace(chr(39), chr(39)*2)}'"
             q = build_query({"$top": probe, "$select": src_f, "$filter": base_f,
@@ -247,7 +263,8 @@ def verify_relations(cli, model: dict, counts: dict, out: Path,
                 # esiste ma non e' mai valorizzata
                 return key, {"esito": "campo di partenza mai valorizzato",
                              "tipo": r["kind"]}
-            flt = "(" + " or ".join(f"{dst_f} eq {esc(v)}" for v in vals) + ")"
+            t_dst = tipo_campo(tgt, dst_f)
+            flt = "(" + " or ".join(f"{dst_f} eq {esc(v, t_dst)}" for v in vals) + ")"
             if company and is_company_scoped(tgt):
                 flt += f" and dataAreaId eq {esc(company)}"
             q = build_query({"$top": probe * 3, "$select": dst_f, "$filter": flt,
