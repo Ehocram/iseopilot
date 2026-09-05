@@ -266,7 +266,9 @@ def write_mermaid(model, counts, out: Path, min_rows=1, max_per_dom=28) -> int:
     return n
 
 
-def write_iseopilot_catalog(model, counts, prof, path: Path) -> None:
+def write_iseopilot_catalog(model, counts, prof, path: Path,
+                            checks: dict | None = None,
+                            schema_dir: str = "", n_md: int = 0) -> None:
     """Catalogo nel formato atteso da app/engines/dynamics_search.py, arricchito
     con etichette, chiavi, enum e conteggi reali. Retrocompatibile."""
     ent = {}
@@ -275,11 +277,30 @@ def write_iseopilot_catalog(model, counts, prof, path: Path) -> None:
         dates = [f["name"] for f in e["fields"] if f["type"] in ("DateTime", "Date")]
         nums = [f["name"] for f in e["fields"]
                 if f["type"] in ("Int32", "Int64", "Decimal", "Real", "Double")]
-        rel = [{"nav": r["name"], "target": model["entities"].get(r["target"], {})
-                .get("entity_set", r["target"]),
-                "pairs": r["pairs"]} for r in e["relations"] if r["pairs"]]
+        checks = checks or {}
+
+        def _set(n):
+            return model["entities"].get(n, {}).get("entity_set", n)
+
+        def _tasso(r):
+            src = r["pairs"][0][0] if r["pairs"] else None
+            dst = r["pairs"][0][1] if r["pairs"] else None
+            return (checks.get(f"{name}.{src}->{r['target']}.{dst}") or {}).get("tasso")
+
+        # `rel` resta la verita' dichiarata nei metadati: e' cio' su cui
+        # _find_relation decide se un join e' lecito, e non va inquinato con
+        # ipotesi. Le relazioni dedotte dai nomi e confermate sul dato reale
+        # stanno a parte, disponibili ma non attive.
+        rel = [{"nav": r["name"], "target": _set(r["target"]),
+                "pairs": r["pairs"], "tasso": _tasso(r)}
+               for r in e["relations"] if r["pairs"]]
+        rel_inf = [{"nav": r["name"], "target": _set(r["target"]),
+                    "pairs": r["pairs"], "confidenza": r.get("confidenza"),
+                    "tasso": _tasso(r)}
+                   for r in e["inferred"] if r["pairs"] and (_tasso(r) or 0) >= 80]
         ent[e["entity_set"]] = {
             "string": strings, "date": dates, "rel": rel,
+            "rel_inferite": rel_inf,
             # estensioni: ignorate dal codice esistente, utili al modello
             "num": nums,
             "etichetta": e["label"],
@@ -299,8 +320,10 @@ def write_iseopilot_catalog(model, counts, prof, path: Path) -> None:
         "relazioni": sum(len(v["rel"]) for v in ent.values()),
         "generato": datetime.now(timezone.utc).isoformat(),
         "istanza": "isd365-prod",
-        "versione": 2,
-        "schema_md": True,
+        "versione": "3.0",
+        "schema_md": {"cartella": schema_dir, "file": n_md},
+        "relazioni_inferite_verificate": sum(len(v["rel_inferite"]) for v in ent.values()),
+        "famiglie": model.get("famiglie") or [],
         "enum_catalogo": {k: {"etichetta": v["label"],
                               "valori": {m["name"]: m["label"] for m in v["members"]}}
                           for k, v in model["enums"].items()},

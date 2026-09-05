@@ -162,7 +162,8 @@ def cmd_build(args):
                                     only_populated=args.only_populated,
                                     company=args.company)
     n_erd = build.write_mermaid(model, counts, out / "erd")
-    build.write_iseopilot_catalog(model, counts, prof, out / "catalog_iseopilot.json")
+    build.write_iseopilot_catalog(model, counts, prof, out / "catalog_iseopilot.json",
+                                  checks=checks, schema_dir=str(out / "schema"), n_md=n_md)
     build.write_report(model, counts, prof, checks, st, out / "REPORT.md", meta,
                        company=args.company, falliti=falliti)
     (out / "snapshot.json").write_text(
