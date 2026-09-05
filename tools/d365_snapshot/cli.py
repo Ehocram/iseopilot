@@ -24,7 +24,8 @@ def _client(args, interactive=True):
     return D365Client(tp, resource=args.resource)
 
 
-def _load_model(out: Path, raw: Path, cli=None, resolve_labels=False, args=None):
+def _load_model(out: Path, raw: Path, cli=None, resolve_labels=False, args=None,
+                counts: dict | None = None):
     det = {}
     f = raw / "public_entities.jsonl"
     if f.exists():
@@ -42,7 +43,7 @@ def _load_model(out: Path, raw: Path, cli=None, resolve_labels=False, args=None)
     labels = json.loads(lab_f.read_text()) if lab_f.exists() else {}
     edmx_f = raw / "metadata.edmx.xml"
     sets = enrich.parse_edmx_sets(edmx_f.read_text()) if edmx_f.exists() else set()
-    return enrich.build_model(det, de, en, labels, co, sets or None)
+    return enrich.build_model(det, de, en, labels, co, sets or None, counts)
 
 
 # ------------------------------------------------------------------ comandi
@@ -136,14 +137,15 @@ def cmd_profile(args):
 
 def cmd_build(args):
     out, raw = _paths(args)
-    model = _load_model(out, raw, args=args)
-    if not model["entities"]:
-        sys.exit("Nessun metadato in cache: esegui prima 'harvest'.")
+
     def rd(base):
         f = scoped_path(out, base, args.company)
         return json.loads(f.read_text()) if f.exists() else {}
 
     counts, prof, checks = rd("counts"), rd("field_profile"), rd("relation_checks")
+    model = _load_model(out, raw, args=args, counts=counts)
+    if not model["entities"]:
+        sys.exit("Nessun metadato in cache: esegui prima 'harvest'.")
     ff = raw / "entities_failed.json"
     falliti = json.loads(ff.read_text()) if ff.exists() else []
     if args.company and not counts:

@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS entita(
   nome TEXT PRIMARY KEY, entity_set TEXT, etichetta TEXT, dominio TEXT,
   categoria TEXT, sola_lettura INT, odata INT, dmf INT,
   n_campi INT, n_relazioni INT, n_inferite INT,
-  righe INT, popolata INT, societa TEXT, chiavi TEXT);
+  righe INT, popolata INT, societa TEXT, chiavi TEXT,
+  famiglia TEXT, preferita INT, equivalenti TEXT);
 CREATE TABLE IF NOT EXISTS campo(
   entita TEXT, nome TEXT, etichetta TEXT, tipo TEXT, enum TEXT,
   chiave INT, obbligatorio INT, sola_lettura INT,
@@ -40,6 +41,7 @@ CREATE INDEX IF NOT EXISTS ix_rel_org ON relazione(origine);
 CREATE INDEX IF NOT EXISTS ix_rel_dst ON relazione(destinazione);
 CREATE INDEX IF NOT EXISTS ix_ent_dom ON entita(dominio);
 CREATE INDEX IF NOT EXISTS ix_ent_pop ON entita(popolata, righe);
+CREATE INDEX IF NOT EXISTS ix_ent_fam ON entita(famiglia, preferita);
 """
 
 
@@ -66,12 +68,15 @@ def write_sqlite(model, counts, prof, checks, path: Path, meta: dict) -> None:
     for name, e in model["entities"].items():
         cnt = counts.get(name)
         pf = prof.get(name) or {}
-        db.execute("INSERT OR REPLACE INTO entita VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        db.execute("INSERT OR REPLACE INTO entita VALUES("
+                   "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             name, e["entity_set"], e["label"], e["domain"], e.get("category"),
             int(e["read_only"]), int(e.get("odata_enabled", True)), int(e.get("dmf_enabled", False)),
             len(e["fields"]), len(e["relations"]), len(e["inferred"]),
             cnt, 1 if cnt else (0 if cnt == 0 else None),
             ",".join(pf.get("societa_nel_campione") or []), ",".join(e["keys"]),
+            e.get("famiglia"), int(bool(e.get("preferita"))),
+            ",".join(e.get("equivalenti") or []),
         ))
         pfields = pf.get("campi") or {}
         for f in e["fields"]:
@@ -129,6 +134,17 @@ def write_entity_cards(model, counts, prof, checks, out: Path, only_populated=Fa
             L.append(f"**Societa' nel campione**: {', '.join(pf['societa_nel_campione'])}")
         if e["read_only"]:
             L.append("**Sola lettura**")
+        if e.get("equivalenti"):
+            if e.get("preferita"):
+                L += ["", f"> **Entità di riferimento** per lo stesso dato. Varianti "
+                          f"equivalenti da NON usare: "
+                          + ", ".join(f"`{x}`" for x in e["equivalenti"]) + "."]
+            else:
+                pref = next((x for x in [e["name"]] + e["equivalenti"]), None)
+                fam = e.get("famiglia") or ""
+                pref = fam[4:] if fam.startswith("fam_") else pref
+                L += ["", f"> **Variante equivalente**: espone lo stesso dato di "
+                          f"`{pref}`, che è l'entità di riferimento. Preferire quella."]
         L += ["", f"**Chiave**: {', '.join(f'`{k}`' for k in e['keys']) or 'nessuna'}", ""]
 
         L += ["## Campi", "",
@@ -270,6 +286,10 @@ def write_iseopilot_catalog(model, counts, prof, path: Path) -> None:
             "dominio": e["domain"],
             "chiavi": e["keys"],
             "righe": counts.get(name),
+            "famiglia": e.get("famiglia"),
+            "preferita": bool(e.get("preferita", True)),
+            "equivalenti": [model["entities"].get(x, {}).get("entity_set", x)
+                            for x in (e.get("equivalenti") or [])],
             "enum": {f["name"]: f["enum"] for f in e["fields"] if f.get("enum")},
             "etichette_campi": {f["name"]: f["label"] for f in e["fields"]},
         }
@@ -363,6 +383,24 @@ def write_report(model, counts, prof, checks, stats, out: Path, meta: dict,
             L += ["Relazioni da non usare a occhi chiusi:", ""]
             L += [f"- `{k}` — {checks[k].get('tasso')}% ({checks[k].get('tipo')})" for k in ko[:25]]
             L += [""]
+
+    fams = model.get("famiglie") or []
+    if fams:
+        ridondanti = sum(len(f["membri"]) - 1 for f in fams)
+        L += ["## Entità equivalenti", "",
+              f"D365 pubblica lo stesso dato sotto più entità: la versionata "
+              f"(V2/V3), la variante analitica (`BiEntities`, `CDSEntities`), a "
+              f"volte una di staging. Hanno conteggi identici e quasi gli stessi "
+              f"campi.", "",
+              f"Sono state riconosciute **{len(fams)} famiglie** per un totale di "
+              f"**{ridondanti} entità ridondanti**. Per ciascuna è eletta "
+              f"un'entità di riferimento: se ISEOPilot ne sceglie una a caso, dà "
+              f"risposte diverse alla stessa domanda.", "",
+              "| Righe | Da usare | Varianti equivalenti |", "|---|---|---|"]
+        for f in fams[:30]:
+            alt = ", ".join(f"`{m}`" for m in f["membri"] if m != f["preferita"])
+            L.append(f"| {_n(f['righe'])} | `{f['preferita']}` | {alt} |")
+        L += [""]
 
     # --- Copertura: le lacune vanno dichiarate, non nascoste -----------------
     falliti = falliti or []

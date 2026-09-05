@@ -72,6 +72,34 @@ DOMAINS = [
     ("Data", "Sistema"), ("Workflow", "Sistema"), ("Document", "Sistema"),
     ("Quality", "Qualita"), ("Service", "Assistenza"), ("Retail", "Retail"),
     ("Transportation", "Trasporti"), ("Shipping", "Trasporti"),
+    # Prefissi aggiunti dopo aver visto 714 entita' popolate cadere in "Altro"
+    ("Cost", "Contabilita analitica"), ("Subledger", "Contabilita"),
+    ("Journal", "Contabilita"), ("MainAccount", "Contabilita"),
+    ("Dimension", "Contabilita"), ("Currency", "Contabilita"),
+    ("ExchangeRate", "Contabilita"), ("Audit", "Sistema"), ("Database", "Sistema"),
+    ("Number", "Sistema"), ("Email", "Sistema"), ("Print", "Sistema"),
+    ("Report", "Sistema"), ("Organization", "Anagrafiche"),
+    ("Legal", "Anagrafiche"), ("Party", "Anagrafiche"), ("Person", "Anagrafiche"),
+    ("Contact", "Anagrafiche"), ("Address", "Anagrafiche"), ("Postal", "Anagrafiche"),
+    ("Price", "Prezzi e sconti"), ("Discount", "Prezzi e sconti"),
+    ("Trade", "Prezzi e sconti"), ("Charge", "Prezzi e sconti"),
+    ("Load", "Trasporti"), ("Shipment", "Trasporti"), ("Wave", "Magazzino"),
+    ("Work", "Magazzino"), ("Site", "Magazzino"), ("Location", "Magazzino"),
+    ("Batch", "Magazzino"), ("Serial", "Magazzino"), ("Unit", "Magazzino"),
+    ("Employment", "Risorse umane"), ("Position", "Risorse umane"),
+    ("Sourcing", "Acquisti"), ("Supply", "Pianificazione"),
+    ("Case", "Assistenza"), ("Subscription", "Assistenza"),
+]
+
+# Ricadute sull'etichetta italiana quando il prefisso non basta.
+LABEL_HINTS = [
+    ("magazzin", "Magazzino"), ("acquist", "Acquisti"), ("fornitor", "Fornitori"),
+    ("vendit", "Vendite"), ("client", "Clienti"), ("produzion", "Produzione"),
+    ("contabil", "Contabilita"), ("cespit", "Cespiti"), ("progett", "Progetti"),
+    ("cost", "Contabilita analitica"), ("fiscal", "Fiscale"), ("iva", "Fiscale"),
+    ("bancar", "Tesoreria"), ("banca", "Tesoreria"), ("dipendent", "Risorse umane"),
+    ("retribuz", "Risorse umane"), ("qualit", "Qualita"), ("trasport", "Trasporti"),
+    ("prezz", "Prezzi e sconti"), ("scont", "Prezzi e sconti"),
 ]
 
 
@@ -79,4 +107,9 @@ def domain_of(name: str, label: str = "") -> str:
     for prefix, dom in DOMAINS:
         if name.startswith(prefix):
             return dom
+    low = (label or "").lower()
+    if low:
+        for frammento, dom in LABEL_HINTS:
+            if frammento in low:
+                return dom
     return "Altro"

@@ -42,7 +42,8 @@ def short_enum(type_name: str) -> str | None:
 
 
 def build_model(details: dict, de_index: list, enums: list, labels: dict,
-                companies: list, edmx_sets: set[str] | None = None) -> dict:
+                companies: list, edmx_sets: set[str] | None = None,
+                counts: dict | None = None) -> dict:
     lbl = lambda i: (labels.get(i) or "").strip() if i else ""
 
     enum_map = {}
@@ -109,12 +110,13 @@ def build_model(details: dict, de_index: list, enums: list, labels: dict,
             })
 
         entity_set = d.get("EntitySetName") or de.get("PublicCollectionName") or name
+        etichetta = lbl(d.get("LabelId")) or humanize(name)
         entities[name] = {
             "name": name,
             "entity_set": entity_set,
-            "label": lbl(d.get("LabelId")) or humanize(name),
+            "label": etichetta,
             "label_id": d.get("LabelId"),
-            "domain": config.domain_of(name),
+            "domain": config.domain_of(name, etichetta),
             "read_only": bool(d.get("IsReadOnly")),
             "config_enabled": bool(d.get("ConfigurationEnabled")),
             "aot_entity": de.get("Name"),
@@ -135,8 +137,10 @@ def build_model(details: dict, de_index: list, enums: list, labels: dict,
                if d.get("PublicEntityName") and d["PublicEntityName"] not in entities]
 
     _infer_relations(entities)
+    famiglie = _detect_families(entities, counts or {})
 
     return {
+        "famiglie": famiglie,
         "entities": entities,
         "enums": enum_map,
         "companies": [{"code": c.get("DataArea"), "name": c.get("Name")} for c in companies],
@@ -204,6 +208,109 @@ def _infer_relations(entities: dict) -> None:
                 })
 
 
+# Penalizzazioni per scegliere l'entita' di riferimento in una famiglia:
+# le varianti analitiche (Bi/CDS/Staging) espongono lo stesso dato ma non sono
+# quelle giuste su cui interrogare o scrivere.
+_PENALITA = (
+    ("Obsolete", 90), ("Staging", 80), ("BiEntit", 60), ("CDSEntit", 55),
+    ("CDREntit", 55), ("CDS", 45), ("CDR", 45), ("AIEntity", 40),
+    ("Legacy", 40), ("Bundle", 35), ("D365", 30), ("Preview", 30),
+    ("Import", 25), ("Export", 25), ("Entities", 10), ("Entity", 8),
+)
+
+# Frammenti che distinguono una variante dalla sostanza dell'entita'.
+_RUMORE = re.compile(
+    r"(CDSEntity|CDREntity|BiEntity|CDSEntities|CDREntities|BiEntities|"
+    r"AIEntity|CDS|CDR|Bundle|D365|Entities|Entity|Staging|V\d+)", re.I)
+
+
+def _normalizza(nome: str) -> str:
+    """Nome ridotto alla sostanza: InventItemPriceV3 e InventItemPrice
+    collassano entrambi su 'inventitemprice'."""
+    return _RUMORE.sub("", nome).lower()
+
+
+def _versione(nome: str) -> int:
+    """Versione anche a meta' nome: SalesInvoiceV4Line -> 4."""
+    vs = [int(x) for x in re.findall(r"V(\d+)(?=[A-Z]|$)", nome)]
+    return max(vs) if vs else 1
+
+
+def _punteggio(e: dict) -> int:
+    """Piu' alto = candidato migliore come entita' di riferimento."""
+    n = e["name"]
+    p = 100 + _versione(n) * 12
+    for frammento, malus in _PENALITA:
+        if frammento in n:
+            p -= malus
+    if e.get("read_only"):
+        p -= 15
+    if not e.get("odata_enabled", True):
+        p -= 50
+    if e.get("keys"):
+        p += 10
+    p -= len(n) // 12
+    return p
+
+
+def _detect_families(entities: dict, counts: dict) -> list:
+    """Raggruppa le entita' che espongono lo stesso dato.
+
+    D365 pubblica lo stesso contenuto sotto piu' entita': la versionata
+    (V2/V3), la variante analitica (BiEntities/CDSEntities), a volte una di
+    staging. Hanno conteggi identici e quasi gli stessi campi. Per un
+    assistente sono un problema: scegliendone una a caso dà risposte diverse
+    alla stessa domanda. Qui vengono raggruppate e se ne elegge una.
+    """
+    per_conteggio: dict = defaultdict(list)
+    for n, e in entities.items():
+        c = counts.get(n)
+        if c:  # solo entita' popolate: due entita' vuote non sono equivalenti
+            per_conteggio[c].append(n)
+
+    famiglie = []
+    for c, nomi in per_conteggio.items():
+        if len(nomi) < 2:
+            continue
+        campi = {n: {f["name"].lower() for f in entities[n]["fields"]} for n in nomi}
+        norm = {n: _normalizza(n) for n in nomi}
+        restanti = list(nomi)
+        while restanti:
+            capo = restanti.pop(0)
+            gruppo = [capo]
+            for altro in list(restanti):
+                a, b = campi[capo], campi[altro]
+                if not a or not b:
+                    continue
+                # Due entita' possono avere lo stesso conteggio per puro caso:
+                # si richiede anche che i nomi condividano la sostanza.
+                na, nb = norm[capo], norm[altro]
+                if not (na and nb and (na in nb or nb in na)):
+                    continue
+                inter = len(a & b)
+                jac = inter / len(a | b)
+                if jac >= 0.6 or inter >= 0.9 * min(len(a), len(b)):
+                    gruppo.append(altro)
+                    restanti.remove(altro)
+            if len(gruppo) < 2:
+                continue
+            gruppo.sort(key=lambda n: -_punteggio(entities[n]))
+            preferita = gruppo[0]
+            fid = f"fam_{preferita}"
+            for n in gruppo:
+                entities[n]["famiglia"] = fid
+                entities[n]["preferita"] = (n == preferita)
+                entities[n]["equivalenti"] = [x for x in gruppo if x != n]
+            famiglie.append({
+                "id": fid, "preferita": preferita, "righe": c,
+                "membri": gruppo,
+                "etichetta": entities[preferita]["label"],
+                "dominio": entities[preferita]["domain"],
+            })
+    famiglie.sort(key=lambda f: -f["righe"])
+    return famiglie
+
+
 def parse_edmx_sets(edmx_text: str) -> set[str]:
     """Estrae i nomi degli EntitySet realmente esposti su /data."""
     if not edmx_text:
@@ -227,5 +334,7 @@ def stats(model: dict) -> dict:
         "enum": len(model["enums"]),
         "societa": len(model["companies"]),
         "entita_senza_dettaglio": len(model["senza_dettaglio"]),
+        "famiglie_duplicate": len(model.get("famiglie") or []),
+        "entita_ridondanti": sum(len(f["membri"]) - 1 for f in (model.get("famiglie") or [])),
         "per_dominio": dict(sorted(by_dom.items(), key=lambda x: -x[1])),
     }
