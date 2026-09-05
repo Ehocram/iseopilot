@@ -325,13 +325,20 @@ python tests/test_smoke.py
   richieste SEPARATE, altrimenti risponde `HTTP 400`: il connettore fa **una
   chiamata per fonte**, e una fonte in errore non azzera le altre (il
   fallimento viene dichiarato nel contesto, con il messaggio vero di Graph).
-  (b) La ricerca su `chatMessage` indicizza il **testo** dei messaggi, non il
-  mittente: "cosa mi ha scritto Leonardo" non trova nulla. Per le domande di
-  recency il connettore completa con le **chat recenti** — una sola chiamata a
-  `/me/chats?$expand=lastMessagePreview` (nessuna enumerazione dei messaggi),
-  ordinate dal piu' recente, messaggi di sistema esclusi.
+  (b) La ricerca indicizza il **testo**, non il mittente: "cosa mi ha scritto
+  Leonardo" non troverebbe nulla, perché nei suoi messaggi il suo nome non
+  compare. Il connettore lavora quindi **a tre vie**, come Copilot:
+  **persona** — se la domanda nomina qualcuno, viene risolto su `/me/people`
+  (rubrica di rilevanza dell'utente) e si recupera in modo MIRATO: posta
+  filtrata per mittente e ordinata per data, chat Teams individuate per
+  partecipante e filtrate sui suoi messaggi, SharePoint con KQL `author:`;
+  **recency** — posta e documenti recenti per data, chat con l'anteprima
+  dell'ultimo messaggio; **full-text** — la ricerca classica negli altri casi.
+  Tutto bounded: al massimo 3 chat interrogate, tetti su messaggi e risultati.
+  La risoluzione della persona degrada in silenzio (con log) se manca
+  `People.Read`: le altre modalità continuano a funzionare.
   *Prerequisito tenant*: permessi delegati `Sites.Read.All`, `Mail.Read`,
-  `Chat.Read`, `Files.Read.All`, `User.Read` con **consenso amministratore**
+  `Chat.Read`, `Files.Read.All`, `People.Read`, `User.Read` con **consenso amministratore**
   sulla app registration; poi ogni utente collega il proprio account con il
   device code dalla pagina Connessioni.
 - **Successivi** — Traduzione integrale di un documento mantenendo il formato;

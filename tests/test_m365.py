@@ -71,6 +71,26 @@ _GRAPH_HITS = {"value": [{"hitsContainers": [{"hits": [
 ]}]}]}
 
 
+_PEOPLE = {"value": [
+    {"displayName": "Leonardo Salcuni",
+     "scoredEmailAddresses": [{"address": "leonardo.salcuni@iseo.com"}]},
+    {"displayName": "Anna Verdi",
+     "scoredEmailAddresses": [{"address": "anna@cliente.it"}]},
+]}
+
+
+def _router(mappa, contatore=None):
+    """GET finto instradato per URL: /me/people, /me/chats, /me/messages…"""
+    def _get(url, headers=None, timeout=None, params=None):
+        if contatore is not None:
+            contatore.append(url)
+        for chiave, resp in mappa.items():
+            if chiave in url:
+                return resp() if callable(resp) else resp
+        return _Resp(200, {"value": []})
+    return _get
+
+
 class _Resp:
     def __init__(self, status=200, payload=None, content=b""):
         self.status_code = status
@@ -214,10 +234,11 @@ def test_teams_chat_recenti_per_domande_di_recency(monkeypatch):
     essere completate con l'ultimo messaggio delle chat."""
     import requests
     monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(200, _CHATS))
+    monkeypatch.setattr(requests, "get", _router(
+        {"/me/people": _Resp(200, {"value": []}), "/me/chats": _Resp(200, _CHATS)}))
     m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
     m.tm._data = {"access_token": "T", "expires_at": 9e9}
-    testo, rif = m.search("cosa mi ha scritto Leonardo nell'ultimo messaggio?", ["teams"])
+    testo, rif = m.search("cosa mi hanno scritto nell'ultimo messaggio?", ["teams"])
     assert "Leonardo Salcuni" in testo and "Ci vediamo lunedì" in testo
     assert "<b>" not in testo                      # HTML ripulito
     assert "Progetto NIS2" in testo                # topic della chat riportato
@@ -233,32 +254,30 @@ def test_teams_una_sola_chiamata_bounded(monkeypatch):
     import requests
     chiamate = []
 
-    def fake_get(url, headers=None, timeout=None):
-        chiamate.append(url)
-        return _Resp(200, _CHATS)
-
     monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
-    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", _router(
+        {"/me/people": _Resp(200, {"value": []}), "/me/chats": _Resp(200, _CHATS)}, chiamate))
     m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
     m.tm._data = {"access_token": "T", "expires_at": 9e9}
     m.search("ultimo messaggio", ["teams"])
-    assert len(chiamate) == 1                      # nessuna enumerazione dei messaggi
-    assert "/me/chats" in chiamate[0] and "lastMessagePreview" in chiamate[0]
-    assert f"$top={m365_search.CHAT_RECENTI}" in chiamate[0]
+    chat_calls = [u for u in chiamate if "/me/chats" in u]
+    assert len(chat_calls) == 1                    # nessuna enumerazione dei messaggi
+    assert "lastMessagePreview" in chat_calls[0]
+    assert f"$top={m365_search.CHAT_RECENTI}" in chat_calls[0]
 
 
 def test_teams_recenti_non_scatta_se_la_ricerca_basta(monkeypatch):
-    """Domanda NON di recency con risultati dalla ricerca: nessuna chiamata
-    supplementare, niente contesto gonfiato."""
+    """Domanda NON di recency e senza persona, con risultati dalla ricerca:
+    nessuna chiamata supplementare alle chat, niente contesto gonfiato."""
     import requests
-    chiamate = []
+    urls = []
     monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, _GRAPH_HITS))
-    monkeypatch.setattr(requests, "get",
-                        lambda *a, **k: chiamate.append(1) or _Resp(200, _CHATS))
+    monkeypatch.setattr(requests, "get", _router(
+        {"/me/people": _Resp(200, {"value": []}), "/me/chats": _Resp(200, _CHATS)}, urls))
     m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
     m.tm._data = {"access_token": "T", "expires_at": 9e9}
     m.search("clausola di adeguamento del contratto", ["teams"])
-    assert chiamate == []
+    assert not any("/me/chats" in u for u in urls)
 
 
 def test_teams_recenti_errore_dichiarato(monkeypatch):
@@ -269,7 +288,139 @@ def test_teams_recenti_errore_dichiarato(monkeypatch):
     m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
     m.tm._data = {"access_token": "T", "expires_at": 9e9}
     testo, _ = m.search("ultimo messaggio", ["teams"])
-    assert "chat recenti" in testo and "Chat.Read" in testo
+    assert "permessi insufficienti per le chat" in testo and "Chat.Read" in testo
+    assert "ricollega l'account" in testo
+
+
+_CHATS_MEMBRI = {"value": [
+    {"id": "CID_LS", "topic": "",
+     "members": [{"displayName": "Leonardo Salcuni", "email": "leonardo.salcuni@iseo.com"},
+                 {"displayName": "Marco Bonometti", "email": "marco.bonometti@iseo.com"}],
+     "lastMessagePreview": {"createdDateTime": "2026-09-04T17:30:00Z"}},
+    {"id": "CID_X", "topic": "Altro",
+     "members": [{"displayName": "Samir", "email": "samir@iseo.com"}],
+     "lastMessagePreview": {"createdDateTime": "2026-09-05T08:00:00Z"}},
+]}
+_MSG_CHAT = {"value": [
+    {"id": "M1", "createdDateTime": "2026-09-04T17:30:00Z",
+     "from": {"user": {"displayName": "Leonardo Salcuni"}},
+     "body": {"content": "<p>Ci vediamo <b>lunedì</b> per il piano manufacturing.</p>"}},
+    {"id": "M2", "createdDateTime": "2026-09-04T17:00:00Z",
+     "from": {"user": {"displayName": "Marco Bonometti"}},
+     "body": {"content": "ok perfetto"}},
+]}
+_MAIL_DA = {"value": [
+    {"id": "E1", "subject": "Allineamento ISMS", "receivedDateTime": "2026-09-02T09:00:00Z",
+     "from": {"emailAddress": {"name": "Leonardo Salcuni", "address": "leonardo.salcuni@iseo.com"}},
+     "bodyPreview": "Ti mando il punto sulle responsabilità."},
+]}
+
+
+def test_persona_risolta_solo_se_nominata(monkeypatch):
+    import requests
+    monkeypatch.setattr(requests, "get", _router({"/me/people": _Resp(200, _PEOPLE)}))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    p = m._risolvi_persona("T", "cosa mi ha scritto leonardo salcuni?")
+    assert p and p["mail"] == "leonardo.salcuni@iseo.com"
+    # la ricerca people è fuzzy: se il nome NON compare nella domanda, si scarta
+    assert m._risolvi_persona("T", "come va il progetto NIS2?") is None
+
+
+def test_people_senza_permesso_degrada(monkeypatch):
+    import requests
+    monkeypatch.setattr(requests, "get",
+                        _router({"/me/people": _Resp(403, {"error": {"message": "no People.Read"}})}))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    assert m._risolvi_persona("T", "cosa scrive leonardo salcuni") is None   # nessuna eccezione
+
+
+def test_teams_recupero_mirato_per_persona(monkeypatch):
+    """Il caso che la ricerca full-text NON risolve: i messaggi di una persona
+    non contengono il suo nome."""
+    import requests
+    urls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(200, {"value": []}))
+    monkeypatch.setattr(requests, "get", _router({
+        "/me/people": _Resp(200, _PEOPLE),
+        "/messages": _Resp(200, _MSG_CHAT),
+        "/me/chats": _Resp(200, _CHATS_MEMBRI),
+    }, urls))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, rif = m.search("cosa mi ha scritto leonardo salcuni nell'ultimo messaggio?", ["teams"])
+    assert "recupero MIRATO su «Leonardo Salcuni»" in testo
+    assert "Ci vediamo lunedì per il piano manufacturing." in testo
+    assert "ok perfetto" not in testo                  # solo i messaggi SUOI
+    assert any(u for u in urls if "/me/chats/CID_LS/messages" in u)   # solo la chat giusta
+    assert not any("CID_X/messages" in u for u in urls)
+    t = [r for r in rif if r["kind"] == "teams"]
+    assert t and t[0]["chat_id"] == "CID_LS"
+
+
+def test_mail_recupero_mirato_per_mittente(monkeypatch):
+    import requests
+    urls = []
+    monkeypatch.setattr(requests, "get", _router({
+        "/me/people": _Resp(200, _PEOPLE),
+        "/me/messages": _Resp(200, _MAIL_DA),
+    }, urls))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, rif = m.search("ultima mail di leonardo salcuni", ["mail"])
+    assert "Allineamento ISMS" in testo and "responsabilità" in testo
+    chiamata = next(u for u in urls if "/me/messages" in u)
+    assert "from/emailAddress/address eq 'leonardo.salcuni@iseo.com'" in chiamata
+    assert "$orderby=receivedDateTime desc" in chiamata      # per data, non rilevanza
+    assert rif and rif[0]["kind"] == "mail" and rif[0]["id"] == "E1"
+
+
+def test_mail_recency_senza_persona(monkeypatch):
+    import requests
+    urls = []
+    monkeypatch.setattr(requests, "get", _router({
+        "/me/people": _Resp(200, {"value": []}),
+        "/me/messages": _Resp(200, _MAIL_DA),
+    }, urls))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, _ = m.search("ultime mail ricevute", ["mail"])
+    chiamata = next(u for u in urls if "/me/messages" in u)
+    assert "$orderby=receivedDateTime desc" in chiamata and "$filter" not in chiamata
+    assert "Allineamento ISMS" in testo
+
+
+def test_sharepoint_persona_usa_kql_author(monkeypatch):
+    import requests
+    corpi = []
+    monkeypatch.setattr(requests, "get", _router({"/me/people": _Resp(200, _PEOPLE)}))
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        corpi.append(json["requests"][0]["query"]["queryString"])
+        return _Resp(200, _GRAPH_HITS)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    m.search("documenti di leonardo salcuni", ["sharepoint"])
+    assert corpi and 'author:"Leonardo Salcuni"' in corpi[0]
+
+
+def test_nessun_risultato_per_persona_dichiarato(monkeypatch):
+    import requests
+    monkeypatch.setattr(requests, "get", _router({
+        "/me/people": _Resp(200, _PEOPLE),
+        "/me/messages": _Resp(200, {"value": []}),
+    }))
+    m = m365_search.M365Search({"client_id": "c", "tenant_id": "t", "token_path": "/tmp/x.json"})
+    m.tm._data = {"access_token": "T", "expires_at": 9e9}
+    testo, rif = m.search("ultima mail di leonardo salcuni", ["mail"])
+    assert "nessun contenuto trovato da Leonardo Salcuni" in testo and rif == []
+
+
+def test_scope_include_people_read():
+    assert "People.Read" in m365_search.M365_SCOPE
+    for s_ in ("Mail.Read", "Chat.Read", "Sites.Read.All", "Files.Read.All"):
+        assert s_ in m365_search.M365_SCOPE
 
 
 def test_snippet_troncato_verso_il_modello(monkeypatch):

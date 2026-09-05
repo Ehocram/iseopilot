@@ -26,7 +26,7 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 # Scope delegati: SharePoint (Sites.Read.All + Files.Read.All), Posta
 # (Mail.Read), Teams (Chat.Read). offline_access per il refresh.
 M365_SCOPE = ("Files.Read.All Sites.Read.All Mail.Read Chat.Read "
-              "User.Read offline_access")
+              "People.Read User.Read offline_access")
 
 FONTI = ("sharepoint", "mail", "teams")
 _ENTITY = {
@@ -42,7 +42,22 @@ _RECENTI_RE = re.compile(
     r"\b(ultim\w+|recent\w+|nuov\w+|scritto|scrive|inviato|manda\w*|"
     r"mandato|detto|ieri|oggi|stamattina|poco\s+fa|"
     r"last|latest|recent|wrote|sent|told|today|yesterday)\b", re.IGNORECASE)
-CHAT_RECENTI = 20           # tetto di chat esaminate: chiamata bounded
+CHAT_RECENTI = 50           # chat esaminate per trovare quelle con la persona
+MSG_PER_CHAT = 20           # messaggi letti per chat individuata
+# Parole da scartare quando si cerca il NOME di una persona nella domanda.
+_STOP = {
+    "cosa", "che", "chi", "come", "quando", "dove", "perche", "perché", "quale",
+    "quali", "mi", "me", "ti", "ci", "si", "ha", "hai", "ho", "hanno", "sono",
+    "del", "della", "dei", "delle", "nel", "nella", "nei", "con", "per", "tra",
+    "fra", "the", "what", "who", "when", "where", "which", "did", "does", "has",
+    "have", "was", "were", "from", "about", "last", "latest", "recent", "message",
+    "messaggio", "messaggi", "mail", "email", "posta", "teams", "chat", "scritto",
+    "scrive", "inviato", "invia", "mandato", "manda", "detto", "dice", "ultimo",
+    "ultima", "ultimi", "ultime", "recente", "recenti", "dimmi", "dici", "sent",
+    "wrote", "told", "documento", "documenti", "file", "sharepoint", "riassumi",
+    "trova", "cerca", "cercami", "mostrami", "leggimi", "una", "uno", "gli", "lui",
+    "lei", "loro", "quel", "quello", "questa", "questo", "nostro", "nostra",
+}
 SNIPPET_MAX = 1200          # per singolo risultato, verso il modello
 TESTO_MAX = 14000           # totale del blocco di contesto
 
@@ -131,14 +146,16 @@ class M365Search:
 
     # ── ricerca ─────────────────────────────────────────────
     def search(self, query: str, fonti: list, max_results: int = 5) -> tuple:
-        """Ritorna (testo_per_modello, riferimenti). I riferimenti portano gli
-        identificativi per l'eventuale download del contenuto integrale.
+        """Ritorna (testo_per_modello, riferimenti).
 
-        UNA CHIAMATA PER FONTE: Graph consente di combinare fra loro solo
-        driveItem/listItem; message e chatMessage devono essere interrogati
-        separatamente, altrimenti la richiesta è respinta con HTTP 400. Le
-        fonti sono quindi indipendenti: se una fallisce le altre rispondono
-        comunque e il fallimento viene DICHIARATO, non nascosto."""
+        Strategia a tre vie, per fonte (Graph non consente di combinare
+        message/chatMessage con driveItem: una chiamata per fonte, sempre):
+          1. se la domanda nomina una PERSONA nota, recupero MIRATO per
+             mittente/partecipante — la ricerca full-text non lo farebbe mai,
+             perché indicizza il testo e non chi ha scritto;
+          2. se la domanda è di RECENCY, elenco per data decrescente;
+          3. altrimenti ricerca full-text classica.
+        Una fonte in errore non azzera le altre: il fallimento è dichiarato."""
         fonti = [f for f in (fonti or []) if f in FONTI]
         if not fonti:
             return "", []
@@ -146,34 +163,237 @@ class M365Search:
         if not tok:
             return "[Microsoft 365] Non connesso: collega il connettore dalla pagina Connessioni.", []
 
+        recency = bool(_RECENTI_RE.search(query or ""))
+        persona = self._risolvi_persona(tok, query)
+
         blocchi, riferimenti, errori = [], [], []
         for f in fonti:
-            testo, rif, err = self._search_fonte(f, query, tok, max_results)
-            if err:
-                errori.append(f"{f}: {err}")
-            blocchi.extend(testo)
-            riferimenti.extend(rif)
-            # Teams: la ricerca full-text non copre le domande "chi mi ha
-            # scritto per ultimo". Si completa con le chat recenti quando la
-            # domanda è di recency o quando la ricerca non ha trovato nulla.
-            if f == "teams" and not err and (not testo or _RECENTI_RE.search(query or "")):
-                t2, r2, e2 = self._teams_recenti(tok)
-                if e2:
-                    errori.append(f"teams (chat recenti): {e2}")
-                blocchi.extend(t2)
-                riferimenti.extend(r2)
+            try:
+                if f == "mail":
+                    b, r, e = self._mail(tok, query, persona, recency, max_results)
+                elif f == "teams":
+                    b, r, e = self._teams(tok, query, persona, recency, max_results)
+                else:
+                    b, r, e = self._sharepoint(tok, query, persona, recency, max_results)
+            except Exception as ex:
+                _log(f"[{f}] ECCEZIONE: {ex}")
+                b, r, e = [], [], f"errore interno ({str(ex)[:60]})"
+            if e:
+                errori.append(f"{f}: {e}")
+            blocchi.extend(b)
+            riferimenti.extend(r)
 
+        testa = ""
+        if persona:
+            testa = (f"[Microsoft 365 — recupero MIRATO su «{persona['nome']}»"
+                     f" ({persona['mail']}): i risultati qui sotto sono i suoi "
+                     "messaggi/documenti più recenti, non una ricerca per parole.]\n\n")
         coda = ""
         if errori:
             coda = ("\n\n[Microsoft 365 — fonti NON interrogate: "
                     + "; ".join(errori) + ". Dichiaralo nella risposta.]")
         if not blocchi:
+            if persona:
+                coda = (f"\n\n[Microsoft 365 — nessun contenuto trovato da "
+                        f"{persona['nome']} nelle fonti attive." + coda[2:] if coda
+                        else f"\n\n[Microsoft 365 — nessun contenuto trovato da "
+                             f"{persona['nome']} nelle fonti attive.]")
             return (coda.strip() or ""), []
-        _log(f"query={query[:60]!r} fonti={fonti} risultati={len(blocchi)} errori={len(errori)}")
-        return ("\n\n".join(blocchi))[:TESTO_MAX] + coda, riferimenti
+        _log(f"query={query[:60]!r} fonti={fonti} persona={persona['nome'] if persona else '-'} "
+             f"recency={recency} risultati={len(blocchi)} errori={len(errori)}")
+        return (testa + "\n\n".join(blocchi))[:TESTO_MAX] + coda, riferimenti
+
+    # ── risoluzione della PERSONA (come fa Copilot) ─────────
+    def _termini_nome(self, query: str) -> str:
+        parole = re.findall(r"[A-Za-zÀ-ÿ']{3,}", query or "")
+        utili = [p for p in parole if p.lower() not in _STOP]
+        return " ".join(utili[:6])
+
+    def _risolvi_persona(self, tok: str, query: str):
+        """Trova la persona nominata nella domanda usando la rubrica di
+        rilevanza dell'utente (/me/people). Ritorna {nome, mail} o None.
+        Degrada in silenzio (con log) se il permesso People.Read manca: le
+        altre modalità continuano a funzionare."""
+        termini = self._termini_nome(query)
+        if not termini:
+            return None
+        try:
+            import requests
+            r = requests.get(f"{GRAPH}/me/people",
+                             params={"$search": f'"{termini}"', "$top": "10"},
+                             headers={"Authorization": "Bearer " + tok}, timeout=25)
+        except Exception as e:
+            _log(f"[people] ECCEZIONE: {e}")
+            return None
+        if r.status_code >= 400:
+            _log(f"[people] HTTP {r.status_code}: {r.text[:160]} "
+                 "(serve People.Read; senza, il recupero per persona è disattivo)")
+            return None
+        ql = (query or "").lower()
+        for p in (r.json() or {}).get("value", []):
+            nome = p.get("displayName") or ""
+            pezzi = [x.lower() for x in re.split(r"[\s,]+", nome) if len(x) >= 3]
+            if not pezzi:
+                continue
+            # richiede che almeno un pezzo del nome compaia DAVVERO nella
+            # domanda: la ricerca people è fuzzy e va disciplinata
+            if not any(x in ql for x in pezzi):
+                continue
+            mails = p.get("scoredEmailAddresses") or []
+            indirizzo = (mails[0].get("address") if mails else "") or ""
+            if not indirizzo:
+                continue
+            _log(f"[people] persona risolta: {nome} <{indirizzo}>")
+            return {"nome": nome, "mail": indirizzo}
+        return None
+
+    # ── POSTA ───────────────────────────────────────────────
+    def _mail(self, tok, query, persona, recency, n):
+        import requests
+        h = {"Authorization": "Bearer " + tok}
+        sel = "id,subject,receivedDateTime,from,bodyPreview"
+        if persona:
+            indirizzo = persona["mail"].replace("'", "''")
+            url = (f"{GRAPH}/me/messages?$filter=from/emailAddress/address eq "
+                   f"'{indirizzo}'&$orderby=receivedDateTime desc"
+                   f"&$top={max(1, min(int(n or 5), 15))}&$select={sel}")
+        elif recency:
+            url = (f"{GRAPH}/me/messages?$orderby=receivedDateTime desc"
+                   f"&$top={max(1, min(int(n or 5), 15))}&$select={sel}")
+        else:
+            return self._search_fonte("mail", query, tok, n)
+        try:
+            r = requests.get(url, headers=h, timeout=45)
+        except Exception as e:
+            return [], [], f"errore di rete ({str(e)[:60]})"
+        if r.status_code >= 400:
+            det = _dettaglio(r)
+            _log(f"[mail-mirato] HTTP {r.status_code}: {det}")
+            if r.status_code in (401, 403):
+                return [], [], ("permessi insufficienti — serve Mail.Read con consenso "
+                                "amministratore, poi ricollega l'account")
+            return [], [], f"HTTP {r.status_code} ({det or 'nessun dettaglio'})"
+        blocchi, rifs = [], []
+        for m in (r.json() or {}).get("value", []):
+            ea = ((m.get("from") or {}).get("emailAddress") or {})
+            quando = _data_breve(m.get("receivedDateTime") or "")
+            ogg = m.get("subject") or "(senza oggetto)"
+            corpo = _strip_html(m.get("bodyPreview") or "")[:SNIPPET_MAX]
+            blocchi.append(f"[Posta — {ogg}]\nDa: {ea.get('name','')} "
+                           f"<{ea.get('address','')}> · {quando}\n{corpo}")
+            rifs.append({"kind": "mail", "id": m.get("id") or "", "titolo": ogg,
+                         "quando": quando, "da": ea.get("name", "")})
+        return blocchi, rifs, ""
+
+    # ── TEAMS ───────────────────────────────────────────────
+    def _teams(self, tok, query, persona, recency, n):
+        if persona:
+            return self._teams_da_persona(tok, persona, n)
+        if recency:
+            return self._teams_recenti(tok)
+        b, r, e = self._search_fonte("teams", query, tok, n)
+        if not b and not e:                 # full-text a vuoto: completa con le recenti
+            return self._teams_recenti(tok)
+        return b, r, e
+
+    def _teams_da_persona(self, tok, persona, n):
+        """Chat con quella persona → suoi messaggi più recenti. Bounded: una
+        chiamata per l'elenco chat, al massimo 3 chat interrogate."""
+        import requests
+        h = {"Authorization": "Bearer " + tok}
+        try:
+            r = requests.get(f"{GRAPH}/me/chats?$expand=members,lastMessagePreview"
+                             f"&$top={CHAT_RECENTI}", headers=h, timeout=45)
+        except Exception as e:
+            return [], [], f"errore di rete ({str(e)[:60]})"
+        if r.status_code >= 400:
+            det = _dettaglio(r)
+            _log(f"[teams-persona] HTTP {r.status_code}: {det}")
+            if r.status_code in (401, 403):
+                return [], [], ("permessi insufficienti per le chat — serve Chat.Read "
+                                "con consenso amministratore, poi ricollega l'account")
+            return [], [], f"HTTP {r.status_code} ({det or 'nessun dettaglio'})"
+        mail_p = (persona.get("mail") or "").lower()
+        nome_p = (persona.get("nome") or "").lower()
+        candidate = []
+        for ch in (r.json() or {}).get("value", []):
+            for mem in (ch.get("members") or []):
+                em = (mem.get("email") or "").lower()
+                dn = (mem.get("displayName") or "").lower()
+                if (em and em == mail_p) or (dn and dn == nome_p):
+                    lmp = ch.get("lastMessagePreview") or {}
+                    candidate.append((lmp.get("createdDateTime") or "",
+                                      ch.get("id") or "", ch.get("topic") or ""))
+                    break
+        candidate.sort(reverse=True)
+        blocchi, rifs = [], []
+        for _q, chat_id, topic in candidate[:3]:
+            try:
+                rm = requests.get(f"{GRAPH}/me/chats/{chat_id}/messages"
+                                  f"?$top={MSG_PER_CHAT}", headers=h, timeout=45)
+            except Exception:
+                continue
+            if rm.status_code >= 400:
+                _log(f"[teams-persona] messaggi HTTP {rm.status_code}: {_dettaglio(rm)}")
+                continue
+            msgs = (rm.json() or {}).get("value", [])
+            msgs.sort(key=lambda m: m.get("createdDateTime") or "", reverse=True)
+            presi = 0
+            for m in msgs:
+                u = ((m.get("from") or {}).get("user") or {})
+                if (u.get("displayName") or "").lower() != nome_p:
+                    continue
+                corpo = _strip_html(((m.get("body") or {}).get("content") or ""))
+                if not corpo:
+                    continue
+                quando = _data_breve(m.get("createdDateTime") or "")
+                dove = f" · {topic}" if topic else ""
+                blocchi.append(f"[Teams — {persona['nome']}{dove} · {quando}]\n"
+                               f"{corpo[:SNIPPET_MAX]}")
+                rifs.append({"kind": "teams", "id": m.get("id") or "",
+                             "chat_id": chat_id,
+                             "titolo": f"Messaggio Teams di {persona['nome']}",
+                             "quando": quando, "da": persona["nome"]})
+                presi += 1
+                if presi >= max(1, min(int(n or 5), 10)):
+                    break
+        if not blocchi and not candidate:
+            _log(f"[teams-persona] nessuna chat con {persona['nome']}")
+        return blocchi, rifs, ""
+
+    # ── SHAREPOINT ──────────────────────────────────────────
+    def _sharepoint(self, tok, query, persona, recency, n):
+        termini = self._termini_nome(query)
+        if recency and not termini:
+            import requests
+            try:
+                r = requests.get(f"{GRAPH}/me/drive/recent",
+                                 headers={"Authorization": "Bearer " + tok}, timeout=45)
+            except Exception as e:
+                return [], [], f"errore di rete ({str(e)[:60]})"
+            if r.status_code >= 400:
+                return self._search_fonte("sharepoint", query, tok, n)
+            blocchi, rifs = [], []
+            for it in ((r.json() or {}).get("value", []))[:max(1, min(int(n or 5), 10))]:
+                nome = it.get("name") or "documento"
+                quando = _data_breve(it.get("lastModifiedDateTime") or "")
+                blocchi.append(f"[SharePoint — {nome}]{(' · ' + quando) if quando else ''}\n"
+                               "(documento usato di recente)")
+                rifs.append({"kind": "sharepoint", "id": it.get("id") or "",
+                             "drive_id": ((it.get("parentReference") or {}).get("driveId") or ""),
+                             "titolo": nome, "quando": quando,
+                             "url": it.get("webUrl") or "", "sito": ""})
+            return blocchi, rifs, ""
+        q = query
+        if persona:
+            # documenti della persona: KQL author, con i termini della domanda
+            q = f'author:"{persona["nome"]}"'
+        return self._search_fonte("sharepoint", q, tok, n)
 
     def _search_fonte(self, fonte: str, query: str, tok: str, max_results: int):
-        """Interroga UNA fonte. Ritorna (blocchi, riferimenti, errore_o_vuoto)."""
+        """Ricerca full-text su UNA fonte via /search/query. Graph combina solo
+        driveItem/listItem: message e chatMessage vanno richiesti separatamente,
+        altrimenti risponde HTTP 400. Ritorna (blocchi, riferimenti, errore)."""
         corpo = {"requests": [{
             "entityTypes": _ENTITY[fonte],
             "query": {"queryString": query},
@@ -191,11 +411,7 @@ class M365Search:
             return [], [], f"errore di rete ({str(e)[:60]})"
 
         if r.status_code >= 400:
-            dettaglio = ""
-            try:
-                dettaglio = str((r.json().get("error") or {}).get("message") or "")[:200]
-            except Exception:
-                dettaglio = r.text[:200]
+            dettaglio = _dettaglio(r)
             _log(f"[{fonte}] HTTP {r.status_code}: {dettaglio}")
             if r.status_code == 403:
                 return [], [], ("permessi insufficienti — servono i permessi delegati "
@@ -379,6 +595,14 @@ class M365Search:
             return r.content, nome, "application/octet-stream"
 
         raise ValueError(f"Tipo di contenuto non gestito: {kind}")
+
+
+def _dettaglio(r) -> str:
+    """Messaggio d'errore di Graph, per log e contesto: mai un nudo codice."""
+    try:
+        return str((r.json().get("error") or {}).get("message") or "")[:200]
+    except Exception:
+        return (getattr(r, "text", "") or "")[:200]
 
 
 def _safe_name(s: str) -> str:
