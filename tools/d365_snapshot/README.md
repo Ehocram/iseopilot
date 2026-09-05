@@ -112,15 +112,42 @@ In `~/IseoPilot/data/d365_snapshot/`:
   da un RAG: etichette, chiavi, riempimento, relazioni verificate, esempio di
   query OData già pronto.
 - `erd/*.mmd` — diagrammi Mermaid per dominio, più `_trasversale.mmd`.
-- `catalog_iseopilot.json` — stesso formato di `~/.chat_assistant_dyn_catalog.json`,
-  retrocompatibile, arricchito. Per adottarlo:
-  ```bash
-  cp ~/IseoPilot/data/d365_snapshot/catalog_iseopilot.json \
-     ~/IseoPilot/data/dynamics/catalog.json
-  cp ~/IseoPilot/data/d365_snapshot/schema/*.md ~/IseoPilot/data/dynamics/schema/
-  ```
-  (`app/connectors.py` punta già `dynamics_search.CATALOG_FILE` e `SCHEMA_DIR`
-  in quella cartella.)
+- `catalog_iseopilot.json` — stesso formato del catalogo attuale,
+  retrocompatibile, arricchito.
+
+### Come adottarlo
+
+`app/connectors.py` punta `dynamics_search.CATALOG_FILE` a
+`$APP_DATA_DIR/dynamics/catalog.json`, e in produzione `APP_DATA_DIR` vale
+`/data`: è il **volume Docker `iseopilot_data`**, non un percorso sull'host.
+Quindi non basta copiare un file in `~/IseoPilot/data/`.
+
+```bash
+SNAP=~/IseoPilot/data/d365_snapshot
+
+# copia di sicurezza del catalogo in uso
+docker exec iseopilot cp /data/dynamics/catalog.json \
+    /data/dynamics/catalog.json.bak 2>/dev/null || true
+
+docker cp $SNAP/catalog_iseopilot.json iseopilot:/data/dynamics/catalog.json
+docker cp $SNAP/schema/.               iseopilot:/data/dynamics/schema/
+
+docker restart iseopilot   # il catalogo viene letto e messo in cache all'avvio
+```
+
+Per tornare indietro:
+
+```bash
+docker exec iseopilot cp /data/dynamics/catalog.json.bak \
+    /data/dynamics/catalog.json && docker restart iseopilot
+```
+
+In sviluppo (`docker-compose.yml`) il volume è `chat_data`, stesso percorso
+interno. Fuori da Docker, `APP_DATA_DIR` sovrascrive la radice.
+
+> Le 4.707 schede Markdown occupano una ventina di MB: se il volume è stretto,
+> conviene copiare solo quelle delle entità popolate, generandole con
+> `build --only-populated`.
 
 ## Prudenza verso la produzione
 
