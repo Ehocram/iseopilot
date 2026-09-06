@@ -816,8 +816,38 @@ def api_chat(request: Request, body: ChatRequest):
                 # budget alzato (caso Carlos): più documenti per argomento senza
                 # tagli in coda; ampiamente dentro la finestra del modello.
                 context = knowledge._fit_budget([p for p in parts if p.strip()], 12000)
-            except Exception:
-                context = ""
+            except Exception as e:
+                # Un errore del connettore svuotava il contesto senza dire nulla.
+                # Il modello rispondeva allora con l'unica cosa rimasta, cioe' lo
+                # storico della conversazione: i risultati della fonte PRECEDENTE.
+                # All'utente sembra che il cambio di fonte non abbia effetto, e
+                # aggiornare la pagina "risolve" solo perche' azzera lo storico.
+                import sys, traceback
+                print(f"[chat] retrieval fallito su fonte '{src}': "
+                      f"{type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
+                traceback.print_exc()
+                context = ("[AVVISO INTERNO] La ricerca sulla fonte richiesta "
+                           f"({src}) non e' riuscita: {type(e).__name__}. Non ci "
+                           "sono risultati da questa fonte per la domanda "
+                           "corrente. NON rispondere usando i risultati di fonti "
+                           "o messaggi precedenti: dichiara che la ricerca sulla "
+                           "fonte selezionata non ha prodotto risultati.")
+
+        # La fonte puo' cambiare fra un messaggio e l'altro, ma il modello vede
+        # lo storico intero e non sa da quale fonte venissero i turni precedenti:
+        # senza dirglielo, risponde legittimamente riusando i risultati di prima
+        # e sembra che il cambio di fonte non abbia avuto effetto.
+        if not body.free_mode and src:
+            _nomi_fonte = {"kb": "Conoscenza del dipartimento", "folder": "Cartelle di rete",
+                           "onedrive": "OneDrive", "dynamics": "Dynamics 365",
+                           "m365": "Microsoft 365", "powerbi": "Power BI"}
+            _intest = (f"[FONTE DI QUESTA RICERCA: {_nomi_fonte.get(src, src)}]\n"
+                       "Rispondi USANDO SOLO il contenuto qui sotto. I messaggi "
+                       "precedenti della conversazione possono provenire da fonti "
+                       "diverse: non riusarli come se fossero risultati di questa "
+                       "ricerca. Se qui sotto non c'e' la risposta, dillo.\n\n")
+            context = _intest + context if context else _intest + (
+                "(nessun risultato da questa fonte per la domanda corrente)")
 
         # Gli allegati precedono il resto del contesto (massima priorità).
         # NB: niente taglio cieco del totale — il blocco allegati ha già il suo
