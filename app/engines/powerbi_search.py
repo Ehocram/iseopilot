@@ -500,12 +500,39 @@ class PowerBISearch:
                 _dbg(f"routing: {path} non leggibile ({type(e).__name__}: {e})")
         return []
 
+    @staticmethod
+    def _dataset_di(regola: dict) -> list[tuple[str, str]]:
+        """Dataset di una regola, come coppie (nome, nota).
+
+        Un argomento puo' vivere su piu' modelli: la produzione su consuntivi e
+        qualita', per esempio. Sono ammesse tre forme, dalla piu' semplice alla
+        piu' esplicita:
+          "dataset": "A"
+          "dataset": ["A", "B"]
+          "dataset": [{"nome": "A", "nota": "consuntivi"}, {"nome": "B", ...}]
+        La nota per-dataset e' quella che permette al planner di SCEGLIERE fra i
+        due invece di prendere il primo.
+        """
+        d = regola.get("dataset")
+        nota_regola = str(regola.get("nota") or "").strip()
+        voci = d if isinstance(d, list) else [d]
+        out = []
+        for v in voci:
+            if isinstance(v, dict):
+                nome = str(v.get("nome") or v.get("dataset") or "").strip()
+                nota = str(v.get("nota") or "").strip() or nota_regola
+            else:
+                nome, nota = str(v or "").strip(), nota_regola
+            if nome:
+                out.append((nome, nota))
+        return out
+
     def _regole_attive(self, query: str) -> list[dict]:
         """Regole le cui parole compaiono nella domanda."""
         termini = set(_norm_terms(query))
         attive = []
         for r in self._routing():
-            if not isinstance(r, dict) or not r.get("dataset"):
+            if not isinstance(r, dict) or not self._dataset_di(r):
                 continue
             parole = r.get("parole") or []
             if any(w in termini for p in parole for w in _norm_terms(str(p))):
@@ -515,20 +542,28 @@ class PowerBISearch:
     def routing_hint(self, query: str, catalog: dict) -> str:
         """Istruzione per il planner. Il solo riordino dei candidati non basta:
         il planner puo' comunque sceglierne un altro, quindi glielo si dice."""
-        righe = []
+        righe, totale = [], 0
         for r in self._regole_attive(query):
-            if not self._find_item(catalog, r["dataset"]):
-                continue   # regola che punta a un dataset non visibile: si tace
-            nota = (" — " + str(r["nota"])) if r.get("nota") else ""
-            righe.append(f"- Per questa domanda la fonte ufficiale e' il dataset "
-                         f"\"{r['dataset']}\"{nota}")
+            for nome, nota in self._dataset_di(r):
+                if not self._find_item(catalog, nome):
+                    continue   # dataset non visibile a questa utenza: si tace
+                righe.append(f"- \"{nome}\"" + (f" — {nota}" if nota else ""))
+                totale += 1
         if not righe:
             return ""
-        return ("\nFONTE UFFICIALE PER QUESTO ARGOMENTO (decisa dall'azienda, "
-                "prevale sulla somiglianza dei nomi):\n" + "\n".join(righe)
-                + "\nUsa quel dataset. Sceglierne un altro solo se non contiene "
-                "proprio i dati richiesti, e in tal caso dichiaralo nella "
-                "spiegazione finale.\n")
+        if totale == 1:
+            coda = ("Usa quel dataset. Sceglierne un altro solo se non contiene "
+                    "proprio i dati richiesti, e in tal caso dichiaralo nella "
+                    "spiegazione finale.")
+        else:
+            coda = ("Questo argomento vive su piu' modelli: scegli quello la cui "
+                    "descrizione corrisponde ai dati chiesti, e se servono "
+                    "entrambi interrogali in passi successivi. Dichiara sempre "
+                    "nella spiegazione quale hai usato. Non usare altri dataset "
+                    "salvo che nessuno di questi contenga il dato.")
+        return ("\nFONTI UFFICIALI PER QUESTO ARGOMENTO (decise dall'azienda, "
+                "prevalgono sulla somiglianza dei nomi):\n" + "\n".join(righe)
+                + "\n" + coda + "\n")
 
     def rank_datasets(self, catalog: dict, query: str) -> list[dict]:
         terms = _norm_terms(query)
@@ -558,14 +593,21 @@ class PowerBISearch:
         # Le regole di instradamento vincono sul punteggio lessicale: il dataset
         # dichiarato dall'azienda va in testa, e resta anche se il suo nome non
         # somiglia alle parole della domanda.
-        for r in reversed(self._regole_attive(query)):
-            it = self._find_item(catalog, r["dataset"])
-            if not it:
-                _dbg(f"routing: regola su '{r['dataset']}' ignorata, "
-                     f"dataset non visibile a questa utenza")
-                continue
-            top = [it] + [x for x in top if x.get("dataset") != it.get("dataset")]
-        return top[: max(self.CANDIDATES, 1)]
+        pinnati = []
+        for r in self._regole_attive(query):
+            for nome, _nota in self._dataset_di(r):
+                it = self._find_item(catalog, nome)
+                if not it:
+                    _dbg(f"routing: '{nome}' ignorato, non visibile a questa utenza")
+                    continue
+                if it not in pinnati:
+                    pinnati.append(it)
+        if pinnati:
+            nomi = {x.get("dataset") for x in pinnati}
+            top = pinnati + [x for x in top if x.get("dataset") not in nomi]
+        # con piu' dataset instradati il tetto va alzato, altrimenti l'ultimo
+        # dichiarato verrebbe tagliato proprio dalla regola che lo impone
+        return top[: max(self.CANDIDATES, len(pinnati))]
 
     def _find_item(self, catalog: dict, name: str) -> dict | None:
         name = (name or "").strip().lower()

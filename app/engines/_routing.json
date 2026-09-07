@@ -1,11 +1,22 @@
 {
  "_commento": [
   "Instradamento per argomento del connettore Power BI.",
-  "Quando una parola compare nella domanda, il dataset indicato diventa la fonte",
-  "ufficiale: va in testa ai candidati e il planner riceve l'istruzione di usarlo.",
-  "Questo file e' il default di fabbrica. Per modificarlo SENZA ricostruire",
-  "l'immagine, crea /data/powerbi/_routing.json sul server: ha la precedenza.",
-  "Le parole sono confrontate normalizzate (minuscole, senza accenti)."
+  "Se una parola compare nella domanda, i dataset indicati diventano le fonti",
+  "ufficiali: vanno in testa ai candidati e il planner riceve l'istruzione d'uso.",
+  "",
+  "Questo e' il file DI FABBRICA. Per modificarlo senza ricostruire l'immagine",
+  "crea /data/powerbi/_routing.json sul server: ha la precedenza, e le modifiche",
+  "sono raccolte senza riavviare il servizio.",
+  "",
+  "Il campo 'dataset' ammette tre forme:",
+  "  1) \"dataset\": \"Nome\"                        un solo modello",
+  "  2) \"dataset\": [\"Nome A\", \"Nome B\"]          piu' modelli, stessa importanza",
+  "  3) \"dataset\": [{\"nome\": \"A\", \"nota\": \"...\"}]  piu' modelli CON descrizione",
+  "",
+  "Con due o piu' modelli usa la forma 3: la nota per-dataset e' cio' che",
+  "permette al planner di scegliere il modello giusto invece del primo.",
+  "Il nome dev'essere quello esatto del catalogo (accettato anche 'Workspace / Dataset').",
+  "Le parole sono confrontate normalizzate: minuscole, senza accenti, lunghezza > 2."
  ],
  "regole": [
   {
@@ -27,5 +38,27 @@
     "budget vendite"
    ]
   }
- ]
+ ],
+ "_esempio_due_dataset": {
+  "_nota": "Modello da copiare in 'regole' sostituendo i nomi con quelli reali del catalogo.",
+  "parole": [
+   "produzione",
+   "operations",
+   "fermo",
+   "impianto",
+   "scarti",
+   "resa",
+   "oee"
+  ],
+  "dataset": [
+   {
+    "nome": "OPS-Nome Esatto Primo",
+    "nota": "consuntivi di produzione: volumi, ore, fermi"
+   },
+   {
+    "nome": "OPS-Nome Esatto Secondo",
+    "nota": "qualita': scarti, non conformita', resa"
+   }
+  ]
+ }
 }
