@@ -1,0 +1,31 @@
+{
+ "_commento": [
+  "Instradamento per argomento del connettore Power BI.",
+  "Quando una parola compare nella domanda, il dataset indicato diventa la fonte",
+  "ufficiale: va in testa ai candidati e il planner riceve l'istruzione di usarlo.",
+  "Questo file e' il default di fabbrica. Per modificarlo SENZA ricostruire",
+  "l'immagine, crea /data/powerbi/_routing.json sul server: ha la precedenza.",
+  "Le parole sono confrontate normalizzate (minuscole, senza accenti)."
+ ],
+ "regole": [
+  {
+   "dataset": "SALES-Performance Analysis",
+   "nota": "Modello ufficiale per fatturato e vendite",
+   "parole": [
+    "fatturato",
+    "vendite",
+    "vendita",
+    "venduto",
+    "sales",
+    "ricavi",
+    "revenue",
+    "fatturazione",
+    "ordini",
+    "clienti",
+    "cliente",
+    "margine",
+    "budget vendite"
+   ]
+  }
+ ]
+}

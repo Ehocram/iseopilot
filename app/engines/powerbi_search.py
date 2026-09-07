@@ -179,6 +179,7 @@ class PowerBISearch:
         self.cfg = cfg or {}
         self.token_file = Path(self.cfg.get("pbi_token_file", ""))
         self.catalog_file = Path(self.cfg.get("pbi_catalog_file", ""))
+        self.routing_file = Path(self.cfg.get("pbi_routing_file", "") or "")
         self.tm = PowerBITokenManager(
             self.cfg.get("pbi_client_id", ""),
             self.cfg.get("pbi_tenant_id", "common"),
@@ -455,6 +456,80 @@ class PowerBISearch:
                 "interrogabili": ok_n, "generato": catalog["generato"]}
 
     # ── Selezione candidati (prefiltro deterministico) ──────────────────
+    def _routing(self) -> list[dict]:
+        """Regole 'per questo argomento usa QUESTO dataset'.
+
+        Il punteggio lessicale sceglie il dataset che somiglia di piu' alle
+        parole della domanda, ma somiglianza non e' correttezza: piu' modelli
+        possono contenere la parola "vendite" e dare numeri diversi. Dove
+        l'azienda sa gia' qual e' la fonte ufficiale, va dichiarata.
+
+        Precedenza: file nel volume dati (modificabile senza ricostruire
+        l'immagine), poi il file di fabbrica accanto al codice. Non solleva mai:
+        una regola scritta male non deve impedire una ricerca.
+        """
+        import os, sys
+        percorsi = []
+        if str(self.routing_file):
+            percorsi.append(str(self.routing_file))
+        try:
+            base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+            percorsi.append(os.path.join(base, "_routing.json"))
+        except Exception:
+            pass
+        # Cache con controllo della data di modifica: si evita di rileggere il
+        # file otto volte per domanda, ma una modifica viene raccolta senza
+        # riavviare il servizio — che e' il motivo per cui il file sta nel volume.
+        for path in percorsi:
+            try:
+                if not (path and os.path.isfile(path)):
+                    continue
+                mtime = os.path.getmtime(path)
+                cache = getattr(self, "_routing_cache", None)
+                if cache and cache[0] == path and cache[1] == mtime:
+                    return cache[2]
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    dati = json.load(fh)
+                regole = dati.get("regole") if isinstance(dati, dict) else dati
+                if isinstance(regole, list) and regole:
+                    if not cache or cache[0] != path:
+                        _dbg(f"routing: {len(regole)} regole da {path}")
+                    self._routing_cache = (path, mtime, regole)
+                    return regole
+            except Exception as e:
+                _dbg(f"routing: {path} non leggibile ({type(e).__name__}: {e})")
+        return []
+
+    def _regole_attive(self, query: str) -> list[dict]:
+        """Regole le cui parole compaiono nella domanda."""
+        termini = set(_norm_terms(query))
+        attive = []
+        for r in self._routing():
+            if not isinstance(r, dict) or not r.get("dataset"):
+                continue
+            parole = r.get("parole") or []
+            if any(w in termini for p in parole for w in _norm_terms(str(p))):
+                attive.append(r)
+        return attive
+
+    def routing_hint(self, query: str, catalog: dict) -> str:
+        """Istruzione per il planner. Il solo riordino dei candidati non basta:
+        il planner puo' comunque sceglierne un altro, quindi glielo si dice."""
+        righe = []
+        for r in self._regole_attive(query):
+            if not self._find_item(catalog, r["dataset"]):
+                continue   # regola che punta a un dataset non visibile: si tace
+            nota = (" — " + str(r["nota"])) if r.get("nota") else ""
+            righe.append(f"- Per questa domanda la fonte ufficiale e' il dataset "
+                         f"\"{r['dataset']}\"{nota}")
+        if not righe:
+            return ""
+        return ("\nFONTE UFFICIALE PER QUESTO ARGOMENTO (decisa dall'azienda, "
+                "prevale sulla somiglianza dei nomi):\n" + "\n".join(righe)
+                + "\nUsa quel dataset. Sceglierne un altro solo se non contiene "
+                "proprio i dati richiesti, e in tal caso dichiaralo nella "
+                "spiegazione finale.\n")
+
     def rank_datasets(self, catalog: dict, query: str) -> list[dict]:
         terms = _norm_terms(query)
         scored = []
@@ -480,7 +555,17 @@ class PowerBISearch:
         top = [it for s, it in scored if s > 0][: self.CANDIDATES]
         if not top:  # nessun match lessicale: proponi comunque i primi
             top = [it for _s, it in scored][: self.CANDIDATES]
-        return top
+        # Le regole di instradamento vincono sul punteggio lessicale: il dataset
+        # dichiarato dall'azienda va in testa, e resta anche se il suo nome non
+        # somiglia alle parole della domanda.
+        for r in reversed(self._regole_attive(query)):
+            it = self._find_item(catalog, r["dataset"])
+            if not it:
+                _dbg(f"routing: regola su '{r['dataset']}' ignorata, "
+                     f"dataset non visibile a questa utenza")
+                continue
+            top = [it] + [x for x in top if x.get("dataset") != it.get("dataset")]
+        return top[: max(self.CANDIDATES, 1)]
 
     def _find_item(self, catalog: dict, name: str) -> dict | None:
         name = (name or "").strip().lower()
@@ -669,6 +754,9 @@ class PowerBISearch:
             "   Quando hai la query che risponde: il codice la esegue e mostra i dati.\n"
             "Concludi appena possibile. Sii essenziale."
         )
+        # Il riordino dei candidati da solo non basta: il planner li vede tutti e
+        # puo' comunque sceglierne un altro. La regola va detta esplicitamente.
+        system += self.routing_hint(query, catalog)
 
         history = [f"DOMANDA UTENTE:\n{query}",
                    f"\nDATASET CANDIDATI (permessi della tua utenza):\n{_desc(candidates)}"]

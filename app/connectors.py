@@ -35,6 +35,8 @@ from .engines import onedrive_search, dynamics_search, powerbi_search
 # CONDIVISO fra utenti (è lo schema dell'istanza F&O, uguale per tutti).
 _DATA_DIR = Path(os.environ.get("APP_DATA_DIR", "/data"))
 DYN_DIR = _DATA_DIR / "dynamics"
+PBI_DIR = _DATA_DIR / "powerbi"
+PBI_DIR.mkdir(parents=True, exist_ok=True)
 DYN_DIR.mkdir(parents=True, exist_ok=True)
 dynamics_search.CATALOG_FILE = DYN_DIR / "catalog.json"
 dynamics_search.SCHEMA_DIR = DYN_DIR / "schema"
@@ -421,6 +423,9 @@ def _pbi_full_cfg(user: str, ai_settings: dict | None) -> dict:
         "pbi_tenant_id": cfg["tenant_id"],
         "pbi_token_file": str(token_path),
         "pbi_catalog_file": str(token_path.parent / "powerbi_catalog.json"),
+        # Instradamento per argomento: NON per-utente e NON nell'immagine, cosi'
+        # si aggiungono regole modificando un file nel volume, senza rebuild.
+        "pbi_routing_file": str(PBI_DIR / "_routing.json"),
         # motore AI per il planner (stessa disciplina di _dyn_full_cfg)
         "ai_engine": ai.get("ai_engine", "claude"),
         "claude_api_key": ai.get("claude_api_key", ""),
