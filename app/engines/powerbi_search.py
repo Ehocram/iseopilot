@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import time
 import unicodedata
@@ -37,6 +38,14 @@ from pathlib import Path
 import requests
 
 PBI_API = "https://api.powerbi.com/v1.0/myorg"
+
+# Cosa deve FARE l'utente quando il catalogo non si popola. Sta qui, in un
+# punto solo, perche' e' l'unica parte di questi messaggi che cambia con
+# l'organizzazione: sovrascrivibile con la variabile d'ambiente PBI_SUPPORTO.
+PBI_SUPPORTO = os.environ.get("PBI_SUPPORTO") or (
+    "Per ottenere l'accesso apri un ticket in Jira al team Application "
+    "chiedendo di essere aggiunto al workspace Power BI come Membro: il ruolo "
+    "Visualizzatore non basta per interrogare i modelli.")
 PBI_RESOURCE = "https://analysis.windows.net/powerbi/api"
 # .default = permessi delegati configurati sull'app registration
 # (Dataset.Read.All, Workspace.Read.All, Report.Read.All) + refresh token.
@@ -289,6 +298,39 @@ class PowerBISearch:
             _dbg(f"catalogo: file illeggibile ({e})")
         return {}
 
+    @staticmethod
+    def _diagnosi(workspaces: int, items: list) -> str:
+        """Perche' il catalogo non e' utilizzabile, e cosa fare.
+
+        Sta qui e non nel solo punto di generazione perche' il messaggio serve
+        soprattutto DOPO: chi riapre la pagina vedeva "0 interrogabili" senza
+        alcuna spiegazione, e non aveva modo di sapere che si trattava di un
+        permesso mancante ne' a chi rivolgersi.
+        """
+        if not items:
+            if workspaces <= 1:
+                return ("Non risulti membro di alcun workspace Power BI. "
+                        "Attenzione: vedere un'app pubblicata o un report "
+                        "condiviso NON rende membri del workspace. " + PBI_SUPPORTO)
+            return (f"Vedi {workspaces - 1} workspace ma nessun modello semantico "
+                    "al loro interno: o non ne contengono, o non hai il permesso "
+                    "di elencarli. " + PBI_SUPPORTO)
+        ok = sum(1 for i in items if i.get("schema_ok"))
+        if ok == 0:
+            note = [i.get("schema_note", "") for i in items if i.get("schema_note")]
+            return ("Vedo i modelli semantici ma non riesco a leggerne lo schema: "
+                    "serve il permesso di Compilazione (Build) e un ruolo con "
+                    "diritti di scrittura sul workspace. Verificato: il ruolo "
+                    "Visualizzatore non basta, nemmeno concedendo Compilazione "
+                    "sul singolo modello. " + PBI_SUPPORTO
+                    + (f" Errore riportato: {note[0][:200]}" if note else ""))
+        if ok < len(items):
+            n = len(items) - ok
+            return (f"{n} model{'lo' if n == 1 else 'li'} su {len(items)} "
+                    f"non {'e' if n == 1 else 'sono'} interrogabil"
+                    f"{'e' if n == 1 else 'i'}: mancano i permessi. " + PBI_SUPPORTO)
+        return ""
+
     def catalog_status(self) -> dict:
         cat = self.load_catalog()
         if not cat:
@@ -302,6 +344,7 @@ class PowerBISearch:
             "datasets": len(items),
             "interrogabili": sum(1 for i in items if i.get("schema_ok")),
             "misure_rilevate": sum(1 for i in items if i.get("misure")),
+            "avviso": self._diagnosi(cat.get("workspaces", 0), items),
         }
 
     def _harvest_schema(self, group_id: str, dataset_id: str, token: str) -> dict:
@@ -457,39 +500,10 @@ class PowerBISearch:
             return {"errore": f"Catalogo non salvabile su disco: {e}"}
         ok_n = sum(1 for i in items if i["schema_ok"])
         _prog(f"completato: {len(items)} dataset, {ok_n} interrogabili")
-        # Un catalogo vuoto ha cause diverse e rimedi diversi: dirlo evita di
-        # cercare nel posto sbagliato (tipicamente nei permessi dell'app, che
-        # sono gli stessi per tutti gli utenti e quindi non c'entrano mai).
-        if not items:
-            if len(scopes) <= 1:      # solo l'area personale: nessun workspace
-                avviso = ("Non risulti membro di alcun workspace Power BI. "
-                          "Attenzione: vedere un'app pubblicata o un report "
-                          "condiviso NON rende membri del workspace, e l'API non "
-                          "lo restituisce. Chiedi di essere aggiunto ai workspace "
-                          "che ti servono, anche solo con ruolo Visualizzatore.")
-            else:
-                avviso = (f"Vedi {len(scopes) - 1} workspace ma nessun modello "
-                          "semantico al loro interno: o non ne contengono, o non "
-                          "hai il permesso di elencarli.")
-            return {"ok": True, "workspaces": len(scopes), "datasets": 0,
-                    "interrogabili": 0, "avviso": avviso}
-        if ok_n == 0:
-            note = [i.get("schema_note", "") for i in items if i.get("schema_note")]
-            campione = note[0][:200] if note else ""
-            return {"ok": True, "workspaces": len(scopes), "datasets": len(items),
-                    "interrogabili": 0, "generato": catalog["generato"],
-                    "avviso": ("Vedo i modelli semantici ma non riesco a leggerne "
-                               "lo schema: serve il permesso di Compilazione "
-                               "(Build) e, per la lettura dello schema, un ruolo "
-                               "con diritti di scrittura sul workspace. "
-                               "Verificato sul campo: Visualizzatore non basta "
-                               "nemmeno concedendo Compilazione sul modello. "
-                               "Con Membro funziona; Collaboratore e' il ruolo "
-                               "piu' basso con diritti di scrittura e dovrebbe "
-                               "bastare, ma va provato. Poi rigenera il catalogo. "
-                               + (f"Errore riportato: {campione}" if campione else ""))}
+        avviso = self._diagnosi(len(scopes), items)
         return {"ok": True, "workspaces": len(scopes), "datasets": len(items),
-                "interrogabili": ok_n, "generato": catalog["generato"]}
+                "interrogabili": ok_n, "generato": catalog["generato"],
+                "avviso": avviso}
 
     # ── Selezione candidati (prefiltro deterministico) ──────────────────
     def _routing(self) -> list[dict]:

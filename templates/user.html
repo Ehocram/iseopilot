@@ -156,7 +156,10 @@
             {% if pbi_connected %}
             <div style="margin-top:12px;">
               {% if pbi_catalog.present %}
-                <span class="badge set">{{ t("Catalogo") }}: {{ pbi_catalog.datasets }} dataset · {{ pbi_catalog.interrogabili }} {{ t("interrogabili") }} · {{ pbi_catalog.generato }}</span>
+                <span class="badge {% if pbi_catalog.avviso %}unset{% else %}set{% endif %}">{{ t("Catalogo") }}: {{ pbi_catalog.datasets }} dataset · {{ pbi_catalog.interrogabili }} {{ t("interrogabili") }} · {{ pbi_catalog.generato }}</span>
+                {% if pbi_catalog.avviso %}
+                <div class="hint" style="margin-top:8px; padding:10px 12px; border-radius:8px; border:1px solid var(--iseo,#ec1d2b); background:rgba(236,29,43,.10); display:block;">⚠️ {{ pbi_catalog.avviso }}</div>
+                {% endif %}
               {% else %}
                 <span class="badge unset">{{ t("Catalogo non ancora generato") }}</span>
               {% endif %}
