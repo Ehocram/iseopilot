@@ -300,7 +300,7 @@
             <input type="text" id="pbi_tenant_id" name="pbi_tenant_id" value="{{ pbi_tenant_id }}" style="font-family:var(--mono);">
           </div>
         </div>
-        <div class="hint">Power BI usa la stessa app registration (device code): servono in Entra i permessi <strong>delegati</strong> Power BI Service — Dataset.Read.All, Workspace.Read.All, Report.Read.All — con admin consent, e il tenant setting <strong>«Dataset Execute Queries REST API»</strong> (Integration settings) abilitato nel portale amministrazione Power BI. Ogni query gira con l'identità dell'utente: contano i suoi permessi (Lettura + Build sul dataset) e la sua RLS.</div>
+        <div class="hint">Power BI usa la stessa app registration (device code): servono in Entra i permessi <strong>delegati</strong> Power BI Service — Dataset.Read.All, Workspace.Read.All, Report.Read.All — con admin consent, e il tenant setting <strong>«Dataset Execute Queries REST API»</strong> (Integration settings) abilitato nel portale amministrazione Power BI. Ogni query gira con l'identità dell'utente: contano i suoi permessi (Lettura + Build sul dataset) e la sua RLS. <strong>Attenzione al ruolo</strong>: <em>Visualizzatore</em> basta per ELENCARE workspace e modelli nel catalogo, ma non concede il <em>Build</em> e quindi i modelli risultano «0 interrogabili». Serve <em>Collaboratore</em>/<em>Membro</em>, oppure Visualizzatore con <em>Compilazione</em> concessa sul singolo modello.</div>
         <button type="button" class="ghost" id="autofillBtn">{{ t("Auto-compila con i valori ISEO") }}</button>
         <div class="hint" style="margin-top:8px;">Gli utenti collegano il proprio account dalla pagina <em>Connessioni</em> (sign-in device code).</div>
       </div>

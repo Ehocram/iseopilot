@@ -472,7 +472,13 @@ class PowerBISearch:
                     "interrogabili": 0, "generato": catalog["generato"],
                     "avviso": ("Vedo i modelli semantici ma non riesco a leggerne "
                                "lo schema: serve il permesso di Compilazione "
-                               "(Build) sul modello, non basta la lettura. "
+                               "(Build), che la sola lettura non comprende. "
+                               "Attenzione: il ruolo Visualizzatore sul workspace "
+                               "NON lo concede. Due rimedi: portare il ruolo a "
+                               "Collaboratore o Membro, oppure restare "
+                               "Visualizzatore e concedere Compilazione sul "
+                               "singolo modello (Gestisci autorizzazioni). "
+                               "Poi rigenera il catalogo. "
                                + (f"Errore riportato: {campione}" if campione else ""))}
         return {"ok": True, "workspaces": len(scopes), "datasets": len(items),
                 "interrogabili": ok_n, "generato": catalog["generato"]}
