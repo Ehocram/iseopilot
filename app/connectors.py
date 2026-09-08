@@ -211,6 +211,14 @@ def m365_user_allowed(user: str) -> bool:
     return store.get_user_setting(user, "m365_access", "0") == "1"
 
 
+def pbi_user_allowed(user: str) -> bool:
+    """Concessione individuale del connettore Power BI, sopra al kill-switch
+    admin. Stesso schema del grant M365 e Dub Studio: da spenta l'utente non
+    vede il connettore e le rotte rifiutano, cosi' la restrizione non e' solo
+    un nascondere il pulsante."""
+    return store.get_user_setting(user, "powerbi_access", "0") == "1"
+
+
 def m365_full_cfg(user: str) -> dict:
     c = ms_cfg("m365")
     return {"client_id": c["client_id"], "tenant_id": c["tenant_id"],
@@ -452,6 +460,8 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
             return "[Microsoft 365] Connettore disabilitato dall'amministratore.", []
         if not m365_user_allowed(user):
             return "[Microsoft 365] Accesso non abilitato per la tua utenza.", []
+    if conn == "powerbi" and not pbi_user_allowed(user):
+        return "[Power BI] Accesso non abilitato per la tua utenza.", []
         fonti = m365_fonti_attive()
         if not fonti:
             return "[Microsoft 365] Nessuna fonte abilitata dall'amministratore.", []

@@ -544,7 +544,8 @@ def chat_page(request: Request):
     _fold = bool(store.department_folders(dept))
     _od = connectors.is_connected(uid, "onedrive")
     _dy = connectors.is_connected(uid, "dynamics")
-    _pb_on = connectors.is_configured("powerbi")  # kill-switch admin incluso
+    _pb_on = (connectors.is_configured("powerbi")      # kill-switch admin
+              and connectors.pbi_user_allowed(uid))     # + concessione individuale
     _pb = _pb_on and connectors.is_connected(uid, "powerbi")
     _m3_on = connectors.is_configured("m365") and connectors.m365_user_allowed(uid)
     _m3 = _m3_on and connectors.is_connected(uid, "m365")
@@ -688,6 +689,7 @@ def api_chat(request: Request, body: ChatRequest):
             "onedrive": connectors.is_connected(uid, "onedrive"),
             "dynamics": connectors.is_connected(uid, "dynamics"),
             "powerbi": connectors.is_configured("powerbi")
+                       and connectors.pbi_user_allowed(uid)
                        and connectors.is_connected(uid, "powerbi"),
             "m365": connectors.is_configured("m365")
                     and connectors.m365_user_allowed(uid)
@@ -705,7 +707,10 @@ def api_chat(request: Request, body: ChatRequest):
                 "dynamics": "Dynamics 365 non è connesso: collegalo dalla pagina Connessioni.",
                 "powerbi": ("Il connettore Power BI è disabilitato dall'amministratore."
                             if not connectors.is_configured("powerbi")
-                            else "Power BI non è connesso: collegalo dalla pagina Connessioni."),
+                            else ("L'accesso a Power BI non è abilitato per la tua "
+                                  "utenza: chiedi all'amministratore."
+                                  if not connectors.pbi_user_allowed(uid)
+                                  else "Power BI non è connesso: collegalo dalla pagina Connessioni.")),
                 "m365": ("Il connettore Microsoft 365 è disabilitato dall'amministratore."
                          if not connectors.is_configured("m365")
                          else ("L'accesso a Microsoft 365 non è abilitato per la tua "
@@ -1495,6 +1500,8 @@ def users_page(request: Request):
     return templates.TemplateResponse(request, "admin_users.html", _ctx(
         request, user,
         users=store.list_users(), departments=store.list_departments(),
+        pbi_grants={u["username"]: store.get_user_setting(u["username"], "powerbi_access", "0") == "1"
+                    for u in store.list_users()},
         m365_grants={u["username"]: store.get_user_setting(u["username"], "m365_access", "0") == "1"
                      for u in store.list_users()},
         dub_grants={u["username"]: store.get_user_setting(u["username"], "dub_access", "0") == "1"
@@ -1537,6 +1544,7 @@ def users_update(
     active: str = Form("0"),
     dub_access: str = Form("0"),
     m365_access: str = Form("0"),
+    powerbi_access: str = Form("0"),
     reset_password: str = Form(""),
 ):
     admin = auth.current_user(request)
@@ -1560,6 +1568,12 @@ def users_update(
         store.set_user_setting(username, "m365_access", "1" if _m3_dopo else "0")
         _audit(request, admin["username"],
                "m365_grant" if _m3_dopo else "m365_revoca", f"utente={username}")
+    _pb_prima = store.get_user_setting(username, "powerbi_access", "0") == "1"
+    _pb_dopo = powerbi_access == "1"
+    if _pb_prima != _pb_dopo:
+        store.set_user_setting(username, "powerbi_access", "1" if _pb_dopo else "0")
+        _audit(request, admin["username"],
+               "powerbi_grant" if _pb_dopo else "powerbi_revoca", f"utente={username}")
 
     # Sicurezza: non lasciare l'app senza alcun amministratore attivo.
     losing_admin = target["is_admin"] and (not want_admin or not want_active)
@@ -1940,6 +1954,7 @@ def settings_page(request: Request):
         note_enabled=memory.note_enabled(),
         note_personali=memory.note_list(uname) if memory.note_enabled() else [],
         pbi_enabled=connectors.pbi_enabled(),
+        pbi_allowed=connectors.pbi_user_allowed(uname),
         pbi_connected=connectors.is_connected(uname, "powerbi"),
         pbi_configured=connectors.is_configured("powerbi"),
         pbi_catalog=connectors.pbi_catalog_status(uname),
@@ -1987,6 +2002,9 @@ def connect_start(request: Request, conn: str):
         if not connectors.m365_user_allowed(user["username"]):
             return JSONResponse({"ok": False, "error":
                 "Accesso a Microsoft 365 non abilitato per la tua utenza."}, status_code=403)
+    if conn == "powerbi" and not connectors.pbi_user_allowed(user["username"]):
+        return JSONResponse({"ok": False, "error":
+            "Accesso a Power BI non abilitato per la tua utenza."}, status_code=403)
     return JSONResponse(connectors.start(user["username"], conn))
 
 
@@ -2364,6 +2382,9 @@ def pbi_catalog_start(request: Request):
     user = auth.current_user(request)
     if not user:
         return JSONResponse({"ok": False, "errore": "Sessione scaduta."}, status_code=401)
+    if not connectors.pbi_user_allowed(user["username"]):
+        return JSONResponse({"ok": False, "errore":
+            "Accesso a Power BI non abilitato per la tua utenza."}, status_code=403)
     res = connectors.pbi_build_start(user["username"])
     if res.get("ok"):
         _audit(request, user["username"], "powerbi_catalogo", "generazione avviata")
