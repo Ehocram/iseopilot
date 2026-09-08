@@ -306,7 +306,15 @@ class PowerBISearch:
 
     def _harvest_schema(self, group_id: str, dataset_id: str, token: str) -> dict:
         """Tabelle+colonne del modello via EVALUATE COLUMNSTATISTICS():
-        pura DAX, funziona sull'endpoint JSON anche su capacità condivisa.
+        pura DAX, funziona sull'endpoint JSON anche su capacità condivisa
+        (nessun requisito di capacità dedicata né di licenza oltre la Pro).
+
+        LIMITE NOTO sui permessi: COLUMNSTATISTICS legge le statistiche di tutte
+        le colonne di tutte le tabelle e, come le funzioni DAX di metadati,
+        richiede piu' del solo Build. Verificato sul campo: con ruolo
+        Visualizzatore fallisce anche concedendo Compilazione sul modello;
+        serve un ruolo con diritti di scrittura sul workspace (Collaboratore o
+        Membro). La documentazione della funzione non lo dichiara.
         Le tabelle-data automatiche vengono filtrate (rumore, non dati)."""
         res = self._execute_dax(group_id, dataset_id, "EVALUATE COLUMNSTATISTICS()",
                                 token, timeout=90)
@@ -472,13 +480,13 @@ class PowerBISearch:
                     "interrogabili": 0, "generato": catalog["generato"],
                     "avviso": ("Vedo i modelli semantici ma non riesco a leggerne "
                                "lo schema: serve il permesso di Compilazione "
-                               "(Build), che la sola lettura non comprende. "
-                               "Attenzione: il ruolo Visualizzatore sul workspace "
-                               "NON lo concede. Due rimedi: portare il ruolo a "
-                               "Collaboratore o Membro, oppure restare "
-                               "Visualizzatore e concedere Compilazione sul "
-                               "singolo modello (Gestisci autorizzazioni). "
-                               "Poi rigenera il catalogo. "
+                               "(Build) e, per la lettura dello schema, un ruolo "
+                               "con diritti di scrittura sul workspace. "
+                               "Verificato sul campo: Visualizzatore non basta "
+                               "nemmeno concedendo Compilazione sul modello. "
+                               "Con Membro funziona; Collaboratore e' il ruolo "
+                               "piu' basso con diritti di scrittura e dovrebbe "
+                               "bastare, ma va provato. Poi rigenera il catalogo. "
                                + (f"Errore riportato: {campione}" if campione else ""))}
         return {"ok": True, "workspaces": len(scopes), "datasets": len(items),
                 "interrogabili": ok_n, "generato": catalog["generato"]}
