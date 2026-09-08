@@ -449,9 +449,31 @@ class PowerBISearch:
             return {"errore": f"Catalogo non salvabile su disco: {e}"}
         ok_n = sum(1 for i in items if i["schema_ok"])
         _prog(f"completato: {len(items)} dataset, {ok_n} interrogabili")
+        # Un catalogo vuoto ha cause diverse e rimedi diversi: dirlo evita di
+        # cercare nel posto sbagliato (tipicamente nei permessi dell'app, che
+        # sono gli stessi per tutti gli utenti e quindi non c'entrano mai).
         if not items:
-            return {"ok": True, "workspaces": len(scopes), "datasets": 0, "interrogabili": 0,
-                    "avviso": "La tua utenza non vede alcun dataset Power BI."}
+            if len(scopes) <= 1:      # solo l'area personale: nessun workspace
+                avviso = ("Non risulti membro di alcun workspace Power BI. "
+                          "Attenzione: vedere un'app pubblicata o un report "
+                          "condiviso NON rende membri del workspace, e l'API non "
+                          "lo restituisce. Chiedi di essere aggiunto ai workspace "
+                          "che ti servono, anche solo con ruolo Visualizzatore.")
+            else:
+                avviso = (f"Vedi {len(scopes) - 1} workspace ma nessun modello "
+                          "semantico al loro interno: o non ne contengono, o non "
+                          "hai il permesso di elencarli.")
+            return {"ok": True, "workspaces": len(scopes), "datasets": 0,
+                    "interrogabili": 0, "avviso": avviso}
+        if ok_n == 0:
+            note = [i.get("schema_note", "") for i in items if i.get("schema_note")]
+            campione = note[0][:200] if note else ""
+            return {"ok": True, "workspaces": len(scopes), "datasets": len(items),
+                    "interrogabili": 0, "generato": catalog["generato"],
+                    "avviso": ("Vedo i modelli semantici ma non riesco a leggerne "
+                               "lo schema: serve il permesso di Compilazione "
+                               "(Build) sul modello, non basta la lettura. "
+                               + (f"Errore riportato: {campione}" if campione else ""))}
         return {"ok": True, "workspaces": len(scopes), "datasets": len(items),
                 "interrogabili": ok_n, "generato": catalog["generato"]}
 
