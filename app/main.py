@@ -2034,38 +2034,6 @@ def connect_logout(request: Request, conn: str):
     return RedirectResponse(url="/settings?saved=1", status_code=303)
 
 
-@app.post("/knowledge/folder/add")
-def knowledge_folder_add(request: Request, path: str = Form(...)):
-    user = auth.current_user(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    if not user["is_admin"]:
-        raise HTTPException(status_code=403, detail="Solo l'amministratore può aggiungere cartelle.")
-    dept = user.get("department") or ""
-    p = (path or "").strip()
-    if not p or not Path(p).exists():
-        return RedirectResponse(url="/knowledge?err=Percorso+non+raggiungibile+dal+server:+" + p.replace(" ", "+")[:160], status_code=303)
-    store.add_department_folder(dept, p)
-    _audit(request, user["username"], "cartella_aggiunta", f"reparto={dept}, percorso={p}")
-    # Indicizzazione automatica in background (anche share di rete): la cartella
-    # è subito agganciata; l'indice si costruisce senza bloccare la risposta.
-    return RedirectResponse(url="/knowledge?msg=Cartella+aggiunta,+indicizzazione+avviata.",
-                            status_code=303, background=BackgroundTask(knowledge.folder_reindex, p))
-
-
-@app.post("/knowledge/folder/remove")
-def knowledge_folder_remove(request: Request, path: str = Form(...)):
-    user = auth.current_user(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    if not user["is_admin"]:
-        raise HTTPException(status_code=403, detail="Solo l'amministratore può rimuovere cartelle.")
-    dept = user.get("department") or ""
-    store.remove_department_folder(dept, path)
-    _audit(request, user["username"], "cartella_rimossa", f"reparto={dept}, percorso={path}")
-    return RedirectResponse(url="/knowledge?msg=Cartella+rimossa.", status_code=303)
-
-
 @app.post("/admin/kb/reembed")
 def admin_kb_reembed(request: Request):
     user = auth.current_user(request)
