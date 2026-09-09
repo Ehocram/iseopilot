@@ -1,22 +1,26 @@
 {
  "_commento": [
   "Instradamento per argomento del connettore Power BI.",
-  "Se una parola compare nella domanda, i dataset indicati diventano le fonti",
-  "ufficiali: vanno in testa ai candidati e il planner riceve l'istruzione d'uso.",
+  "Se le parole di una voce compaiono nella domanda, i dataset indicati diventano",
+  "le fonti ufficiali: vanno in testa ai candidati e il planner riceve",
+  "l'istruzione di usarli.",
   "",
   "Questo e' il file DI FABBRICA. Per modificarlo senza ricostruire l'immagine",
   "crea /data/powerbi/_routing.json sul server: ha la precedenza, e le modifiche",
   "sono raccolte senza riavviare il servizio.",
   "",
   "Il campo 'dataset' ammette tre forme:",
-  "  1) \"dataset\": \"Nome\"                        un solo modello",
-  "  2) \"dataset\": [\"Nome A\", \"Nome B\"]          piu' modelli, stessa importanza",
-  "  3) \"dataset\": [{\"nome\": \"A\", \"nota\": \"...\"}]  piu' modelli CON descrizione",
+  "  1) \"dataset\": \"Nome\"",
+  "  2) \"dataset\": [\"Nome A\", \"Nome B\"]",
+  "  3) \"dataset\": [{\"nome\": \"A\", \"nota\": \"...\"}]   <- da usare con piu' modelli",
+  "La 'nota' e' cio' che permette al planner di SCEGLIERE fra due modelli:",
+  "descrivi cosa contiene ciascuno, non come si chiama.",
   "",
-  "Con due o piu' modelli usa la forma 3: la nota per-dataset e' cio' che",
-  "permette al planner di scegliere il modello giusto invece del primo.",
-  "Il nome dev'essere quello esatto del catalogo (accettato anche 'Workspace / Dataset').",
-  "Le parole sono confrontate normalizzate: minuscole, senza accenti, lunghezza > 2."
+  "PAROLE: una voce di piu' parole e' una LOCUZIONE e vale solo se compaiono",
+  "tutte. Cosi' \"budget vendite\" non si attiva sul solo \"budget\", che da solo",
+  "e' ambiguo fra vendite e produzione. Confronto normalizzato: minuscole,",
+  "senza accenti, parole di almeno 3 lettere.",
+  "I nomi dei dataset devono essere quelli esatti del catalogo."
  ],
  "regole": [
   {
@@ -37,28 +41,39 @@
     "margine",
     "budget vendite"
    ]
+  },
+  {
+   "_nota_regola": "Produzione: due modelli, distinti dalle note.",
+   "parole": [
+    "produzione",
+    "produttivo",
+    "operations",
+    "operation",
+    "distinta",
+    "distinte",
+    "bom",
+    "cicli",
+    "ciclo lavorazione",
+    "semilavorati",
+    "avanzamento produzione",
+    "fermo impianto",
+    "fermi impianto",
+    "scarti",
+    "resa",
+    "oee",
+    "budget produzione",
+    "budget operations"
+   ],
+   "dataset": [
+    {
+     "nome": "OPERATIONS-BOM integrity check",
+     "nota": "verifica e integrita' delle distinte base: anomalie, incongruenze e completezza delle BOM"
+    },
+    {
+     "nome": "OPERATIONS-Budget analysis",
+     "nota": "analisi del budget di produzione: valori a budget, consuntivo e scostamenti"
+    }
+   ]
   }
- ],
- "_esempio_due_dataset": {
-  "_nota": "Modello da copiare in 'regole' sostituendo i nomi con quelli reali del catalogo.",
-  "parole": [
-   "produzione",
-   "operations",
-   "fermo",
-   "impianto",
-   "scarti",
-   "resa",
-   "oee"
-  ],
-  "dataset": [
-   {
-    "nome": "OPS-Nome Esatto Primo",
-    "nota": "consuntivi di produzione: volumi, ore, fermi"
-   },
-   {
-    "nome": "OPS-Nome Esatto Secondo",
-    "nota": "qualita': scarti, non conformita', resa"
-   }
-  ]
- }
+ ]
 }

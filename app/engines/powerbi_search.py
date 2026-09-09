@@ -584,9 +584,16 @@ class PowerBISearch:
         for r in self._routing():
             if not isinstance(r, dict) or not self._dataset_di(r):
                 continue
+            # Una voce di piu' parole e' una LOCUZIONE: vale se compaiono
+            # tutte. Trattarla come "una qualsiasi" rende il file ingannevole,
+            # perche' "budget vendite" si attiverebbe sul solo "budget" e
+            # catturerebbe anche le domande sul budget di produzione.
             parole = r.get("parole") or []
-            if any(w in termini for p in parole for w in _norm_terms(str(p))):
-                attive.append(r)
+            for voce in parole:
+                tok = _norm_terms(str(voce))
+                if tok and all(w in termini for w in tok):
+                    attive.append(r)
+                    break
         return attive
 
     def routing_hint(self, query: str, catalog: dict) -> str:
