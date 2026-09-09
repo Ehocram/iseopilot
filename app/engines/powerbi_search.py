@@ -189,6 +189,7 @@ class PowerBISearch:
         self.token_file = Path(self.cfg.get("pbi_token_file", ""))
         self.catalog_file = Path(self.cfg.get("pbi_catalog_file", ""))
         self.routing_file = Path(self.cfg.get("pbi_routing_file", "") or "")
+        self.user_dept = str(self.cfg.get("pbi_user_dept", "") or "").strip()
         self.tm = PowerBITokenManager(
             self.cfg.get("pbi_client_id", ""),
             self.cfg.get("pbi_tenant_id", "common"),
@@ -577,8 +578,21 @@ class PowerBISearch:
                 out.append((nome, nota))
         return out
 
+    @staticmethod
+    def _stesso_reparto(reparti, dept: str) -> bool:
+        d = " ".join(_norm_terms(dept))
+        return any(" ".join(_norm_terms(str(r))) == d for r in (reparti or []) if d)
+
     def _regole_attive(self, query: str) -> list[dict]:
-        """Regole le cui parole compaiono nella domanda."""
+        """Regole le cui parole compaiono nella domanda.
+
+        Quando piu' regole si attivano la domanda e' ambigua ("ordini di
+        produzione" tocca vendite e produzione): in quel caso vince il reparto
+        dell'utente, se una delle regole lo dichiara. Il reparto NON entra mai
+        in gioco quando nessuna regola si attiva: dirottare una domanda
+        generica sul dataset del proprio reparto significherebbe rispondere
+        dalla fonte sbagliata a chi chiede altro.
+        """
         termini = set(_norm_terms(query))
         attive = []
         for r in self._routing():
@@ -594,6 +608,19 @@ class PowerBISearch:
                 if tok and all(w in termini for w in tok):
                     attive.append(r)
                     break
+        self._dirimente = ""
+        if len(attive) > 1 and self.user_dept:
+            mie = [r for r in attive if self._stesso_reparto(r.get("reparti"), self.user_dept)]
+            if mie:
+                scartate = [d for r in attive if r not in mie
+                            for d, _n in self._dataset_di(r)]
+                _dbg(f"routing: ambiguita' risolta col reparto '{self.user_dept}' "
+                     f"— escluse {scartate}")
+                # Annotato per l'istruzione al planner: una scelta fatta al posto
+                # dell'utente va dichiarata, altrimenti chi legge non capisce
+                # perche' la risposta guardi una fonte e non l'altra.
+                self._dirimente = self.user_dept
+                return mie
         return attive
 
     def routing_hint(self, query: str, catalog: dict) -> str:
@@ -618,6 +645,11 @@ class PowerBISearch:
                     "entrambi interrogali in passi successivi. Dichiara sempre "
                     "nella spiegazione quale hai usato. Non usare altri dataset "
                     "salvo che nessuno di questi contenga il dato.")
+        dirim = getattr(self, "_dirimente", "")
+        if dirim:
+            coda += (f" La domanda era ambigua fra piu' aree: e' stata scelta "
+                     f"quella del reparto dell'utente ({dirim}). Dillo nella "
+                     f"spiegazione, cosi' chi legge sa perche' guardiamo qui.")
         return ("\nFONTI UFFICIALI PER QUESTO ARGOMENTO (decise dall'azienda, "
                 "prevalgono sulla somiglianza dei nomi):\n" + "\n".join(righe)
                 + "\n" + coda + "\n")

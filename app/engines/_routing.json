@@ -20,7 +20,13 @@
   "tutte. Cosi' \"budget vendite\" non si attiva sul solo \"budget\", che da solo",
   "e' ambiguo fra vendite e produzione. Confronto normalizzato: minuscole,",
   "senza accenti, parole di almeno 3 lettere.",
-  "I nomi dei dataset devono essere quelli esatti del catalogo."
+  "I nomi dei dataset devono essere quelli esatti del catalogo.",
+  "",
+  "REPARTI (facoltativo): dirime le AMBIGUITA'. Se una domanda attiva piu'",
+  "regole, vince quella del reparto dell'utente. Non ha alcun effetto quando",
+  "si attiva una regola sola, ne' quando non se ne attiva nessuna: una domanda",
+  "che non corrisponde a niente non viene dirottata sul reparto di chi la pone.",
+  "I nomi devono corrispondere ai dipartimenti configurati nell'applicazione."
  ],
  "regole": [
   {
@@ -40,6 +46,9 @@
     "cliente",
     "margine",
     "budget vendite"
+   ],
+   "reparti": [
+    "Sales"
    ]
   },
   {
@@ -73,6 +82,9 @@
      "nome": "OPERATIONS-Budget analysis",
      "nota": "analisi del budget di produzione: valori a budget, consuntivo e scostamenti"
     }
+   ],
+   "reparti": [
+    "Operations"
    ]
   }
  ]

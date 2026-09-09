@@ -434,6 +434,9 @@ def _pbi_full_cfg(user: str, ai_settings: dict | None) -> dict:
         # Instradamento per argomento: NON per-utente e NON nell'immagine, cosi'
         # si aggiungono regole modificando un file nel volume, senza rebuild.
         "pbi_routing_file": str(PBI_DIR / "_routing.json"),
+        # Reparto dell'utente: serve solo a dirimere le ambiguita' fra regole
+        # di instradamento, mai a decidere da solo dove cercare.
+        "pbi_user_dept": (store.get_user(user) or {}).get("department", ""),
         # motore AI per il planner (stessa disciplina di _dyn_full_cfg)
         "ai_engine": ai.get("ai_engine", "claude"),
         "claude_api_key": ai.get("claude_api_key", ""),
