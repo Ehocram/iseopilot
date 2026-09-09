@@ -609,19 +609,67 @@ class PowerBISearch:
                     attive.append(r)
                     break
         self._dirimente = ""
-        if len(attive) > 1 and self.user_dept:
+        self._ambigue = []
+        if len(attive) <= 1:
+            return attive
+
+        # 1) L'utente ha nominato l'area (o il dataset): decide lui, non noi.
+        #    Serve anche a uscire dal chiarimento: se rispondendo "produzione"
+        #    la domanda arricchita contenesse ancora i termini di entrambe le
+        #    aree, senza questo gradino richiederemmo il chiarimento in cerchio.
+        esplicite = [r for r in attive if self._nominata(r, termini, query)]
+        if len(esplicite) == 1:
+            _dbg(f"routing: area indicata esplicitamente dall'utente")
+            return esplicite
+
+        # 2) Il reparto dell'utente, se una delle regole lo dichiara.
+        if self.user_dept:
             mie = [r for r in attive if self._stesso_reparto(r.get("reparti"), self.user_dept)]
-            if mie:
+            if len(mie) == 1:
                 scartate = [d for r in attive if r not in mie
                             for d, _n in self._dataset_di(r)]
                 _dbg(f"routing: ambiguita' risolta col reparto '{self.user_dept}' "
                      f"— escluse {scartate}")
-                # Annotato per l'istruzione al planner: una scelta fatta al posto
-                # dell'utente va dichiarata, altrimenti chi legge non capisce
-                # perche' la risposta guardi una fonte e non l'altra.
+                # Una scelta fatta al posto dell'utente va dichiarata: altrimenti
+                # chi legge non capisce perche' guardiamo una fonte e non l'altra.
                 self._dirimente = self.user_dept
                 return mie
+
+        # 3) Ambigua davvero: lo si dice e si chiede, invece di tirare a sorte.
+        self._ambigue = attive
+        _dbg(f"routing: ambiguita' NON risolta fra "
+             f"{[r.get('area') or self._dataset_di(r)[0][0] for r in attive]}")
         return attive
+
+    @staticmethod
+    def _nominata(regola: dict, termini: set, query: str) -> bool:
+        """Vero se la domanda nomina esplicitamente l'area o un suo dataset."""
+        area = str(regola.get("area") or "").strip()
+        if area and all(w in termini for w in _norm_terms(area)):
+            return True
+        q = " ".join(_norm_terms(query))
+        for nome, _n in PowerBISearch._dataset_di(regola):
+            if " ".join(_norm_terms(nome)) in q:
+                return True
+        return False
+
+    def domanda_di_chiarimento(self, catalog: dict) -> str:
+        """Testo da restituire quando l'ambiguita' resta: si chiede all'utente
+        invece di scegliere una fonte a caso e presentarla come quella giusta."""
+        aree = []
+        for r in getattr(self, "_ambigue", []):
+            nomi = [n for n, _ in self._dataset_di(r) if self._find_item(catalog, n)]
+            if not nomi:
+                continue
+            etichetta = str(r.get("area") or "").strip() or nomi[0]
+            aree.append(f"- **{etichetta}** ({', '.join(nomi)})")
+        if len(aree) < 2:
+            return ""
+        return ("[Power BI] La domanda può riferirsi a più aree, che hanno modelli "
+                "e numeri diversi:\n" + "\n".join(aree) +
+                "\n\nPer non darti un dato preso dalla fonte sbagliata: a quale "
+                "area ti riferisci? Puoi anche indicare direttamente il nome del "
+                "modello.")
 
     def routing_hint(self, query: str, catalog: dict) -> str:
         """Istruzione per il planner. Il solo riordino dei candidati non basta:
@@ -996,6 +1044,11 @@ class PowerBISearch:
                     "(catalogo vuoto).")
         _dbg(f"search: query={query[:80]!r} | candidati="
              + ", ".join(c["dataset"] for c in candidates))
+        # Ambiguita' non risolta: meglio una domanda che un numero preso dalla
+        # fonte sbagliata, che sarebbe indistinguibile da uno giusto.
+        chiarimento = self.domanda_di_chiarimento(catalog)
+        if chiarimento:
+            return chiarimento
         out = self._agentic(query, catalog, candidates, token)
         if out:
             return out

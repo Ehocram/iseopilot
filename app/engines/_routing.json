@@ -26,7 +26,11 @@
   "regole, vince quella del reparto dell'utente. Non ha alcun effetto quando",
   "si attiva una regola sola, ne' quando non se ne attiva nessuna: una domanda",
   "che non corrisponde a niente non viene dirottata sul reparto di chi la pone.",
-  "I nomi devono corrispondere ai dipartimenti configurati nell'applicazione."
+  "I nomi devono corrispondere ai dipartimenti configurati nell'applicazione.",
+  "",
+  "AREA (facoltativo): etichetta leggibile dell'ambito. Serve a due cose —",
+  "comparire nella domanda di chiarimento quando l'ambiguita' resta, e permettere",
+  "all'utente di risolverla nominandola ('parlo di produzione')."
  ],
  "regole": [
   {
@@ -49,7 +53,8 @@
    ],
    "reparti": [
     "Sales"
-   ]
+   ],
+   "area": "Vendite"
   },
   {
    "_nota_regola": "Produzione: due modelli, distinti dalle note.",
@@ -85,7 +90,8 @@
    ],
    "reparti": [
     "Operations"
-   ]
+   ],
+   "area": "Produzione"
   }
  ]
 }
