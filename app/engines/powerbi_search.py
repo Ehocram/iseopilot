@@ -31,6 +31,7 @@ import datetime
 import json
 import os
 import re
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -42,6 +43,32 @@ PBI_API = "https://api.powerbi.com/v1.0/myorg"
 # Cosa deve FARE l'utente quando il catalogo non si popola. Sta qui, in un
 # punto solo, perche' e' l'unica parte di questi messaggi che cambia con
 # l'organizzazione: sovrascrivibile con la variabile d'ambiente PBI_SUPPORTO.
+# Quante volte chiedere un chiarimento prima di decidere col reparto. Sotto
+# c'e' la memoria di cosa e' gia' stato chiesto a chi: senza, la domanda si
+# ripeterebbe a ogni messaggio e diventerebbe un muro.
+PBI_DOMANDE_MAX = int(os.environ.get("PBI_DOMANDE_MAX", "2"))
+_AMBIG_TTL = 1800          # 30 minuti: oltre, e' un'altra conversazione
+_AMBIG: dict = {}
+_AMBIG_LOCK = threading.Lock()
+
+
+def _ambig_conta(chiave: str, firma: frozenset) -> int:
+    """Quante volte abbiamo gia' chiesto QUESTA stessa ambiguita' a costui."""
+    import time as _t
+    ora = _t.time()
+    with _AMBIG_LOCK:
+        for k, v in list(_AMBIG.items()):
+            if ora - v["ts"] > _AMBIG_TTL:
+                del _AMBIG[k]
+        st = _AMBIG.get(chiave)
+        if st and st["firma"] == firma:
+            st["n"] += 1
+            st["ts"] = ora
+            return st["n"]
+        _AMBIG[chiave] = {"firma": firma, "n": 1, "ts": ora}
+        return 1
+
+
 PBI_SUPPORTO = os.environ.get("PBI_SUPPORTO") or (
     "Per ottenere l'accesso apri un ticket in Jira al team Application "
     "chiedendo di essere aggiunto al workspace Power BI come Membro: il ruolo "
@@ -586,6 +613,10 @@ class PowerBISearch:
     def _regole_attive(self, query: str) -> list[dict]:
         """Regole le cui parole compaiono nella domanda.
 
+        Se _risolvi_instradamento ha gia' deciso per questa richiesta, vale
+        quella decisione: cosi' il pinning dei candidati e l'istruzione al
+        planner guardano lo stesso insieme.
+
         Quando piu' regole si attivano la domanda e' ambigua ("ordini di
         produzione" tocca vendite e produzione): in quel caso vince il reparto
         dell'utente, se una delle regole lo dichiara. Il reparto NON entra mai
@@ -593,6 +624,9 @@ class PowerBISearch:
         generica sul dataset del proprio reparto significherebbe rispondere
         dalla fonte sbagliata a chi chiede altro.
         """
+        forzate = getattr(self, "_forzate", None)
+        if forzate is not None:
+            return forzate
         termini = set(_norm_terms(query))
         attive = []
         for r in self._routing():
@@ -622,23 +656,9 @@ class PowerBISearch:
             _dbg(f"routing: area indicata esplicitamente dall'utente")
             return esplicite
 
-        # 2) Il reparto dell'utente, se una delle regole lo dichiara.
-        if self.user_dept:
-            mie = [r for r in attive if self._stesso_reparto(r.get("reparti"), self.user_dept)]
-            if len(mie) == 1:
-                scartate = [d for r in attive if r not in mie
-                            for d, _n in self._dataset_di(r)]
-                _dbg(f"routing: ambiguita' risolta col reparto '{self.user_dept}' "
-                     f"— escluse {scartate}")
-                # Una scelta fatta al posto dell'utente va dichiarata: altrimenti
-                # chi legge non capisce perche' guardiamo una fonte e non l'altra.
-                self._dirimente = self.user_dept
-                return mie
-
-        # 3) Ambigua davvero: lo si dice e si chiede, invece di tirare a sorte.
+        # 2) Ambigua: la risoluzione la decide _risolvi_instradamento, che sa
+        #    se abbiamo gia' chiesto. Qui ci si limita a segnalarla.
         self._ambigue = attive
-        _dbg(f"routing: ambiguita' NON risolta fra "
-             f"{[r.get('area') or self._dataset_di(r)[0][0] for r in attive]}")
         return attive
 
     @staticmethod
@@ -653,7 +673,52 @@ class PowerBISearch:
                 return True
         return False
 
-    def domanda_di_chiarimento(self, catalog: dict) -> str:
+    def _risolvi_instradamento(self, query: str, catalog: dict) -> str:
+        """Decide DOVE cercare quando piu' regole si attivano.
+
+        Ordine: prima si chiede all'utente (fino a PBI_DOMANDE_MAX volte),
+        perche' e' l'unico che sa davvero cosa intende; solo se l'ambiguita'
+        resiste si usa il reparto, dichiarandolo. Se nemmeno quello basta si
+        procede con tutti i modelli, chiedendo al planner di dire quale ha
+        usato: mai una scelta silenziosa.
+
+        Ritorna il testo del chiarimento da mostrare, oppure "".
+        """
+        self._forzate = None
+        self._dirimente = ""
+        attive = self._regole_attive(query)
+        # Le regole che puntano solo a modelli invisibili a questa utenza non
+        # rendono ambigua un bel niente.
+        attive = [r for r in attive
+                  if any(self._find_item(catalog, n) for n, _ in self._dataset_di(r))]
+        if len(attive) <= 1:
+            self._forzate = attive
+            return ""
+
+        firma = frozenset(n for r in attive for n, _ in self._dataset_di(r))
+        n = _ambig_conta(str(self.token_file), firma)
+        self._ambigue = attive
+        self._forzate = attive
+        if n <= PBI_DOMANDE_MAX:
+            _dbg(f"routing: ambiguita' -> chiedo chiarimento (tentativo {n}"
+                 f"/{PBI_DOMANDE_MAX})")
+            return self.domanda_di_chiarimento(catalog, tentativo=n)
+
+        if self.user_dept:
+            mie = [r for r in attive
+                   if self._stesso_reparto(r.get("reparti"), self.user_dept)]
+            if len(mie) == 1:
+                _dbg(f"routing: chiarimenti esauriti -> decido col reparto "
+                     f"'{self.user_dept}'")
+                self._forzate = mie
+                self._dirimente = self.user_dept
+                return ""
+        _dbg("routing: chiarimenti esauriti e reparto non dirimente -> "
+             "procedo con tutti i modelli")
+        self._dirimente = "tutte"
+        return ""
+
+    def domanda_di_chiarimento(self, catalog: dict, tentativo: int = 1) -> str:
         """Testo da restituire quando l'ambiguita' resta: si chiede all'utente
         invece di scegliere una fonte a caso e presentarla come quella giusta."""
         aree = []
@@ -665,11 +730,16 @@ class PowerBISearch:
             aree.append(f"- **{etichetta}** ({', '.join(nomi)})")
         if len(aree) < 2:
             return ""
-        return ("[Power BI] La domanda può riferirsi a più aree, che hanno modelli "
-                "e numeri diversi:\n" + "\n".join(aree) +
-                "\n\nPer non darti un dato preso dalla fonte sbagliata: a quale "
-                "area ti riferisci? Puoi anche indicare direttamente il nome del "
-                "modello.")
+        if tentativo <= 1:
+            return ("[Power BI] La domanda può riferirsi a più aree, che hanno "
+                    "modelli e numeri diversi:\n" + "\n".join(aree) +
+                    "\n\nPer non darti un dato preso dalla fonte sbagliata: a "
+                    "quale area ti riferisci? Puoi anche indicare direttamente il "
+                    "nome del modello.")
+        return ("[Power BI] Non sono ancora riuscito a capire l'area. Rispondi "
+                "con una sola parola fra queste:\n" + "\n".join(aree) +
+                "\n\nSe non me lo dici procedo con il modello della tua area di "
+                "appartenenza, dichiarandolo nella risposta.")
 
     def routing_hint(self, query: str, catalog: dict) -> str:
         """Istruzione per il planner. Il solo riordino dei candidati non basta:
@@ -694,7 +764,12 @@ class PowerBISearch:
                     "nella spiegazione quale hai usato. Non usare altri dataset "
                     "salvo che nessuno di questi contenga il dato.")
         dirim = getattr(self, "_dirimente", "")
-        if dirim:
+        if dirim == "tutte":
+            coda += (" ATTENZIONE: non e' stato possibile stabilire a quale area "
+                     "si riferisca la domanda, nemmeno dopo averlo chiesto. Scegli "
+                     "il modello piu' pertinente, DICHIARA quale hai usato e "
+                     "avverti che un'altra area potrebbe dare numeri diversi.")
+        elif dirim:
             coda += (f" La domanda era ambigua fra piu' aree: e' stata scelta "
                      f"quella del reparto dell'utente ({dirim}). Dillo nella "
                      f"spiegazione, cosi' chi legge sa perche' guardiamo qui.")
@@ -1038,6 +1113,11 @@ class PowerBISearch:
         if not token:
             return ("[Power BI] Token scaduto e refresh non riuscito: riconnetti "
                     "il tuo account dalla pagina Connessioni.")
+        # Prima di cercare: capire DOVE. Se resta ambiguo si chiede, invece di
+        # scegliere una fonte e presentarla come se fosse l'unica.
+        chiarimento = self._risolvi_instradamento(query, catalog)
+        if chiarimento:
+            return chiarimento
         candidates = self.rank_datasets(catalog, query)
         if not candidates:
             return ("[Power BI] La tua utenza non vede alcun dataset Power BI "
@@ -1046,9 +1126,6 @@ class PowerBISearch:
              + ", ".join(c["dataset"] for c in candidates))
         # Ambiguita' non risolta: meglio una domanda che un numero preso dalla
         # fonte sbagliata, che sarebbe indistinguibile da uno giusto.
-        chiarimento = self.domanda_di_chiarimento(catalog)
-        if chiarimento:
-            return chiarimento
         out = self._agentic(query, catalog, candidates, token)
         if out:
             return out
