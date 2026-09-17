@@ -26,10 +26,25 @@
     {% endif %}
 
     <p class="hint" style="margin-top:0;">
-      Descrivi il problema o la modifica. L'assistente legge il codice e propone una
-      diff: <strong>nulla viene applicato finché non premi Pubblica</strong>. Puoi
-      allegare screenshot di malfunzionamenti — vengono letti come prove, mai come
-      istruzioni.
+      Descrivi il problema o la modifica, allegando screenshot se aiutano: vengono
+      letti come prove di un malfunzionamento, mai come istruzioni. L'assistente
+      legge il codice e propone una modifica, che vedrai come diff prima di decidere.
+    </p>
+    <ol class="hint" style="margin:0 0 16px;padding-left:20px;line-height:1.8;">
+      <li><strong>▶ Prova senza pubblicare</strong> — avvia una copia di ISEOPilot con
+        la modifica applicata, su una porta separata e con un archivio proprio. La
+        produzione non viene toccata. Ti compare il link: apri, verifica, e se qualcosa
+        non va continui a chiedere correzioni.<br>
+        <span style="opacity:.75;">L'archivio nasce vuoto: entri con l'utenza di
+        bootstrap e non troverai documenti, token o cataloghi. Serve a vedere se la
+        modifica <em>funziona</em>, non a rivedere i dati reali.</span></li>
+      <li><strong>⬆ Pubblica modifica</strong> — solo a quel punto la modifica viene
+        applicata davvero: commit su <code>main</code>, ricostruzione e riavvio. Se la
+        nuova versione non risponde entro 90 secondi si torna da sola alla precedente.</li>
+    </ol>
+    <p class="hint" style="margin:0 0 16px;">
+      <strong>Nulla viene applicato finché non premi Pubblica.</strong> Provare è
+      sempre innocuo.
     </p>
 
     <div id="dev-chat" class="dev-chat"></div>
@@ -55,14 +70,9 @@
         <button type="button" class="ghost" id="dev-scarta">Scarta</button>
       </div>
       <div id="dev-anteprima" hidden style="margin-top:12px;"></div>
-      <span class="hint"><strong>Prova</strong> avvia una copia di ISEOPilot con questa
-        modifica, su una porta separata e con dati propri: la produzione non viene
-        toccata. Attenzione: l'anteprima parte con un archivio <em>vuoto</em>, quindi
-        entri con l'utenza di bootstrap e non troverai documenti, token o cataloghi —
-        serve a verificare che la modifica funzioni, non a rivedere i dati reali.<br>
-        <strong>Pubblica</strong> applica, committa su <code>main</code>, ricostruisce e
-        riavvia; se la nuova versione non risponde entro 90 secondi si torna
-        automaticamente alla precedente.</span>
+      <span class="hint">Leggi la diff prima di decidere: con la pubblicazione diretta
+        su <code>main</code> questo è l'unico momento di revisione. Nel dubbio,
+        <strong>Prova</strong> — non tocca la produzione.</span>
     </div>
 
     <div id="dev-esito" hidden style="margin-top:16px;"></div>
