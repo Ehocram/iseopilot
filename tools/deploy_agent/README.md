@@ -26,6 +26,34 @@ della richiesta, non esiste `shell=True`, e gli argomenti sono sempre liste
 esplicite. Una richiesta malformata o malevola non può spostare l'agente su
 un altro percorso o su un altro container.
 
+## Anteprima: provare senza pubblicare
+
+Il pulsante **Prova** avvia una copia di ISEOPilot con la modifica applicata,
+accanto alla produzione e senza toccarla:
+
+| | produzione | anteprima |
+|---|---|---|
+| container | `iseopilot` | `iseopilot-anteprima` |
+| immagine | `iseopilot:latest` | `iseopilot:anteprima` |
+| volume dati | `iseopilot_data` | `iseopilot_anteprima` (**nuovo e vuoto**) |
+| porta | nessuna (via Caddy) | `8001` |
+| repository | `/opt/iseopilot` | albero di lavoro git a parte |
+
+Il volume separato è il punto importante: provare una modifica non deve
+poter sporcare il database, i token degli utenti o i cataloghi.
+
+Due impostazioni vengono forzate rispetto al `.env` di produzione:
+`SESSION_HTTPS_ONLY=0`, altrimenti i cookie `Secure` impedirebbero il login
+su HTTP, e `APP_DATA_DIR=/data` sul volume dedicato.
+
+Dato che l'archivio nasce vuoto, l'applicazione crea l'amministratore di
+bootstrap: si entra con quello. Non ci sono documenti, token né cataloghi —
+l'anteprima serve a verificare che la modifica **funzioni**, non a rivedere i
+dati reali.
+
+Se l'anteprima non risponde, l'agente restituisce le ultime righe di log del
+container, che la pagina rimanda all'assistente per la correzione.
+
 ## Cosa fa una pubblicazione
 
 1. rifiuta di partire se il repository sul server ha modifiche non committate

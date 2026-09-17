@@ -2466,8 +2466,8 @@ class _ConnessioneUnix(http.client.HTTPConnection):
         self.sock = s
 
 
-def _dev_agente_post(destinazione: str, corpo: dict, token: str,
-                     timeout: int = 1200) -> dict:
+def _dev_agente_post(destinazione: str, percorso: str, corpo: dict, token: str,
+                     timeout: int = 1800) -> dict:
     """Chiama l'agente di deploy. Accetta 'unix:/percorso/al.sock' (consigliato)
     oppure un normale http://host:porta."""
     dati = json.dumps(corpo, ensure_ascii=False)
@@ -2475,14 +2475,32 @@ def _dev_agente_post(destinazione: str, corpo: dict, token: str,
     if destinazione.startswith("unix:"):
         c = _ConnessioneUnix(destinazione[len("unix:"):], timeout)
         try:
-            c.request("POST", "/pubblica", body=dati.encode(), headers=intestazioni)
-            r = c.getresponse()
-            return json.loads(r.read().decode() or "{}")
+            c.request("POST", percorso, body=dati.encode(), headers=intestazioni)
+            return json.loads(c.getresponse().read().decode() or "{}")
         finally:
             c.close()
-    r = requests.post(destinazione.rstrip("/") + "/pubblica", data=dati.encode(),
+    r = requests.post(destinazione.rstrip("/") + percorso, data=dati.encode(),
                       headers=intestazioni, timeout=timeout)
     return r.json()
+
+
+def _dev_chiama_agente(request: Request, user: dict, percorso: str, corpo: dict):
+    """Parte comune fra anteprima e pubblicazione: token, indirizzo, errori."""
+    token = store.get_setting("dev_agent_token", "").strip()
+    if not token:
+        return None, JSONResponse({"ok": False, "errore":
+            "Token dell'agente di deploy non configurato (pagina Motore)."},
+            status_code=400)
+    dest = store.get_setting("dev_agent_url", DEF_DEV_AGENT)
+    try:
+        return _dev_agente_post(dest, percorso, {**corpo,
+                                                 "autore": user["username"]}, token), None
+    except Exception as e:
+        return None, JSONResponse({"ok": False, "errore":
+            f"Agente di deploy non raggiungibile su {dest}: {type(e).__name__}: {e}. "
+            f"L'agente gira SULL'HOST (srv-hq-ai-01), non nel container: verifica "
+            f"che il servizio iseopilot-deploy-agent sia attivo e che il socket sia "
+            f"montato nel compose."}, status_code=502)
 
 
 def _dev_guardia(request: Request):
@@ -2529,30 +2547,41 @@ def api_dev_chat(request: Request, body: DevChatReq):
     return JSONResponse(res)
 
 
+@app.post("/api/dev/anteprima")
+def api_dev_anteprima(request: Request, body: DevPubblicaReq):
+    """Avvia una copia con la modifica applicata, senza pubblicarla."""
+    user = _dev_guardia(request)
+    if not (body.patch or "").strip():
+        return JSONResponse({"ok": False, "errore": "Nessuna modifica da provare."},
+                            status_code=400)
+    _audit(request, user["username"], "dev_anteprima", f"riassunto={body.riassunto[:160]}")
+    esito, errore = _dev_chiama_agente(request, user, "/anteprima",
+                                       {"patch": body.patch})
+    if errore is not None:
+        return errore
+    _audit(request, user["username"], "dev_anteprima_esito", f"ok={esito.get('ok')}")
+    return JSONResponse(esito)
+
+
+@app.post("/api/dev/anteprima/stop")
+def api_dev_anteprima_stop(request: Request):
+    user = _dev_guardia(request)
+    esito, errore = _dev_chiama_agente(request, user, "/anteprima/stop", {})
+    return errore if errore is not None else JSONResponse(esito)
+
+
 @app.post("/api/dev/pubblica")
 def api_dev_pubblica(request: Request, body: DevPubblicaReq):
     user = _dev_guardia(request)
-    token = store.get_setting("dev_agent_token", "").strip()
-    if not token:
-        return JSONResponse({"ok": False, "errore":
-            "Token dell'agente di deploy non configurato (pagina Motore)."},
-            status_code=400)
     if not (body.patch or "").strip():
         return JSONResponse({"ok": False, "errore": "Nessuna modifica da pubblicare."},
                             status_code=400)
-    dest = store.get_setting("dev_agent_url", DEF_DEV_AGENT)
     _audit(request, user["username"], "dev_pubblica", f"riassunto={body.riassunto[:160]}")
-    try:
-        esito = _dev_agente_post(dest, {"patch": body.patch,
-                                        "riassunto": body.riassunto,
-                                        "autore": user["username"]}, token)
-    except Exception as e:
-        return JSONResponse({"ok": False, "errore":
-            f"Agente di deploy non raggiungibile su {dest}: {type(e).__name__}: {e}. "
-            f"L'agente gira SULL'HOST (srv-hq-ai-01), non nel container: verifica "
-            f"che il servizio iseopilot-deploy-agent sia attivo e che il socket sia "
-            f"montato nel compose."},
-            status_code=502)
+    esito, errore = _dev_chiama_agente(request, user, "/pubblica",
+                                       {"patch": body.patch,
+                                        "riassunto": body.riassunto})
+    if errore is not None:
+        return errore
     _audit(request, user["username"], "dev_pubblica_esito",
            f"ok={esito.get('ok')} commit={esito.get('commit','')} "
            f"rollback={esito.get('rollback', False)}")

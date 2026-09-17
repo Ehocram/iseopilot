@@ -39,6 +39,18 @@ SALUTE_URL = "http://127.0.0.1:8000/healthz"
 # esposta su un'interfaccia raggiungibile dai container — cioe' anche dalla
 # rete aziendale. Il socket attraversa il confine come un file montato: nessuna
 # porta aperta da nessuna parte, e i permessi fanno da controllo d'accesso.
+# ── Anteprima: la stessa modifica, provata prima di pubblicarla ────────────
+# Container, immagine e volume separati: il volume in particolare NON e' quello
+# di produzione. Provare una modifica non deve poter sporcare il database, i
+# token degli utenti o i cataloghi. Il volume nasce vuoto e l'applicazione ci
+# crea dentro l'amministratore di bootstrap, quindi l'anteprima e' utilizzabile
+# subito — ma non contiene i dati veri.
+ANTEPRIMA_CONTAINER = "iseopilot-anteprima"
+ANTEPRIMA_IMMAGINE = "iseopilot:anteprima"
+ANTEPRIMA_VOLUME = "iseopilot_anteprima"
+ANTEPRIMA_ALBERO = Path("/opt/iseopilot-anteprima")
+ANTEPRIMA_PORTA = int(os.environ.get("DEPLOY_AGENT_ANTEPRIMA_PORT", "8001"))
+
 SOCKET = Path(os.environ.get("DEPLOY_AGENT_SOCKET",
                              "/run/iseopilot/deploy-agent.sock"))
 SOCKET_GID = int(os.environ.get("DEPLOY_AGENT_GID", "10001"))   # appuser nel container
@@ -167,7 +179,7 @@ class Gestore(BaseHTTPRequestHandler):
         self.wfile.write(dati)
 
     def do_POST(self):
-        if self.path != "/pubblica":
+        if self.path not in ("/pubblica", "/anteprima", "/anteprima/stop"):
             return self._rispondi(404, {"errore": "non trovato"})
         atteso = TOKEN_FILE.read_text().strip() if TOKEN_FILE.is_file() else ""
         if not atteso or self.headers.get("X-Deploy-Token", "") != atteso:
@@ -178,12 +190,18 @@ class Gestore(BaseHTTPRequestHandler):
             corpo = json.loads(self.rfile.read(n).decode())
         except Exception as e:
             return self._rispondi(400, {"errore": f"richiesta non valida: {e}"})
+        autore = str(corpo.get("autore") or "sconosciuto")[:80]
+        if self.path == "/anteprima/stop":
+            _log(f"chiusura anteprima richiesta da {autore}")
+            return self._rispondi(200, ferma_anteprima())
         patch = str(corpo.get("patch") or "")
         if not patch.strip():
             return self._rispondi(400, {"errore": "patch mancante"})
-        autore = str(corpo.get("autore") or "sconosciuto")[:80]
-        _log(f"pubblicazione richiesta da {autore}")
         try:
+            if self.path == "/anteprima":
+                _log(f"anteprima richiesta da {autore}")
+                return self._rispondi(200, anteprima(patch))
+            _log(f"pubblicazione richiesta da {autore}")
             self._rispondi(200, pubblica(patch, str(corpo.get("riassunto") or ""), autore))
         except subprocess.TimeoutExpired:
             self._rispondi(504, {"ok": False, "errore": "operazione scaduta"})
@@ -193,6 +211,102 @@ class Gestore(BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass          # il log lo scriviamo noi, con piu' contesto
+
+
+def _anteprima_in_salute() -> bool:
+    scadenza = time.time() + ATTESA_SALUTE
+    url = f"http://127.0.0.1:{ANTEPRIMA_PORTA}/healthz"
+    while time.time() < scadenza:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(3)
+    return False
+
+
+def ferma_anteprima() -> dict:
+    """Smonta l'anteprima: container, volume e albero di lavoro."""
+    _esegui(["docker", "rm", "-f", ANTEPRIMA_CONTAINER], timeout=120)
+    _esegui(["docker", "volume", "rm", "-f", ANTEPRIMA_VOLUME], timeout=120)
+    _esegui(["git", "worktree", "remove", "--force", str(ANTEPRIMA_ALBERO)], timeout=120)
+    if ANTEPRIMA_ALBERO.exists():
+        subprocess.run(["rm", "-rf", str(ANTEPRIMA_ALBERO)], timeout=120)
+    _esegui(["git", "worktree", "prune"], timeout=60)
+    _log("anteprima smontata")
+    return {"ok": True}
+
+
+def anteprima(patch: str) -> dict:
+    """Avvia una copia di ISEOPilot con la modifica applicata, SENZA pubblicarla.
+
+    Serve a spostare la verifica prima della pubblicazione invece che dopo.
+    Gira accanto alla produzione: container, immagine, volume e porta separati,
+    e il repository di produzione non viene toccato — la modifica vive in un
+    albero di lavoro git a parte.
+    """
+    passi = []
+
+    def step(nome, argv, **kw):
+        rc, out = _esegui(argv, **kw)
+        passi.append({"passo": nome, "esito": rc, "output": out[-600:]})
+        _log(f"anteprima/{nome}: rc={rc} {out[:200]}")
+        return rc == 0
+
+    ferma_anteprima()          # un'anteprima precedente non deve intralciare
+
+    if not step("albero di lavoro",
+                ["git", "worktree", "add", "--detach", str(ANTEPRIMA_ALBERO), "HEAD"]):
+        return {"ok": False, "errore": "creazione dell'albero di lavoro fallita",
+                "passi": passi}
+
+    r = subprocess.run(["git", "apply", "--whitespace=nowarn", "-"],
+                       input=patch, text=True, capture_output=True,
+                       cwd=str(ANTEPRIMA_ALBERO), timeout=120)
+    passi.append({"passo": "applica patch", "esito": r.returncode,
+                  "output": ((r.stdout or "") + (r.stderr or ""))[-600:]})
+    if r.returncode != 0:
+        ferma_anteprima()
+        return {"ok": False, "errore": "La patch non si applica al codice attuale.",
+                "passi": passi}
+
+    if not step("build", ["docker", "build", "-t", ANTEPRIMA_IMMAGINE,
+                          str(ANTEPRIMA_ALBERO)], timeout=1800):
+        ferma_anteprima()
+        return {"ok": False, "errore": "La build dell'anteprima e' fallita: la "
+                                       "modifica non compila o le dipendenze non "
+                                       "si installano.", "passi": passi}
+
+    # Il file .env di produzione serve per la chiave API e simili, ma due
+    # impostazioni vanno forzate: i cookie Secure impedirebbero il login su
+    # HTTP, e i dati devono stare in un volume separato.
+    argv = ["docker", "run", "-d", "--name", ANTEPRIMA_CONTAINER,
+            "--env-file", str(REPO / ".env"),
+            "-e", "SESSION_HTTPS_ONLY=0",
+            "-e", "APP_DATA_DIR=/data",
+            "-v", f"{ANTEPRIMA_VOLUME}:/data",
+            "-p", f"{ANTEPRIMA_PORTA}:8000",
+            "--memory", "3g", "--cpus", "2",
+            ANTEPRIMA_IMMAGINE]
+    if Path("/mnt/dfs").is_dir():
+        argv[3:3] = ["-v", "/mnt/dfs:/mnt/dfs:ro"]
+    if not step("avvio", argv, timeout=300):
+        ferma_anteprima()
+        return {"ok": False, "errore": "avvio dell'anteprima fallito", "passi": passi}
+
+    if not _anteprima_in_salute():
+        rc, log = _esegui(["docker", "logs", "--tail", "60", ANTEPRIMA_CONTAINER],
+                          timeout=60)
+        passi.append({"passo": "healthcheck", "esito": 1, "output": log[-1500:]})
+        return {"ok": False, "avviata": True, "porta": ANTEPRIMA_PORTA,
+                "errore": "L'anteprima non risponde: la modifica probabilmente "
+                          "rompe l'avvio. Qui sotto le ultime righe di log.",
+                "log": log[-1500:], "passi": passi}
+
+    _log(f"anteprima pronta sulla porta {ANTEPRIMA_PORTA}")
+    return {"ok": True, "porta": ANTEPRIMA_PORTA, "passi": passi}
 
 
 class ServerUnix(socketserver.ThreadingUnixStreamServer):

@@ -50,12 +50,19 @@
       <div id="dev-riassunto" style="margin-bottom:10px;"></div>
       <pre id="dev-diff" class="diff"></pre>
       <div class="conn-actions" style="margin-top:12px;">
+        <button type="button" class="ghost" id="dev-prova">▶ Prova senza pubblicare</button>
         <button type="button" class="primary" id="dev-pub">⬆ Pubblica modifica</button>
         <button type="button" class="ghost" id="dev-scarta">Scarta</button>
       </div>
-      <span class="hint">La pubblicazione applica, committa su <code>main</code>,
-        ricostruisce e riavvia. Se la nuova versione non risponde entro 90 secondi
-        si torna automaticamente alla precedente.</span>
+      <div id="dev-anteprima" hidden style="margin-top:12px;"></div>
+      <span class="hint"><strong>Prova</strong> avvia una copia di ISEOPilot con questa
+        modifica, su una porta separata e con dati propri: la produzione non viene
+        toccata. Attenzione: l'anteprima parte con un archivio <em>vuoto</em>, quindi
+        entri con l'utenza di bootstrap e non troverai documenti, token o cataloghi —
+        serve a verificare che la modifica funzioni, non a rivedere i dati reali.<br>
+        <strong>Pubblica</strong> applica, committa su <code>main</code>, ricostruisce e
+        riavvia; se la nuova versione non risponde entro 90 secondi si torna
+        automaticamente alla precedente.</span>
     </div>
 
     <div id="dev-esito" hidden style="margin-top:16px;"></div>
@@ -182,8 +189,61 @@
     }
   };
 
+  const antBox = document.getElementById("dev-anteprima");
+
+  async function chiudiAnteprima() {
+    try { await fetch("/api/dev/anteprima/stop", { method: "POST" }); } catch (e) {}
+    antBox.hidden = true; antBox.innerHTML = "";
+  }
+
+  document.getElementById("dev-prova").onclick = async function () {
+    if (!patch) return;
+    const b = this; b.disabled = true; b.textContent = "Avvio l'anteprima… (build in corso)";
+    antBox.hidden = false;
+    antBox.innerHTML = "<div class='notice'>Costruisco e avvio una copia con la modifica. "
+                     + "Può richiedere qualche minuto la prima volta.</div>";
+    try {
+      const r = await fetch("/api/dev/anteprima", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const res = await r.json();
+      if (res.ok) {
+        // L'host è lo stesso da cui stiamo navigando: cambia solo la porta.
+        const url = location.protocol + "//" + location.hostname + ":" + res.porta + "/";
+        antBox.innerHTML =
+          "<div class='notice' style='border-color:#5bd68a;'>✓ Anteprima pronta: "
+          + "<a href='" + url + "' target='_blank' rel='noopener' style='color:var(--iseo-2)'>"
+          + url + "</a><br><span class='hint'>Archivio vuoto: entra con l'utenza di "
+          + "bootstrap. Quando hai finito chiudila, così liberi la porta e lo spazio."
+          + "</span></div>";
+        const x = document.createElement("button");
+        x.type = "button"; x.className = "ghost"; x.style.marginTop = "8px";
+        x.textContent = "Chiudi anteprima"; x.onclick = chiudiAnteprima;
+        antBox.appendChild(x);
+      } else {
+        antBox.innerHTML = "<div class='notice' style='border-color:var(--iseo,#ec1d2b);'>✕ "
+          + (res.errore || "Anteprima non riuscita.")
+          + (res.log ? "<pre class='diff' style='margin-top:8px;max-height:26vh;'>"
+                       + res.log.replace(/[<>&]/g, function (c) {
+                           return { "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]; })
+                       + "</pre>" : "")
+          + "</div>";
+        if (res.log) {
+          storia.push({ role: "user", content:
+            "L'anteprima non si avvia. Ultime righe di log:\n" + res.log });
+        }
+      }
+    } catch (err) {
+      antBox.innerHTML = "<div class='notice'>Errore di rete: " + err + "</div>";
+    } finally {
+      b.disabled = false; b.textContent = "▶ Prova senza pubblicare";
+    }
+  };
+
   document.getElementById("dev-scarta").onclick = function () {
     patch = null; box.hidden = true;
+    chiudiAnteprima();
     storia.push({ role: "user", content: "Ho scartato quella modifica. Riprova diversamente." });
   };
 
@@ -205,6 +265,7 @@
         esito.innerHTML = "<div class='notice' style='border-color:#5bd68a;'>✓ Pubblicata e "
           + "verificata. Commit <code>" + (res.commit || "") + "</code>.</div>";
         box.hidden = true; patch = null;
+        chiudiAnteprima();   // pubblicata: l'anteprima non serve piu'
       } else {
         esito.innerHTML = "<div class='notice' style='border-color:var(--iseo,#ec1d2b);'>✕ "
           + (res.errore || "Pubblicazione non riuscita.")
