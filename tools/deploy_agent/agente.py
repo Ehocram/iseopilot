@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import json
 import os
+import socketserver
 import subprocess
 import sys
 import time
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 # ── Ambito: costanti, non parametri ────────────────────────────────────────
@@ -33,7 +34,14 @@ IMMAGINE = "iseopilot:latest"
 IMMAGINE_PREC = "iseopilot:precedente"
 SALUTE_URL = "http://127.0.0.1:8000/healthz"
 
-PORTA = int(os.environ.get("DEPLOY_AGENT_PORT", "8765"))
+# Socket unix invece di una porta: l'applicazione gira in un container, dove
+# 127.0.0.1 e' il container stesso e NON l'host. Una porta andrebbe quindi
+# esposta su un'interfaccia raggiungibile dai container — cioe' anche dalla
+# rete aziendale. Il socket attraversa il confine come un file montato: nessuna
+# porta aperta da nessuna parte, e i permessi fanno da controllo d'accesso.
+SOCKET = Path(os.environ.get("DEPLOY_AGENT_SOCKET",
+                             "/run/iseopilot/deploy-agent.sock"))
+SOCKET_GID = int(os.environ.get("DEPLOY_AGENT_GID", "10001"))   # appuser nel container
 TOKEN_FILE = Path(os.environ.get("DEPLOY_AGENT_TOKEN_FILE",
                                  "/etc/iseopilot/deploy-agent.token"))
 ATTESA_SALUTE = int(os.environ.get("DEPLOY_AGENT_HEALTH_WAIT", "90"))
@@ -187,8 +195,28 @@ class Gestore(BaseHTTPRequestHandler):
         pass          # il log lo scriviamo noi, con piu' contesto
 
 
+class ServerUnix(socketserver.ThreadingUnixStreamServer):
+    """HTTP su socket unix. BaseHTTPRequestHandler si aspetta un indirizzo
+    a coppia: su AF_UNIX non c'e', e gliene diamo uno fittizio."""
+    allow_reuse_address = True
+
+    def get_request(self):
+        conn, _ = super().get_request()
+        return conn, ("locale", 0)
+
+
 if __name__ == "__main__":
     if not REPO.is_dir():
         sys.exit(f"Repository non trovato: {REPO}")
-    _log(f"agente avviato su 127.0.0.1:{PORTA} — ambito: {REPO} / servizio {SERVIZIO}")
-    HTTPServer(("127.0.0.1", PORTA), Gestore).serve_forever()
+    SOCKET.parent.mkdir(parents=True, exist_ok=True)
+    if SOCKET.exists():
+        SOCKET.unlink()          # avanzo di un'esecuzione precedente
+    srv = ServerUnix(str(SOCKET), Gestore)
+    try:
+        os.chown(SOCKET, 0, SOCKET_GID)   # gruppo dell'utente del container
+        os.chmod(SOCKET, 0o660)           # nessun altro utente dell'host
+    except OSError as e:
+        _log(f"ATTENZIONE: permessi del socket non impostati ({e}). "
+             f"Il container potrebbe non riuscire a contattare l'agente.")
+    _log(f"agente avviato su {SOCKET} — ambito: {REPO} / servizio {SERVIZIO}")
+    srv.serve_forever()

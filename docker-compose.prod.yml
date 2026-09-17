@@ -24,6 +24,9 @@ services:
       # iseopilot-deploy-agent, che gira sull'host. Cosi' l'app non puo'
       # modificare se stessa e non serve il socket Docker nel container.
       - /opt/iseopilot:/repo:ro
+      # Socket dell'agente di deploy, che vive sull'host. Non e' una porta:
+      # dentro il container 127.0.0.1 sarebbe il container stesso.
+      - /run/iseopilot:/run/iseopilot
     networks:
       - proxy-net                   # condivisa col Caddy di Flusso-AI
       - internal                    # privata (per eventuali servizi futuri)

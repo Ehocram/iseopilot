@@ -54,13 +54,34 @@ sudo systemctl enable --now iseopilot-deploy-agent
 sudo systemctl status iseopilot-deploy-agent
 ```
 
-Lo stesso token va poi messo nell'applicazione (pagina Motore), che chiama
-l'agente su `127.0.0.1:8765`.
+Lo stesso token va poi messo nell'applicazione (pagina **Motore**), insieme
+all'indirizzo `unix:/run/iseopilot/deploy-agent.sock`.
+
+## Perché un socket unix e non una porta
+
+L'applicazione gira in un **container**: lì dentro `127.0.0.1` è il container
+stesso, non l'host. Una porta andrebbe quindi esposta su un'interfaccia
+raggiungibile dai container — cioè anche dalla rete aziendale.
+
+Il socket attraversa quel confine come un file montato
+(`- /run/iseopilot:/run/iseopilot` nel compose): **nessuna porta aperta su
+nessuna interfaccia**, e il controllo d'accesso sono i permessi del file.
+Il socket è `0660 root:10001`, dove 10001 è l'uid/gid di `appuser` dentro il
+container: nessun altro utente dell'host può contattarlo.
+
+Se nel container l'utente cambia, va aggiornato `DEPLOY_AGENT_GID` nell'unità
+systemd.
 
 ## Verifica
 
 ```bash
+sudo systemctl status iseopilot-deploy-agent --no-pager
+ls -l /run/iseopilot/deploy-agent.sock
 sudo tail -f /var/log/iseopilot-deploy.log
 ```
 
-Non è raggiungibile dalla rete: ascolta solo su `127.0.0.1`.
+Dal container, per controllare che il socket sia visibile:
+
+```bash
+sudo docker exec iseopilot ls -l /run/iseopilot/deploy-agent.sock
+```

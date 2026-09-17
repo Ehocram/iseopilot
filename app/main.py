@@ -6,13 +6,19 @@ Tutte le pagine sono protette dal login, tranne /login e /healthz.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import os
+import socket
 import threading
 from pathlib import Path
 
 import requests
+
+# Agente di deploy: socket unix, non una porta. L'applicazione gira in un
+# container e l'agente sull'host; vedi _ConnessioneUnix.
+DEF_DEV_AGENT = "unix:/run/iseopilot/deploy-agent.sock"
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -1373,7 +1379,7 @@ def admin_page(request: Request):
         pbi_enabled=store.get_setting("pbi_enabled", "0") == "1",
         pbi_client_id=store.get_setting("pbi_client_id", DEF_PBI_CLIENT_ID),
         pbi_tenant_id=store.get_setting("pbi_tenant_id", DEF_PBI_TENANT_ID),
-        dev_agent_url=store.get_setting("dev_agent_url", "http://127.0.0.1:8765"),
+        dev_agent_url=store.get_setting("dev_agent_url", DEF_DEV_AGENT),
         dev_agent_token_set=bool(store.get_setting("dev_agent_token", "")),
         def_dyn_client_id=DEF_DYN_CLIENT_ID, def_dyn_tenant_id=DEF_DYN_TENANT_ID,
         def_dyn_resource_url=DEF_DYN_RESOURCE_URL,
@@ -1492,7 +1498,7 @@ def admin_save(
     store.set_setting("m365_tenant_id", m365_tenant_id.strip() or DEF_OD_TENANT_ID)
     store.set_setting("pbi_client_id", pbi_client_id.strip() or DEF_PBI_CLIENT_ID)
     store.set_setting("pbi_tenant_id", pbi_tenant_id.strip() or DEF_PBI_TENANT_ID)
-    store.set_setting("dev_agent_url", dev_agent_url.strip() or "http://127.0.0.1:8765")
+    store.set_setting("dev_agent_url", dev_agent_url.strip() or DEF_DEV_AGENT)
     # Token vuoto = non toccare quello esistente: il campo e' mascherato, e un
     # salvataggio della pagina non deve cancellarlo per distrazione.
     if dev_agent_token.strip():
@@ -2443,6 +2449,42 @@ class DevPubblicaReq(BaseModel):
     riassunto: str = ""
 
 
+class _ConnessioneUnix(http.client.HTTPConnection):
+    """HTTP su socket unix. Serve perche' l'agente di deploy vive sull'host
+    mentre noi giriamo in un container: 127.0.0.1 qui dentro e' il container,
+    non l'host, e una porta andrebbe esposta su un'interfaccia raggiungibile
+    anche dalla rete aziendale. Il socket e' un file montato: nessuna porta."""
+
+    def __init__(self, percorso: str, timeout: int):
+        super().__init__("localhost", timeout=timeout)
+        self._percorso = percorso
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        s.connect(self._percorso)
+        self.sock = s
+
+
+def _dev_agente_post(destinazione: str, corpo: dict, token: str,
+                     timeout: int = 1200) -> dict:
+    """Chiama l'agente di deploy. Accetta 'unix:/percorso/al.sock' (consigliato)
+    oppure un normale http://host:porta."""
+    dati = json.dumps(corpo, ensure_ascii=False)
+    intestazioni = {"Content-Type": "application/json", "X-Deploy-Token": token}
+    if destinazione.startswith("unix:"):
+        c = _ConnessioneUnix(destinazione[len("unix:"):], timeout)
+        try:
+            c.request("POST", "/pubblica", body=dati.encode(), headers=intestazioni)
+            r = c.getresponse()
+            return json.loads(r.read().decode() or "{}")
+        finally:
+            c.close()
+    r = requests.post(destinazione.rstrip("/") + "/pubblica", data=dati.encode(),
+                      headers=intestazioni, timeout=timeout)
+    return r.json()
+
+
 def _dev_guardia(request: Request):
     """La pagina sviluppatore modifica il codice in produzione: e' riservata
     agli amministratori e ogni accesso passa da qui."""
@@ -2498,18 +2540,18 @@ def api_dev_pubblica(request: Request, body: DevPubblicaReq):
     if not (body.patch or "").strip():
         return JSONResponse({"ok": False, "errore": "Nessuna modifica da pubblicare."},
                             status_code=400)
-    url = store.get_setting("dev_agent_url", "http://127.0.0.1:8765") + "/pubblica"
+    dest = store.get_setting("dev_agent_url", DEF_DEV_AGENT)
     _audit(request, user["username"], "dev_pubblica", f"riassunto={body.riassunto[:160]}")
     try:
-        r = requests.post(url, json={"patch": body.patch,
-                                     "riassunto": body.riassunto,
-                                     "autore": user["username"]},
-                          headers={"X-Deploy-Token": token}, timeout=1200)
-        esito = r.json()
+        esito = _dev_agente_post(dest, {"patch": body.patch,
+                                        "riassunto": body.riassunto,
+                                        "autore": user["username"]}, token)
     except Exception as e:
         return JSONResponse({"ok": False, "errore":
-            f"Agente di deploy non raggiungibile: {type(e).__name__}: {e}. "
-            f"Verifica che il servizio iseopilot-deploy-agent sia attivo sull'host."},
+            f"Agente di deploy non raggiungibile su {dest}: {type(e).__name__}: {e}. "
+            f"L'agente gira SULL'HOST (srv-hq-ai-01), non nel container: verifica "
+            f"che il servizio iseopilot-deploy-agent sia attivo e che il socket sia "
+            f"montato nel compose."},
             status_code=502)
     _audit(request, user["username"], "dev_pubblica_esito",
            f"ok={esito.get('ok')} commit={esito.get('commit','')} "

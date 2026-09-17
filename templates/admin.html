@@ -311,15 +311,15 @@
       <div class="panel-body">
         <div class="grid-2">
           <div class="field">
-            <label for="dev_agent_url">URL dell'agente</label>
-            <input type="text" id="dev_agent_url" name="dev_agent_url" value="{{ dev_agent_url }}" style="font-family:var(--mono);" placeholder="http://127.0.0.1:8765">
+            <label for="dev_agent_url">Indirizzo dell'agente</label>
+            <input type="text" id="dev_agent_url" name="dev_agent_url" value="{{ dev_agent_url }}" style="font-family:var(--mono);" placeholder="unix:/run/iseopilot/deploy-agent.sock">
           </div>
           <div class="field">
             <label for="dev_agent_token">Token condiviso {% if dev_agent_token_set %}<span class="badge set">impostato</span>{% else %}<span class="badge unset">mancante</span>{% endif %}</label>
             <input type="password" id="dev_agent_token" name="dev_agent_token" value="" style="font-family:var(--mono);" placeholder="{% if dev_agent_token_set %}lascia vuoto per non modificarlo{% else %}contenuto di /etc/iseopilot/deploy-agent.token{% endif %}">
           </div>
         </div>
-        <div class="hint">La pagina <a href="/admin/dev" style="color:var(--iseo-2)">Sviluppatore</a> legge il codice e propone modifiche; ad applicarle e pubblicarle è l'agente <code>iseopilot-deploy-agent</code>, che gira <strong>sull'host</strong> e ascolta solo su <code>127.0.0.1</code>. È deliberato: l'applicazione non deve poter modificare se stessa né accedere al socket Docker, e se una modifica rompe l'avvio l'agente è ancora vivo per riportarla indietro. L'agente agisce solo su <code>/opt/iseopilot</code> e sul servizio <code>iseopilot</code>: le altre applicazioni dell'host non sono raggiungibili. Installazione in <code>tools/deploy_agent/README.md</code>.</div>
+        <div class="hint">La pagina <a href="/admin/dev" style="color:var(--iseo-2)">Sviluppatore</a> legge il codice e propone modifiche; ad applicarle e pubblicarle è l'agente <code>iseopilot-deploy-agent</code>, che gira <strong>sull'host</strong> (srv-hq-ai-01) e ascolta su un <strong>socket unix</strong>, non su una porta — dentro il container <code>127.0.0.1</code> sarebbe il container stesso, e una porta andrebbe esposta su un'interfaccia raggiungibile dalla rete aziendale. È deliberato: l'applicazione non deve poter modificare se stessa né accedere al socket Docker, e se una modifica rompe l'avvio l'agente è ancora vivo per riportarla indietro. L'agente agisce solo su <code>/opt/iseopilot</code> e sul servizio <code>iseopilot</code>: le altre applicazioni dell'host non sono raggiungibili. Installazione in <code>tools/deploy_agent/README.md</code>.</div>
       </div>
     </div>
 

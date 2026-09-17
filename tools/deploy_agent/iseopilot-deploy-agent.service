@@ -14,7 +14,16 @@ RestartSec=5
 User=root
 WorkingDirectory=/opt/iseopilot
 
-Environment=DEPLOY_AGENT_PORT=8765
+# Il socket vive in /run/iseopilot, montato nel container: systemd crea la
+# cartella e la ripulisce a ogni riavvio.
+# 0755: l'utente del container (uid 10001) deve poter ATTRAVERSARE la cartella
+# per arrivare al socket. Il controllo d'accesso sta sul socket, che e'
+# 0660 root:10001 — non sulla cartella.
+RuntimeDirectory=iseopilot
+RuntimeDirectoryMode=0755
+
+Environment=DEPLOY_AGENT_SOCKET=/run/iseopilot/deploy-agent.sock
+Environment=DEPLOY_AGENT_GID=10001
 Environment=DEPLOY_AGENT_TOKEN_FILE=/etc/iseopilot/deploy-agent.token
 Environment=DEPLOY_AGENT_LOG=/var/log/iseopilot-deploy.log
 
