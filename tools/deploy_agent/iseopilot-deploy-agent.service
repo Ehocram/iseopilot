@@ -1,0 +1,27 @@
+[Unit]
+Description=Agente di deploy ISEOPilot (solo /opt/iseopilot, solo servizio iseopilot)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/iseopilot/tools/deploy_agent/agente.py
+Restart=on-failure
+RestartSec=5
+
+# Deve poter usare git e docker sull'host: gira come root, ed e' esattamente
+# il motivo per cui NON sta dentro il container e ascolta solo su localhost.
+User=root
+WorkingDirectory=/opt/iseopilot
+
+Environment=DEPLOY_AGENT_PORT=8765
+Environment=DEPLOY_AGENT_TOKEN_FILE=/etc/iseopilot/deploy-agent.token
+Environment=DEPLOY_AGENT_LOG=/var/log/iseopilot-deploy.log
+
+# Riduzione della superficie: niente nuovi privilegi, /home e /tmp isolati.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
