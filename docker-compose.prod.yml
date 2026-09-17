@@ -19,6 +19,11 @@ services:
     volumes:
       - iseopilot_data:/data        # DB SQLite, token per-utente, catalogo Dynamics
       - /mnt/dfs:/mnt/dfs:ro          # cartelle DFS aziendali (mount CIFS host, SOLA LETTURA)
+      # Codice sorgente per la pagina Sviluppatore: SOLA LETTURA, deliberatamente.
+      # L'applicazione legge e propone; ad applicare e pubblicare e' l'agente
+      # iseopilot-deploy-agent, che gira sull'host. Cosi' l'app non puo'
+      # modificare se stessa e non serve il socket Docker nel container.
+      - /opt/iseopilot:/repo:ro
     networks:
       - proxy-net                   # condivisa col Caddy di Flusso-AI
       - internal                    # privata (per eventuali servizi futuri)

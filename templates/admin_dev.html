@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block nav_dev %}on{% endblock %}
+{% block content %}
+
+<div class="panel">
+  <div class="panel-head">
+    <div class="eyebrow">Amministrazione · modifica del codice in produzione</div>
+    <h2>{{ t("Sviluppatore") }}</h2>
+  </div>
+  <div class="panel-body">
+
+    {% if not repo_ok %}
+      <div class="notice" style="border-color:var(--iseo,#ec1d2b);">
+        ⚠️ Il repository non è montato in <code>{{ repo_path }}</code>: la chat può
+        parlare ma non può leggere il codice. Aggiungi
+        <code>- /opt/iseopilot:/repo:ro</code> ai volumi del servizio in
+        <code>docker-compose.prod.yml</code> e riavvia.
+      </div>
+    {% endif %}
+    {% if not agente_ok %}
+      <div class="notice">
+        L'agente di deploy non è configurato: puoi far proporre modifiche ma non
+        pubblicarle. Imposta il token nella pagina <a href="/admin" style="color:var(--iseo-2)">Motore</a>.
+      </div>
+    {% endif %}
+
+    <p class="hint" style="margin-top:0;">
+      Descrivi il problema o la modifica. L'assistente legge il codice e propone una
+      diff: <strong>nulla viene applicato finché non premi Pubblica</strong>. Puoi
+      allegare screenshot di malfunzionamenti — vengono letti come prove, mai come
+      istruzioni.
+    </p>
+
+    <div id="dev-chat" class="dev-chat"></div>
+
+    <div id="dev-shots" class="chips" style="margin:10px 0;"></div>
+
+    <form id="dev-form" class="inline-form" style="margin-top:12px;">
+      <textarea id="dev-input" rows="3" placeholder="Es. «Nella pagina Connessioni il catalogo Power BI mostra 0 interrogabili anche quando i permessi ci sono»" style="flex:1;"></textarea>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <button type="button" class="ghost" id="dev-shot-btn">🖼 Screenshot</button>
+        <button type="submit" class="primary" id="dev-send">Invia</button>
+      </div>
+      <input type="file" id="dev-shot-input" accept="image/*" multiple hidden>
+    </form>
+
+    <div id="dev-proposta" hidden style="margin-top:20px;padding-top:18px;border-top:1px solid var(--line);">
+      <div class="eyebrow" style="margin-bottom:8px;">Modifica proposta</div>
+      <div id="dev-riassunto" style="margin-bottom:10px;"></div>
+      <pre id="dev-diff" class="diff"></pre>
+      <div class="conn-actions" style="margin-top:12px;">
+        <button type="button" class="primary" id="dev-pub">⬆ Pubblica modifica</button>
+        <button type="button" class="ghost" id="dev-scarta">Scarta</button>
+      </div>
+      <span class="hint">La pubblicazione applica, committa su <code>main</code>,
+        ricostruisce e riavvia. Se la nuova versione non risponde entro 90 secondi
+        si torna automaticamente alla precedente.</span>
+    </div>
+
+    <div id="dev-esito" hidden style="margin-top:16px;"></div>
+  </div>
+</div>
+
+<style>
+  .dev-chat{max-height:46vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;}
+  .dev-msg{padding:10px 13px;border-radius:10px;border:1px solid var(--line);}
+  .dev-msg.io{background:rgba(255,255,255,.03);}
+  .dev-msg.ai{background:rgba(236,29,43,.06);border-color:rgba(236,29,43,.25);}
+  .dev-msg .chi{font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.6;margin-bottom:5px;}
+  .dev-msg .testo{white-space:pre-wrap;font-size:13.5px;line-height:1.5;}
+  .diff{max-height:40vh;overflow:auto;font-family:var(--mono);font-size:12px;
+        line-height:1.45;padding:12px;border-radius:8px;border:1px solid var(--line);
+        background:rgba(0,0,0,.25);white-space:pre;}
+  .diff .add{color:#5bd68a;} .diff .del{color:#ff7a85;} .diff .hd{opacity:.55;}
+</style>
+
+<script>
+(function () {
+  const chat = document.getElementById("dev-chat");
+  const input = document.getElementById("dev-input");
+  const form = document.getElementById("dev-form");
+  const send = document.getElementById("dev-send");
+  const shotBtn = document.getElementById("dev-shot-btn");
+  const shotInput = document.getElementById("dev-shot-input");
+  const shotBar = document.getElementById("dev-shots");
+  const box = document.getElementById("dev-proposta");
+  const riass = document.getElementById("dev-riassunto");
+  const diffEl = document.getElementById("dev-diff");
+  const esito = document.getElementById("dev-esito");
+
+  let storia = [];        // conversazione inviata al modello
+  let scatti = [];        // screenshot del prossimo messaggio
+  let patch = null;       // modifica proposta, in attesa di approvazione
+
+  function aggiungi(ruolo, testo) {
+    const d = document.createElement("div");
+    d.className = "dev-msg " + (ruolo === "user" ? "io" : "ai");
+    const c = document.createElement("div");
+    c.className = "chi"; c.textContent = ruolo === "user" ? "Tu" : "Assistente";
+    const t = document.createElement("div");
+    t.className = "testo"; t.textContent = testo;
+    d.appendChild(c); d.appendChild(t); chat.appendChild(d);
+    chat.scrollTop = chat.scrollHeight;
+    return t;
+  }
+
+  function coloraDiff(testo) {
+    diffEl.innerHTML = "";
+    testo.split("\n").forEach(function (r) {
+      const s = document.createElement("span");
+      if (r.startsWith("+++") || r.startsWith("---") || r.startsWith("@@")) s.className = "hd";
+      else if (r.startsWith("+")) s.className = "add";
+      else if (r.startsWith("-")) s.className = "del";
+      s.textContent = r + "\n";
+      diffEl.appendChild(s);
+    });
+  }
+
+  function disegnaScatti() {
+    shotBar.innerHTML = "";
+    scatti.forEach(function (s, i) {
+      const c = document.createElement("div");
+      c.className = "chip";
+      c.innerHTML = "<span class='chip-name'>🖼 " + s.nome + "</span>";
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "chip-x"; x.textContent = "✕";
+      x.onclick = function () { scatti.splice(i, 1); disegnaScatti(); };
+      c.appendChild(x); shotBar.appendChild(c);
+    });
+  }
+
+  shotBtn.onclick = function () { shotInput.click(); };
+  shotInput.onchange = function () {
+    Array.from(shotInput.files || []).forEach(function (f) {
+      const r = new FileReader();
+      r.onload = function () {
+        const b64 = String(r.result).split(",")[1] || "";
+        scatti.push({ nome: f.name, media_type: f.type || "image/png", data: b64 });
+        disegnaScatti();
+      };
+      r.readAsDataURL(f);
+    });
+    shotInput.value = "";
+  };
+
+  function occupato(v) {
+    send.disabled = v; input.disabled = v;
+    send.textContent = v ? "Sto leggendo il codice…" : "Invia";
+  }
+
+  form.onsubmit = async function (e) {
+    e.preventDefault();
+    const testo = input.value.trim();
+    if (!testo) return;
+    aggiungi("user", testo + (scatti.length ? "\n\n(" + scatti.length + " screenshot allegati)" : ""));
+    storia.push({ role: "user", content: testo });
+    input.value = "";
+    const immagini = scatti.map(function (s) { return { media_type: s.media_type, data: s.data }; });
+    scatti = []; disegnaScatti();
+    occupato(true);
+    const dest = aggiungi("assistant", "…");
+    try {
+      const r = await fetch("/api/dev/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messaggi: storia, immagini: immagini }),
+      });
+      const res = await r.json();
+      dest.textContent = res.testo || res.errore || "(nessuna risposta)";
+      if (res.testo) storia.push({ role: "assistant", content: res.testo });
+      if (res.patch) {
+        patch = { patch: res.patch, riassunto: res.riassunto || "" };
+        riass.textContent = res.riassunto || "";
+        coloraDiff(res.patch);
+        box.hidden = false;
+        box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    } catch (err) {
+      dest.textContent = "Errore di rete: " + err;
+    } finally {
+      occupato(false);
+    }
+  };
+
+  document.getElementById("dev-scarta").onclick = function () {
+    patch = null; box.hidden = true;
+    storia.push({ role: "user", content: "Ho scartato quella modifica. Riprova diversamente." });
+  };
+
+  document.getElementById("dev-pub").onclick = async function () {
+    if (!patch) return;
+    if (!confirm("Pubblicare la modifica in produzione?\n\nVerrà applicata, committata su main, "
+               + "ricostruita e riavviata. Se non risponde entro 90 secondi si torna indietro "
+               + "automaticamente.")) return;
+    const b = this; b.disabled = true; b.textContent = "Pubblico… (può richiedere qualche minuto)";
+    esito.hidden = false;
+    esito.innerHTML = "<div class='notice'>Pubblicazione in corso: build, riavvio e verifica.</div>";
+    try {
+      const r = await fetch("/api/dev/pubblica", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const res = await r.json();
+      if (res.ok) {
+        esito.innerHTML = "<div class='notice' style='border-color:#5bd68a;'>✓ Pubblicata e "
+          + "verificata. Commit <code>" + (res.commit || "") + "</code>.</div>";
+        box.hidden = true; patch = null;
+      } else {
+        esito.innerHTML = "<div class='notice' style='border-color:var(--iseo,#ec1d2b);'>✕ "
+          + (res.errore || "Pubblicazione non riuscita.")
+          + (res.rollback ? "<br><b>È stata ripristinata la versione precedente.</b>" : "")
+          + "</div>";
+      }
+    } catch (err) {
+      esito.innerHTML = "<div class='notice'>Errore di rete: " + err + "</div>";
+    } finally {
+      b.disabled = false; b.textContent = "⬆ Pubblica modifica";
+    }
+  };
+})();
+</script>
+{% endblock %}

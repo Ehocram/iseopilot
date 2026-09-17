@@ -12,6 +12,8 @@ import os
 import threading
 from pathlib import Path
 
+import requests
+
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,7 +25,7 @@ from starlette.background import BackgroundTask
 from . import diag
 diag.install()
 
-from . import auth, connectors, docedit, docgen, i18n, knowledge, memory, store
+from . import auth, connectors, devchat, docedit, docgen, i18n, knowledge, memory, store
 from .connectors import (DEF_OD_CLIENT_ID, DEF_OD_TENANT_ID, DEF_DYN_CLIENT_ID,
                          DEF_DYN_TENANT_ID, DEF_DYN_RESOURCE_URL,
                          DEF_PBI_CLIENT_ID, DEF_PBI_TENANT_ID)
@@ -1371,6 +1373,8 @@ def admin_page(request: Request):
         pbi_enabled=store.get_setting("pbi_enabled", "0") == "1",
         pbi_client_id=store.get_setting("pbi_client_id", DEF_PBI_CLIENT_ID),
         pbi_tenant_id=store.get_setting("pbi_tenant_id", DEF_PBI_TENANT_ID),
+        dev_agent_url=store.get_setting("dev_agent_url", "http://127.0.0.1:8765"),
+        dev_agent_token_set=bool(store.get_setting("dev_agent_token", "")),
         def_dyn_client_id=DEF_DYN_CLIENT_ID, def_dyn_tenant_id=DEF_DYN_TENANT_ID,
         def_dyn_resource_url=DEF_DYN_RESOURCE_URL,
         def_pbi_client_id=DEF_PBI_CLIENT_ID, def_pbi_tenant_id=DEF_PBI_TENANT_ID,
@@ -1424,6 +1428,8 @@ def admin_save(
     pbi_enabled: str = Form("0"),
     pbi_client_id: str = Form(""),
     pbi_tenant_id: str = Form(""),
+    dev_agent_url: str = Form(""),
+    dev_agent_token: str = Form(""),
 ):
     user = auth.current_user(request)
     if not user or not user["is_admin"]:
@@ -1486,6 +1492,12 @@ def admin_save(
     store.set_setting("m365_tenant_id", m365_tenant_id.strip() or DEF_OD_TENANT_ID)
     store.set_setting("pbi_client_id", pbi_client_id.strip() or DEF_PBI_CLIENT_ID)
     store.set_setting("pbi_tenant_id", pbi_tenant_id.strip() or DEF_PBI_TENANT_ID)
+    store.set_setting("dev_agent_url", dev_agent_url.strip() or "http://127.0.0.1:8765")
+    # Token vuoto = non toccare quello esistente: il campo e' mascherato, e un
+    # salvataggio della pagina non deve cancellarlo per distrazione.
+    if dev_agent_token.strip():
+        store.set_setting("dev_agent_token", dev_agent_token.strip())
+        _audit(request, user["username"], "dev_agent_token", "token aggiornato")
     return RedirectResponse(url="/admin?saved=1", status_code=303)
 
 
@@ -2418,6 +2430,91 @@ def dyn_report(request: Request, token: str):
     except Exception:
         raise HTTPException(status_code=404, detail="Report non leggibile.")
     return HTMLResponse(content=html)
+
+
+# ══════════════════════════════════════════════════════ PAGINA SVILUPPATORE
+class DevChatReq(BaseModel):
+    messaggi: list[dict] = []
+    immagini: list[dict] = []      # [{"media_type": "image/png", "data": "<base64>"}]
+
+
+class DevPubblicaReq(BaseModel):
+    patch: str
+    riassunto: str = ""
+
+
+def _dev_guardia(request: Request):
+    """La pagina sviluppatore modifica il codice in produzione: e' riservata
+    agli amministratori e ogni accesso passa da qui."""
+    user = auth.current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sessione scaduta.")
+    if not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    return user
+
+
+@app.get("/admin/dev", response_class=HTMLResponse)
+def admin_dev(request: Request):
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    return templates.TemplateResponse(request, "admin_dev.html", _ctx(
+        request, user,
+        repo_ok=devchat.repo_presente(),
+        repo_path=str(devchat.REPO),
+        agente_ok=bool(store.get_setting("dev_agent_token", "")),
+    ))
+
+
+@app.post("/api/dev/chat")
+def api_dev_chat(request: Request, body: DevChatReq):
+    user = _dev_guardia(request)
+    immagini = [(str(i.get("media_type") or "image/png"), str(i.get("data") or ""))
+                for i in (body.immagini or []) if i.get("data")]
+    msgs = [{"role": m.get("role", "user"), "content": str(m.get("content") or "")}
+            for m in (body.messaggi or []) if m.get("content")]
+    if not msgs:
+        return JSONResponse({"errore": "Nessun messaggio."}, status_code=400)
+    _audit(request, user["username"], "dev_chat",
+           f"messaggi={len(msgs)}, screenshot={len(immagini)}")
+    try:
+        res = devchat.conversa(msgs, admin_settings(), immagini=immagini)
+    except Exception as e:
+        return JSONResponse({"errore": f"{type(e).__name__}: {e}"}, status_code=500)
+    return JSONResponse(res)
+
+
+@app.post("/api/dev/pubblica")
+def api_dev_pubblica(request: Request, body: DevPubblicaReq):
+    user = _dev_guardia(request)
+    token = store.get_setting("dev_agent_token", "").strip()
+    if not token:
+        return JSONResponse({"ok": False, "errore":
+            "Token dell'agente di deploy non configurato (pagina Motore)."},
+            status_code=400)
+    if not (body.patch or "").strip():
+        return JSONResponse({"ok": False, "errore": "Nessuna modifica da pubblicare."},
+                            status_code=400)
+    url = store.get_setting("dev_agent_url", "http://127.0.0.1:8765") + "/pubblica"
+    _audit(request, user["username"], "dev_pubblica", f"riassunto={body.riassunto[:160]}")
+    try:
+        r = requests.post(url, json={"patch": body.patch,
+                                     "riassunto": body.riassunto,
+                                     "autore": user["username"]},
+                          headers={"X-Deploy-Token": token}, timeout=1200)
+        esito = r.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "errore":
+            f"Agente di deploy non raggiungibile: {type(e).__name__}: {e}. "
+            f"Verifica che il servizio iseopilot-deploy-agent sia attivo sull'host."},
+            status_code=502)
+    _audit(request, user["username"], "dev_pubblica_esito",
+           f"ok={esito.get('ok')} commit={esito.get('commit','')} "
+           f"rollback={esito.get('rollback', False)}")
+    return JSONResponse(esito)
 
 
 @app.get("/healthz")
