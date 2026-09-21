@@ -93,6 +93,22 @@ def init_db() -> None:
             "  department TEXT, path TEXT,"
             "  PRIMARY KEY (department, path))"
         )
+        # Un utente puo' appartenere a piu' dipartimenti, ma ne ha sempre UNO
+        # attivo per volta: la conoscenza resta compartimentata e ogni risposta
+        # ha una provenienza sola. users.department resta il predefinito, quello
+        # che si carica all'accesso.
+        cx.execute(
+            "CREATE TABLE IF NOT EXISTS user_departments ("
+            "  user_id TEXT, department TEXT,"
+            "  PRIMARY KEY (user_id, department))"
+        )
+        # Migrazione: chi esisteva prima entra con il proprio dipartimento, cosi'
+        # per lui non cambia nulla.
+        cx.execute(
+            "INSERT OR IGNORE INTO user_departments (user_id, department) "
+            "SELECT username, department FROM users "
+            "WHERE department IS NOT NULL AND department <> ''"
+        )
         # Cronologia conversazioni, per-utente. title/history cifrati (Fernet):
         # sono dati personali, coerente con la cifratura dei segreti.
         cx.execute(
@@ -401,6 +417,51 @@ def add_department(name: str) -> bool:
 def department_exists(name: str) -> bool:
     with _lock, _cx() as cx:
         return cx.execute("SELECT 1 FROM departments WHERE name=?", (name,)).fetchone() is not None
+
+
+def user_departments(user_id: str) -> list[str]:
+    """Dipartimenti a cui l'utente appartiene, il predefinito per primo.
+
+    Chi ne ha uno solo si comporta esattamente come prima: la lista ha un
+    elemento e non c'e' nulla da scegliere.
+    """
+    u = get_user(user_id)
+    principale = (u or {}).get("department") or ""
+    with _lock, _cx() as cx:
+        righe = cx.execute(
+            "SELECT department FROM user_departments WHERE user_id=? ORDER BY department",
+            (user_id,)).fetchall()
+    lista = [r["department"] for r in righe if r["department"]]
+    if principale and principale not in lista:
+        lista.append(principale)          # coerenza se la tabella e' indietro
+    if principale in lista:
+        lista.remove(principale)
+        lista.insert(0, principale)
+    return lista
+
+
+def user_department_default(user_id: str) -> str:
+    """Dipartimento caricato all'accesso."""
+    lista = user_departments(user_id)
+    return lista[0] if lista else ""
+
+
+def set_user_departments(user_id: str, dipartimenti: list[str], predefinito: str = "") -> None:
+    """Sostituisce l'elenco dei dipartimenti dell'utente.
+
+    Il predefinito finisce anche in users.department: resta il campo che il
+    resto del codice legge come dipartimento 'principale', e cosi' un DB
+    ripristinato da un backup vecchio continua a funzionare.
+    """
+    validi = [d for d in dict.fromkeys(dipartimenti or []) if d and department_exists(d)]
+    if predefinito not in validi:
+        predefinito = validi[0] if validi else ""
+    with _lock, _cx() as cx:
+        cx.execute("DELETE FROM user_departments WHERE user_id=?", (user_id,))
+        cx.executemany("INSERT OR IGNORE INTO user_departments (user_id, department) "
+                       "VALUES (?,?)", [(user_id, d) for d in validi])
+        cx.execute("UPDATE users SET department=? WHERE username=?", (predefinito, user_id))
+        cx.commit()
 
 
 def department_folder(name: str) -> str:

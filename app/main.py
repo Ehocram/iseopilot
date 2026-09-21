@@ -123,8 +123,12 @@ def _ctx(request: Request, user: dict, **extra) -> dict:
         _dub_nav = _dub.enabled() and _dub.user_allowed(user["username"])
     except Exception:
         _dub_nav = False
+    _dip = store.user_departments(user["username"])
     base = {"user": user["username"], "is_admin": bool(user["is_admin"]),
-            "department": user.get("department") or "—",
+            # Dipartimento ATTIVO, non quello anagrafico: e' cio' su cui
+            # l'utente sta effettivamente lavorando in questa sessione.
+            "department": _dept_attivo(request, user) or "—",
+            "dipartimenti": _dip,          # per il selettore, se ne ha piu' di uno
             "dub_nav": _dub_nav}
     base.update(_i18n_ctx(request, user))
     base.update(extra)
@@ -503,6 +507,31 @@ def logout(request: Request):
     return RedirectResponse(url="/login", status_code=303)
 
 
+@app.get("/dipartimento")
+def set_dipartimento(request: Request):
+    """Cambia il dipartimento ATTIVO per questa sessione.
+
+    Non viene salvato fra le impostazioni: al prossimo accesso si riparte dal
+    predefinito. La scelta e' accettata solo se rientra fra i dipartimenti
+    assegnati all'utente — il parametro arriva dal browser, quindi si verifica
+    qui e non ci si affida al fatto che il menu mostrasse solo quelli giusti.
+    """
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    scelto = (request.query_params.get("a") or "").strip()
+    nxt = request.query_params.get("next", "/")
+    if not nxt.startswith("/"):
+        nxt = "/"
+    if scelto in store.user_departments(user["username"]):
+        request.session["dept_attivo"] = scelto
+        _audit(request, user["username"], "dipartimento_attivo", f"-> {scelto}")
+    else:
+        _audit(request, user["username"], "dipartimento_rifiutato",
+               f"richiesto={scelto[:60]}")
+    return RedirectResponse(url=nxt, status_code=303)
+
+
 @app.get("/ui-lang")
 def set_ui_lang(request: Request):
     """Cambia la lingua dell'interfaccia (it/en). Persistente per utente se loggato."""
@@ -547,7 +576,7 @@ def chat_page(request: Request):
     user = auth.current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    dept = user.get("department") or ""
+    dept = _dept_attivo(request, user)
     uid = user["username"]
     _fold = bool(store.department_folders(dept))
     _od = connectors.is_connected(uid, "onedrive")
@@ -647,7 +676,7 @@ def api_chat(request: Request, body: ChatRequest):
                                      headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         from . import cowork
         _audit(request, uid, "cowork", f"domanda={query[:160]}")
-        dept = user.get("department") or ""
+        dept = _dept_attivo(request, user)
         # Ultimi turni della conversazione: le CORREZIONI ("no, in spagnolo")
         # devono arrivare all'agente col loro contesto, non come compito orfano.
         _conv_rows = []
@@ -690,7 +719,7 @@ def api_chat(request: Request, body: ChatRequest):
     # vecchi in cache o chiamate dirette non possono aggirarla).
     src = (body.source or "").strip().lower()
     if not body.free_mode:
-        _dept0 = user.get("department") or ""
+        _dept0 = _dept_attivo(request, user)
         _available = {
             "kb": True,
             "folder": bool(store.department_folders(_dept0)),
@@ -742,7 +771,7 @@ def api_chat(request: Request, body: ChatRequest):
         source_links: list[dict] = []
         if not body.free_mode:
             try:
-                dept = user.get("department") or ""
+                dept = _dept_attivo(request, user)
                 # Query di ricerca arricchita per TUTTE le fonti (KB, cartelle,
                 # OneDrive, Dynamics): i follow-up ("e per il 2025?") ereditano il
                 # soggetto dal turno precedente, e la concept map desktop aggiunge
@@ -1110,7 +1139,7 @@ async def kb_file(request: Request, name: str):
     user = auth.current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    dept = user.get("department") or ""
+    dept = _dept_attivo(request, user)
     p = knowledge.kb_file_path(dept, name)
     if not p.is_file():
         raise HTTPException(status_code=404, detail=(
@@ -1518,6 +1547,8 @@ def users_page(request: Request):
     return templates.TemplateResponse(request, "admin_users.html", _ctx(
         request, user,
         users=store.list_users(), departments=store.list_departments(),
+        user_depts={u["username"]: store.user_departments(u["username"])
+                    for u in store.list_users()},
         pbi_grants={u["username"]: store.get_user_setting(u["username"], "powerbi_access", "0") == "1"
                     for u in store.list_users()},
         m365_grants={u["username"]: store.get_user_setting(u["username"], "m365_access", "0") == "1"
@@ -1558,6 +1589,7 @@ def users_update(
     request: Request,
     username: str = Form(...),
     department: str = Form(...),
+    departments: list[str] = Form(default=[]),
     is_admin: str = Form("0"),
     active: str = Form("0"),
     dub_access: str = Form("0"),
@@ -1611,9 +1643,19 @@ def users_update(
 
     store.update_user(username, department=department, is_admin=want_admin,
                       active=want_active, password_hash=pwd_hash)
+    # Il predefinito appartiene sempre all'utente, anche se l'amministratore non
+    # lo spunta fra le aree aggiuntive: e' il dipartimento che si carica
+    # all'accesso, non puo' essere escluso per distrazione.
+    _aree = [department] + [d for d in (departments or []) if d != department]
+    _prima = store.user_departments(username)
+    store.set_user_departments(username, _aree, department)
+    if sorted(_prima) != sorted(_aree):
+        _audit(request, admin["username"], "admin_dipartimenti",
+               f"utente={username}: {_prima} -> {_aree}")
     _audit(request, admin["username"], "admin_utente_modificato",
-           f"utente={username}, reparto={department}, admin={want_admin}, "
-           f"attivo={want_active}, reset_password={bool(reset_password.strip())}")
+           f"utente={username}, reparto={department}, aree={len(_aree)}, "
+           f"admin={want_admin}, attivo={want_active}, "
+           f"reset_password={bool(reset_password.strip())}")
     return RedirectResponse(url=f"/admin/users?msg=Utente+{username}+aggiornato.", status_code=303)
 
 
@@ -1807,7 +1849,7 @@ def knowledge_page(request: Request):
     user = auth.current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    dept = user.get("department") or "—"
+    dept = _dept_attivo(request, user) or "—"
     folders = store.department_folders(dept)
     return templates.TemplateResponse(request, "knowledge.html", _ctx(
         request, user,
@@ -1827,7 +1869,7 @@ def knowledge_upload(request: Request, files: list[UploadFile] = File(...)):
     user = auth.current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    dept = user.get("department") or ""
+    dept = _dept_attivo(request, user)
     if not knowledge.kb_available():
         return RedirectResponse(url="/knowledge?err=ChromaDB+non+installato+sul+server.", status_code=303)
     ok_count, fail = 0, []
@@ -1882,7 +1924,7 @@ def knowledge_delete(request: Request, filename: str = Form(...)):
     user = auth.current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    dept = user.get("department") or ""
+    dept = _dept_attivo(request, user)
     ok, _msg = knowledge.kb_delete(dept, filename)
     _audit(request, user["username"], "kb_rimozione_documento", f"file={filename[:120]}, esito={'ok' if ok else 'ko'}")
     if ok:
@@ -1899,7 +1941,7 @@ def knowledge_reindex(request: Request):
     user = auth.current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    dept = user.get("department") or ""
+    dept = _dept_attivo(request, user)
     if not store.department_folders(dept):
         return RedirectResponse(url="/knowledge?err=Nessuna+cartella+configurata+per+il+dipartimento.", status_code=303)
     ok, msg = knowledge.dept_folders_reindex(dept)
@@ -1949,7 +1991,7 @@ def settings_page(request: Request):
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     uname = user["username"]
-    dept = user.get("department") or "—"
+    dept = _dept_attivo(request, user) or "—"
     return templates.TemplateResponse(request, "user.html", _ctx(
         request, user,
         use_kb=store.get_user_setting(uname, "use_kb", "1") == "1",
@@ -2501,6 +2543,26 @@ def _dev_chiama_agente(request: Request, user: dict, percorso: str, corpo: dict)
             f"L'agente gira SULL'HOST (srv-hq-ai-01), non nel container: verifica "
             f"che il servizio iseopilot-deploy-agent sia attivo e che il socket sia "
             f"montato nel compose."}, status_code=502)
+
+
+def _dept_attivo(request: Request, user: dict) -> str:
+    """Dipartimento su cui l'utente sta lavorando in questo momento.
+
+    Sta nella sessione, non fra le impostazioni: all'accesso si riparte sempre
+    dal predefinito, come chiesto. Il valore viene SEMPRE riverificato contro i
+    dipartimenti assegnati all'utente, perche' il cookie e' materiale che
+    l'utente possiede: se non e' piu' fra i suoi — revoca dell'admin, o
+    manomissione — si ricade sul predefinito invece di fidarsi.
+    """
+    uid = user["username"]
+    consentiti = store.user_departments(uid)
+    scelto = (request.session.get("dept_attivo") or "").strip()
+    if scelto and scelto in consentiti:
+        return scelto
+    predefinito = consentiti[0] if consentiti else (user.get("department") or "")
+    if scelto:
+        request.session.pop("dept_attivo", None)
+    return predefinito
 
 
 def _dev_guardia(request: Request):

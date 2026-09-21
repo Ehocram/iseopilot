@@ -32,9 +32,22 @@
         <a href="/ui-lang?to=it&next={{ next_path|urlencode }}" class="{% if ui_lang == 'it' %}on{% endif %}">IT</a>
         <a href="/ui-lang?to=en&next={{ next_path|urlencode }}" class="{% if ui_lang == 'en' %}on{% endif %}">EN</a>
       </span>
+      {% if dipartimenti and dipartimenti|length > 1 %}
+      {# Piu' dipartimenti: si sceglie quello ATTIVO. Uno per volta, cosi' la
+         conoscenza resta compartimentata e ogni risposta ha una provenienza sola. #}
+      <span class="clearance" title="{{ t('Area attiva — la ricerca usa solo questa') }}">
+        <span class="ring"></span><span class="lbl">{{ t("Area") }}</span>
+        <select class="dep depsel" onchange="location.href='/dipartimento?a='+encodeURIComponent(this.value)+'&next={{ next_path|urlencode }}'">
+          {% for d in dipartimenti %}
+          <option value="{{ d }}" {% if d == department %}selected{% endif %}>{{ d }}</option>
+          {% endfor %}
+        </select>
+      </span>
+      {% else %}
       <span class="clearance" title="{{ t('Area') }}">
         <span class="ring"></span><span class="lbl">{{ t("Area") }}</span><span class="dep">{{ department }}</span>
       </span>
+      {% endif %}
       <a class="who-id" href="/account" title="{{ t('Account') }}">{{ user }}</a>
       <a class="logout" href="/logout">{{ t("Esci") }}</a>
     </div>

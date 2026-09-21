@@ -64,9 +64,23 @@
             <td>
               <form method="post" action="/admin/users/update" class="inline-form" autocomplete="off">
                 <input type="hidden" name="username" value="{{ u.username }}">
-                <select name="department">
+                <select name="department" title="Dipartimento predefinito: è quello che si carica all'accesso">
                   {% for d in departments %}<option value="{{ d }}" {% if d == u.department %}selected{% endif %}>{{ d }}</option>{% endfor %}
                 </select>
+                {# Appartenenze aggiuntive. Chi ne ha una sola non nota differenze:
+                   il predefinito viene incluso comunque, anche se qui non è spuntato. #}
+                <details class="multi-dep">
+                  <summary title="Altri dipartimenti a cui l'utente appartiene">
+                    +{{ (user_depts.get(u.username, [])|length - 1) if (user_depts.get(u.username, [])|length) > 1 else 0 }} aree
+                  </summary>
+                  <div class="multi-dep-box">
+                    {% for d in departments %}
+                      {% if d != u.department %}
+                      <label class="mini-check"><input type="checkbox" name="departments" value="{{ d }}" {% if d in user_depts.get(u.username, []) %}checked{% endif %}>{{ d }}</label>
+                      {% endif %}
+                    {% endfor %}
+                  </div>
+                </details>
                 <label class="mini-check"><input type="checkbox" name="is_admin" value="1" {% if u.is_admin %}checked{% endif %}>admin</label>
                 <label class="mini-check"><input type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}>attivo</label>
                 <label class="mini-check" title="Accesso a Dub Studio (se abilitato in Motore)"><input type="checkbox" name="dub_access" value="1" {% if dub_grants.get(u.username) %}checked{% endif %}>🎬 Dub</label>

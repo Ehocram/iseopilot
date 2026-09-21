@@ -468,3 +468,15 @@ table.grid code{font-family:var(--mono); font-size:12px; color:var(--dim);}
 .img-hint{margin-top:6px; font-size:11px; color:#E8B84B;}
 
 .src-link.nolink{opacity:.55; cursor:default; text-decoration:none;}
+
+/* Selettore del dipartimento attivo: compare solo a chi ne ha piu' di uno.
+   Deve sembrare il badge che sostituisce, non un campo di modulo. */
+.clearance .depsel{font-family:var(--mono); font-size:11px; font-weight:600;
+  color:var(--text); background:transparent; border:0; padding:0 18px 0 0;
+  cursor:pointer; appearance:none; -webkit-appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--faint) 50%),
+                   linear-gradient(135deg,var(--faint) 50%,transparent 50%);
+  background-position:right 6px center, right 2px center;
+  background-size:4px 4px, 4px 4px; background-repeat:no-repeat;}
+.clearance .depsel:focus{outline:1px solid var(--iseo-2,#ff6470); outline-offset:3px;}
+.clearance .depsel option{background:var(--bg-2,#15171d); color:var(--text);}
