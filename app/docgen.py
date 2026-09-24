@@ -410,8 +410,35 @@ def build_spec(fmt: str, user_request: str, context: str, settings: dict,
             + history_text.strip()) if history_text and history_text.strip() else ""
     note = ("\n\n" + note_utente.strip()) if note_utente and note_utente.strip() else ""
     user = f"{schema}\n\nRICHIESTA DELL'UTENTE:\n{user_request}{note}{hist}{ctx}"
-    raw = orchestrator.complete(system, user, settings, max_tokens=4000)
-    return _parse_json(raw)
+
+    # Il tetto di token e' la causa piu' comune di fallimento: una specifica
+    # ricca — un foglio di KPI con valore, riferimento, delta ed esito per ogni
+    # anno — supera i 4000 token, il JSON viene tagliato a meta' stringa e
+    # l'errore che arriva all'utente e' "Unterminated string", incomprensibile.
+    # Si riprova con piu' spazio prima di arrendersi.
+    ultimo = None
+    for tetto in (8000, 16000):
+        try:
+            raw = orchestrator.complete(system, user, settings, max_tokens=tetto)
+            return _parse_json(raw)
+        except (json.JSONDecodeError, ValueError) as e:
+            ultimo = e
+            import sys
+            print(f"[docgen] specifica {fmt} non valida con max_tokens={tetto}: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
+            # Al secondo tentativo si chiede esplicitamente di stare piu' stretti:
+            # alzare il tetto da solo non basta se il modello continua a
+            # dilungarsi oltre qualunque limite.
+            system += ("\nATTENZIONE: la risposta precedente e' stata troncata perche' "
+                       "troppo lunga. Produci lo stesso documento in forma piu' "
+                       "compatta: testi brevi, nessuna ripetizione, e se i dati sono "
+                       "molti limita le righe a quelle davvero significative. "
+                       "Il JSON deve essere COMPLETO e chiuso correttamente.")
+    raise ValueError(
+        "Il contenuto generato era troppo lungo e si e' interrotto, anche dopo un "
+        "secondo tentativo piu' compatto. Prova a chiedere un documento piu' "
+        "circoscritto: meno colonne, meno anni, o un sottoinsieme degli indicatori."
+    ) from ultimo
 
 
 # ── 3) Costruttori per formato ─────────────────────────────
