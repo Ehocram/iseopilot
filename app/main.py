@@ -910,6 +910,14 @@ def api_chat(request: Request, body: ChatRequest):
 
     # ── Generazione documenti su richiesta (Word/Excel/PPT/PDF) ──
     gen_fmt = None if edit_att else docgen.detect_request_with_history(query, clean[:-1])
+    # Quasi-errore: l'utente nomina un formato ma la frase non e' stata letta
+    # come richiesta di generazione. Senza dirlo al modello, quello risponde in
+    # chat e finisce per spiegare che non puo' creare file, o per dedurne un
+    # malfunzionamento: entrambe fuorvianti, perche' basta riformulare.
+    _fmt_sfiorato = None if gen_fmt else docgen.formato_menzionato(query)
+    import sys as _sys
+    print(f"[chat] generazione: formato={gen_fmt or '-'} "
+          f"sfiorato={_fmt_sfiorato or '-'} domanda={query[:120]!r}", file=_sys.stderr)
 
     # NOTE PERSONALI (Incremento 8): cattura del trigger esplicito
     # ("ricordati che…") PRIMA della risposta, con conferma visibile in chat.
@@ -1008,6 +1016,20 @@ def api_chat(request: Request, body: ChatRequest):
                     yield item
         except Exception:
             context, source_links = "", []
+
+        if _fmt_sfiorato:
+            _nomi = {"xlsx": "Excel", "docx": "Word", "pptx": "PowerPoint", "pdf": "PDF"}
+            context = (
+                f"[NOTA DI SISTEMA] L'utente ha nominato un file "
+                f"{_nomi.get(_fmt_sfiorato, _fmt_sfiorato)} ma il messaggio non e' "
+                f"stato riconosciuto come richiesta di generazione, quindi il file "
+                f"NON e' stato creato e non comparira' alcun link. Non e' un "
+                f"malfunzionamento e non va segnalato a nessuno: serve solo una "
+                f"formulazione piu' esplicita. Rispondi comunque nel merito della "
+                f"domanda, e chiudi invitando l'utente a riscrivere la richiesta "
+                f"con un verbo di creazione, per esempio: «crea un file "
+                f"{_nomi.get(_fmt_sfiorato, _fmt_sfiorato)} con ...». "
+                f"Non dire che non puoi generare file.\n\n") + context
 
         if edit_att:
             try:

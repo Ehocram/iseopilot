@@ -211,6 +211,22 @@ _EXPLAIN_RE = re.compile(
     re.IGNORECASE)
 
 
+def formato_menzionato(text: str) -> str | None:
+    """Formato nominato nel messaggio, SENZA pretendere un verbo di creazione.
+
+    Serve a riconoscere il quasi-errore: l'utente ha detto "excel" ma la frase
+    non e' stata letta come richiesta di generazione. Senza questo, il modello
+    riceve la domanda come chat normale e finisce per spiegare che non puo'
+    creare file — o peggio, per dedurre un malfunzionamento.
+    """
+    tl = (text or "").lower()
+    for chiavi, fmt in ((_FMT_PPT, "pptx"), (_FMT_XLS, "xlsx"),
+                        (_FMT_WORD, "docx"), (_FMT_PDF, "pdf")):
+        if any(k in tl for k in chiavi):
+            return fmt
+    return None
+
+
 def detect_request(text: str) -> str | None:
     """Ritorna il formato richiesto ('docx'|'xlsx'|'pptx'|'pdf') o None."""
     tl = (text or "").lower()
