@@ -91,7 +91,7 @@
       <div class="panel-head"><div class="eyebrow">Privacy</div><h2>Protezione dati verso Claude: sempre attiva</h2></div>
       <div class="panel-body">
         <div class="field">
-          <div class="hint">Prima dell'invio a Claude (chat, cronologia, allegati, note, file generati e Attività) vengono sostituiti con codici, ripristinati solo nella risposta: i nomi del dizionario qui sotto; le persone, i telefoni e i documenti d'identità (con contesto) riconosciuti da Presidio; email, IP, codici fiscali, P.IVA, hash e token. Se Presidio non è disponibile l'invio avviene comunque con dizionario e dati tecnici, e l'utente vede un avviso in chat. Le immagini non vengono inviate a Claude. Il riconoscimento automatico non trova tutto. Non coperti per ora: ricerche Dynamics 365 e Power BI, Dub Studio, modifica dei documenti in Documentale, riscrittura AI della query.</div>
+          <div class="hint">Prima dell'invio a Claude (chat, cronologia, allegati, note, file generati e Attività) vengono sostituiti con codici, ripristinati solo nella risposta: i nomi del dizionario qui sotto; i telefoni e i documenti d'identità (con contesto) riconosciuti da Presidio, e i nomi di persona solo se attivi la casella sotto; email, IP, codici fiscali, P.IVA, hash e token. Se Presidio non è disponibile l'invio avviene comunque con dizionario e dati tecnici, e l'utente vede un avviso in chat. Le immagini non vengono inviate a Claude. Il riconoscimento automatico non trova tutto. In chiaro per scelta: Power BI (spento), Dub Studio e chat sviluppatore.</div>
         </div>
         <div class="field">
           <div class="checkrow">
@@ -111,6 +111,13 @@
           <label for="anon_dictionary">Dizionario dei nomi riservati</label>
           <textarea id="anon_dictionary" name="anon_dictionary" placeholder="Un nome per riga (persone, aziende, progetti riservati)…">{{ anon_dictionary }}</textarea>
           <div class="hint">Un termine per riga. Ogni occorrenza presente nel testo viene sostituita con un codice prima dell'invio a Claude (maiuscole, spazi doppi e apostrofi tipografici compresi). Salvato cifrato; in audit solo il numero di voci.</div>
+        </div>
+        <div class="field">
+          <div class="checkrow">
+            <input type="checkbox" id="anon_ner_persone" name="anon_ner_persone" value="1" {% if anon_ner_persone %}checked{% endif %}>
+            <label for="anon_ner_persone">Maschera anche i nomi di persona riconosciuti da Presidio</label>
+          </div>
+          <div class="hint">Spenta: i nomi di persona non sono considerati dati sensibili e partono in chiaro, così Claude risponde anche su personaggi pubblici e colleghi. Le persone riservate vanno nel dizionario qui sopra, sempre attivo. Accesa: Presidio sostituisce con un codice ogni nome di persona che riconosce (di norma solo se scritto con la maiuscola). Ogni cambio finisce in audit.</div>
         </div>
       </div>
     </div>

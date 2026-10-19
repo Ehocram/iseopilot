@@ -23,6 +23,12 @@ os.environ.setdefault("APP_SECRET_KEY", Fernet.generate_key().decode())
 
 from app import store, presidio_client, connectors  # noqa: E402  (redirige i log Dynamics)
 from app.engines import dynamics_search as dmod      # noqa: E402
+
+# Questi test verificano il meccanismo dei NOMI DI PERSONA di Presidio, che in
+# produzione è spento di default (anon_ner_persone): qui lo si accende.
+from app import anonymizer as _anon_mod  # noqa: E402
+_ner_persone_reale = _anon_mod.ner_persone_attivo
+_anon_mod.ner_persone_attivo = lambda: True
 from app.engines.dynamics_search import DynamicsSearch  # noqa: E402
 
 store.init_db()

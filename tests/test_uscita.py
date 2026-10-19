@@ -30,6 +30,11 @@ from app import auth, docgen, orchestrator, store, uscita
 from app import main as app_main
 from app.anonymizer import Anonymizer
 
+# Il meccanismo dei nomi di persona di Presidio (spento di default) si
+# verifica acceso.
+from app import anonymizer as _anon_mod  # noqa: E402
+_anon_mod.ner_persone_attivo = lambda: True
+
 store.init_db()
 
 APP_DIR = Path(__file__).resolve().parent.parent / "app"

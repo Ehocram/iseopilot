@@ -22,6 +22,12 @@ from app import store, auth, presidio_client
 from app import orchestrator as orch
 from app.anonymizer import Anonymizer, regex_dizionario
 
+# Questi test verificano il meccanismo dei NOMI DI PERSONA di Presidio, che in
+# produzione è spento di default (anon_ner_persone): qui lo si accende.
+from app import anonymizer as _anon_mod  # noqa: E402
+_ner_persone_reale = _anon_mod.ner_persone_attivo
+_anon_mod.ner_persone_attivo = lambda: True
+
 store.init_db()
 
 DIZ = ["Mario Rossi", "Laura Bianchi", "Progetto Fenice"]
@@ -524,6 +530,37 @@ def test_admin_senza_interruttore_dizionario_cifrato_e_audit():
     assert righe and righe[0]["detail"] == "voci: 0 → 2"
     assert "Mario" not in json.dumps(righe, ensure_ascii=False)
     store.set_setting("anon_dictionary", "", secret=True)
+
+
+def test_nomi_di_persona_in_chiaro_di_default(monkeypatch):
+    """Decisione del CISO: i nomi riconosciuti da Presidio NON si mascherano
+    (anon_ner_persone spento). Il telefono trovato da Presidio e il nome del
+    dizionario sì."""
+    monkeypatch.setattr(_anon_mod, "ner_persone_attivo", _ner_persone_reale)
+    store.set_setting("anon_ner_persone", "0")
+    t = "Chiama Giovanni Verdi al 333 1234567, poi Mario Rossi."
+    i, j = t.index("Giovanni Verdi"), t.index("333 1234567")
+    monkeypatch.setattr(presidio_client, "analizza", lambda testi: [
+        [(i, i + 14, "PERSON", 0.85), (j, j + 11, "PHONE_NUMBER", 0.75)] for _ in testi])
+    a = Anonymizer()
+    out, esito = a.mask_batch([t], DIZ)
+    assert "Giovanni Verdi" in out[0]
+    assert "333 1234567" not in out[0] and "Mario Rossi" not in out[0]
+    assert "PERSONA" not in esito["per_tipo"] and esito["presidio_ok"] is True
+    assert a.restore(out[0]) == t
+
+
+def test_admin_casella_nomi_di_persona_con_audit(monkeypatch):
+    monkeypatch.setattr(_anon_mod, "ner_persone_attivo", _ner_persone_reale)
+    c = _mk_user("adm.ner@test", admin=True)
+    store.set_setting("anon_ner_persone", "0")
+    assert 'name="anon_ner_persone"' in c.get("/admin").text
+    r = c.post("/admin", data={"anon_ner_persone": "1"}, follow_redirects=False)
+    assert r.status_code == 303 and _ner_persone_reale() is True
+    r = c.post("/admin", data={}, follow_redirects=False)
+    assert r.status_code == 303 and _ner_persone_reale() is False
+    dettagli = [x["detail"] for x in store.audit_query(username="adm.ner@test", action="anon_ner_persone")]
+    assert any("mascherati" in d for d in dettagli) and any("in chiaro" in d for d in dettagli)
 
 
 def test_testi_ui_allineati():

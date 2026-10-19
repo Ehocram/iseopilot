@@ -19,7 +19,9 @@ Ordine dei livelli in `mask_batch` (un lotto di testi, UNA mappa):
      NER non vede più una persona e il secondo cognome passerebbe in chiaro.
      Il NER riceve una copia della stessa lunghezza con TAB, «;», «|» e «_»
      come spazi e le parole TUTTE MAIUSCOLE con la sola iniziale maiuscola
-     (tabelle Excel/CSV/markdown ed elenchi in maiuscolo);
+     (tabelle Excel/CSV/markdown ed elenchi in maiuscolo). Dei suoi risultati
+     si usano telefoni e documenti; i nomi di persona SOLO se l'admin attiva
+     anon_ner_persone (spento: per il CISO i nomi non sono dati sensibili);
   4. dizionario dei nomi riservati (admin, uguale per tutti): UNA regex
      compilata; i suoi intervalli si UNISCONO a quelli di Presidio (gli
      intervalli sovrapposti diventano un solo dato);
@@ -95,6 +97,18 @@ def _chiave(val: str) -> str:
     v = _re.sub(r"\s+", " ", (val or "").strip())
     v = _re.sub(r"[’ʼ]", "'", v)
     return v.casefold()
+
+
+def ner_persone_attivo() -> bool:
+    """Impostazione admin «maschera anche i nomi riconosciuti da Presidio».
+    Spenta di default (decisione del CISO, 19/10/2026): i nomi non sono dati
+    sensibili, e mascherarli toglie a Claude le domande su chiunque, personaggi
+    pubblici compresi. Senza store leggibile vale spenta."""
+    try:
+        from . import store
+        return store.get_setting("anon_ner_persone", "0") == "1"
+    except Exception:
+        return False
 
 
 def neutralizza_letterali(testo: str) -> str:
@@ -228,6 +242,7 @@ class Anonymizer:
         self._counters = {}  # tipo -> contatore
         self._usati = {}     # token -> occorrenze sostituite nel lotto corrente
         self._propagati = {} # valori di Presidio già visti -> tipo (lotti successivi)
+        self._persone = False  # PERSON di Presidio: solo se l'admin lo attiva
 
     def _next_token(self, tipo: str) -> str:
         self._counters[tipo] = self._counters.get(tipo, 0) + 1
@@ -295,7 +310,7 @@ class Anonymizer:
                 b -= 1
             if a >= b or not _libero(a, b):
                 continue
-            if ent == "PERSON" and text[a:b] in ALLOW_PERSONE:
+            if ent == "PERSON" and (not self._persone or text[a:b] in ALLOW_PERSONE):
                 continue
             candidati.append((a, b, tipo, True))
         gruppi = []                       # [inizio, fine, membri]
@@ -346,8 +361,13 @@ class Anonymizer:
                    "occorrenze": int}
         Presidio non disponibile NON blocca (decisione del CISO): restano
         dizionario e regex, e il chiamante avvisa l'utente. Con presidio=False
-        (Attività dopo un primo guasto) non lo si richiama nemmeno."""
+        (Attività dopo un primo guasto) non lo si richiama nemmeno.
+
+        I nomi di persona riconosciuti da Presidio si mascherano SOLO se l'admin
+        lo attiva (anon_ner_persone): per il CISO un nome non è un dato
+        sensibile. Le persone riservate restano coperte dal dizionario."""
         self._usati = {}
+        self._persone = ner_persone_attivo()
         rx = regex_dizionario(dizionario)
         base = []
         for s in segmenti:

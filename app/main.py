@@ -1439,6 +1439,7 @@ def admin_page(request: Request):
         lm_url=store.get_setting("lm_url", ""),
         lm_model=store.get_setting("lm_model", ""),
         anon_dictionary=store.get_setting("anon_dictionary", ""),
+        anon_ner_persone=store.get_setting("anon_ner_persone", "0") == "1",
         kb_embedding_model=store.get_setting("kb_embedding_model", "all-minilm-l6-v2"),
         kb_reembed_status=store.get_setting("kb_reembed_status", ""),
         search_ai_rewrite=store.get_setting("search_ai_rewrite", "0") == "1",
@@ -1498,6 +1499,7 @@ def admin_save(
     lm_url: str = Form(""),
     lm_model: str = Form(""),
     anon_dictionary: str = Form(""),
+    anon_ner_persone: str = Form("0"),
     kb_embedding_model: str = Form("all-minilm-l6-v2"),
     kb_mode: str = Form("local"),
     kb_host: str = Form("localhost"),
@@ -1559,6 +1561,14 @@ def admin_save(
     if anon_dictionary != _diz_prima:
         _audit(request, user["username"], "anon_dizionario",
                f"voci: {_voci(_diz_prima)} → {_voci(anon_dictionary)}")
+    # Nomi di persona riconosciuti da Presidio: spenti di default (per il CISO
+    # non sono dati sensibili). Cambia cosa esce verso Claude: va in audit.
+    _ner_prima = store.get_setting("anon_ner_persone", "0")
+    _ner_ora = "1" if anon_ner_persone == "1" else "0"
+    store.set_setting("anon_ner_persone", _ner_ora)
+    if _ner_ora != _ner_prima:
+        _audit(request, user["username"], "anon_ner_persone",
+               "nomi di persona di Presidio: " + ("mascherati" if _ner_ora == "1" else "in chiaro"))
     store.set_setting("kb_embedding_model", kb_embedding_model.strip() or "all-minilm-l6-v2")
     store.set_setting("kb_mode", "remote" if kb_mode == "remote" else "local")
     store.set_setting("kb_host", kb_host.strip() or "localhost")
