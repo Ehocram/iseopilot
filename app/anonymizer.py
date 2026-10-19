@@ -195,6 +195,42 @@ def regex_dizionario(nomi):
     return rx
 
 
+# ── Identificativi personali (GDPR), anche incompleti ───────
+# Decisione del CISO (19/10/2026): IBAN, codici fiscali, partite IVA, carte di
+# pagamento e documenti si mascherano ANCHE se incompleti o scritti male: un
+# codice fiscale a 13 caratteri rivela comunque iniziali, data di nascita e
+# sesso. Due modi:
+#   - la FORMA del dato (IBAN parziale, CF parziale, 13-19 cifre di una carta…);
+#   - la PAROLA che lo introduce («codice fiscale», «P.IVA», «IBAN», «carta»,
+#     «targa», «passaporto»…): il valore che segue si maschera qualunque forma
+#     abbia, purché contenga almeno una cifra e almeno VALORE_CONTESTO_MIN
+#     caratteri. Solo il valore diventa un codice, la parola resta.
+# I tipi non contengono «_»: [NASCITA_001] e non [DATA_NASCITA_001], perché il
+# ripristino riconosce i segnaposto come [TIPO_NNN].
+VALORE_CONTESTO_MIN = 5
+# Eccezioni alla lunghezza minima: il CVV ha 3-4 cifre.
+MIN_VALORE = {"CVV": 3}
+_PAESI_IBAN = ("IT|SM|VA|DE|FR|ES|CH|AT|GB|RO|NL|BE|PT|IE|LU|PL|CZ|HU|SI|HR|SK|DK"
+               "|SE|FI|NO|GR|BG|LT|LV|EE|MT|CY|LI|MC")
+# Un valore dopo la parola chiave: da 1 a 8 blocchi alfanumerici, ognuno con
+# almeno una cifra, separati da spazio, «-», «.» o «/». Mai un segnaposto: le
+# parentesi quadre non fanno parte della classe.
+_VALORE = (r"(?P<v>(?=[A-Za-z]*\d)[A-Za-z0-9]+"
+           r"(?:[ \-./](?=[A-Za-z]*\d)[A-Za-z0-9]+){0,7})")
+# Fra parola chiave e valore: «:», «=», «n.», «nr», «numero», «è», «is»…
+# Fino a tre parole di collegamento: «P.IVA del fornitore è …», «il codice
+# fiscale del dipendente: …».
+_COLLEGAMENTO = (r"(?:\s+(?:del|della|dello|dei|degli|delle|di|mio|mia|tuo|tua|suo|sua"
+                 r"|nostro|nostra|vostro|vostra|loro|cliente|fornitore|dipendente|azienda"
+                 r"|società|collega|utente|persona|intestatario|titolare|signor[ae]?|sig\.?(?:ra)?)){0,3}")
+_PONTE = _COLLEGAMENTO + r"(?:\s*(?:[:=#]|n\.|nr\.?|num(?:ero)?\.?|no\.|è|e'|is)\s*|\s+){1,3}"
+
+
+def _contesto(parole: str) -> "_re.Pattern":
+    return _re.compile(r"(?<!\w)(?:" + parole + r")" + _PONTE + _VALORE + r"(?![\w\-])",
+                       _re.IGNORECASE)
+
+
 def _chiave_propagazione(val: str) -> str:
     """Un valore di Presidio senza maiuscole e con un solo spazio fra le parole
     («Giovanni\\tVerdi», «GIOVANNI;VERDI» e «Giovanni Verdi» coincidono)."""
@@ -209,12 +245,60 @@ class Anonymizer:
         ("EMAIL", _re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b")),
         ("CVE",   _re.compile(r"\bCVE-\d{4}-\d{4,7}\b", _re.IGNORECASE)),
         ("MAC",   _re.compile(r"\b(?:[0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}\b")),
+        # Dalla parola che li introduce (vedi _contesto): prima delle forme,
+        # così il tipo è quello giusto. I documenti prima della carta di
+        # pagamento («carta d'identità» non è una carta di credito).
+        ("DOCUMENTO", _contesto(r"carta\s+d['’]\s?identit[aà]|carta\s+di\s+identit[aà]|CIE"
+                                r"|passaporto|passport|patente(?:\s+di\s+guida)?"
+                                r"|driving\s+licen[cs]e|documento\s+d['’]\s?identit[aà]|documento\s+di\s+identit[aà]")),
+        ("CARTA", _contesto(r"carta\s+(?:di\s+(?:credito|debito|pagamento)|prepagata)|credit\s+card"
+                            r"|debit\s+card|card\s+number|numero\s+(?:della\s+)?carta|bancomat|PAN")),
+        # Codice di sicurezza della carta: 3-4 cifre, solo dopo la sua sigla.
+        ("CVV",   _re.compile(r"(?<!\w)(?:CVV2?|CVC2?|CID|codice\s+di\s+sicurezza)\s*[:=]?\s*"
+                              r"(?P<v>\d{3,4})(?!\d)", _re.IGNORECASE)),
+        ("IBAN",  _contesto(r"IBAN|conto\s+corrente|c/c|BIC|SWIFT")),
+        ("CF",    _contesto(r"codice\s+fiscale|cod\.?\s*fisc(?:ale)?\.?|c\.\s?f\.?|CF"
+                            r"|tax\s+code|fiscal\s+code")),
+        ("PIVA",  _contesto(r"partita\s+iva|p\.?\s?iva|codice\s+iva|VAT(?:\s+(?:number|no\.?|id))?")),
+        ("TARGA", _contesto(r"targa|targhe|license\s+plate|number\s+plate")),
         # CF anche minuscolo e omocodico; almeno una cifra vera, così una parola
         # di 16 lettere non viene presa per un codice fiscale.
         ("CF",    _re.compile(r"\b(?=[A-Za-z0-9]{16}\b)(?=[A-Za-z]{0,15}\d)[A-Za-z]{6}"
                               + _CF_CIFRA + "{2}[A-Za-z]" + _CF_CIFRA + "{2}[A-Za-z]"
                               + _CF_CIFRA + r"{3}[A-Za-z]\b")),
+        # CF incompleto (11-15 caratteri): 6 lettere, anno, lettera del mese,
+        # giorno. Bastano per iniziali, data di nascita e sesso.
+        ("CF",    _re.compile(r"\b(?=[A-Za-z0-9]{11,15}\b)(?=[A-Za-z]{0,10}\d)[A-Za-z]{6}"
+                              + _CF_CIFRA + "{2}[ABCDEHLMPRSTabcdehlmprst]" + _CF_CIFRA
+                              + r"{2}[A-Za-z0-9]{0,4}\b")),
         ("PIVA",  _re.compile(r"\b(?:IT)?\d{11}\b")),
+        # IBAN anche incompleto o a gruppi di 4: paese, 2 cifre di controllo, da 1
+        # a 7 gruppi; una cifra entro i primi due gruppi, così «it30 anni» non è
+        # un IBAN.
+        ("IBAN",  _re.compile(r"\b(?:" + _PAESI_IBAN + r")\d{2}"
+                              r"(?=[ ]?[A-Z0-9]{0,3}\d|[ ]?[A-Z]{4}[ ]?[A-Z0-9]{0,3}\d)"
+                              r"(?:[ ]?[A-Z0-9]{4}){1,7}(?:[ ]?[A-Z0-9]{1,3})?\b",
+                              _re.IGNORECASE)),
+        # Carta di pagamento: da 13 a 19 cifre, anche a gruppi di 4, senza
+        # controllo di Luhn (una carta scritta male resta una carta).
+        ("CARTA", _re.compile(r"(?<![\d.,])(?:\d{4}[ \-]?){3}\d{1,7}(?![\d.,]\d)")),
+        # Carta d'identità elettronica: CA12345AB.
+        ("DOCUMENTO", _re.compile(r"\bC[A-Z]\d{5}[A-Z]{2}\b")),
+        # Data di nascita, solo se introdotta come tale.
+        ("NASCITA", _re.compile(r"(?<!\w)(?:nat[oa](?:\s+a\s+[\w'’ ]{2,40}?)?\s+(?:il|in\s+data)"
+                                r"|data\s+di\s+nascita|d\.?\s?o\.?\s?b\.?|born\s+on|date\s+of\s+birth)"
+                                r"\s*[:\-]?\s*(?P<v>\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}"
+                                r"|\d{1,2}\s+[A-Za-zÀ-ÿ]{3,9}\s+\d{4})", _re.IGNORECASE)),
+        # Indirizzo con numero civico: via/piazza/corso… + nome con iniziale
+        # maiuscola + civico. Senza civico è solo il nome di una strada.
+        ("INDIRIZZO", _re.compile(r"(?<!\w)(?:[Vv]ia|[Vv]iale|[Vv]\.le|[Pp]iazza|[Pp]\.zza"
+                                  r"|[Pp]iazzale|[Cc]orso|[Cc]\.so|[Ll]argo|[Vv]icolo|[Ss]trada"
+                                  r"|[Ll]ocalit[àa]|[Ll]oc\.)\s+"
+                                  r"(?:[A-ZÀ-Ý][\w'’.]*|d[ei]l?l?[ae]?|de[li]|d['’]|[Ss]an|[Ss]anta|[XIV]+)"
+                                  r"(?:\s+(?:[A-ZÀ-Ý][\w'’.]*|d[ei]l?l?[ae]?|de[li]|d['’]|[Ss]an|[Ss]anta|[XIV]+)){0,5}"
+                                  r",?\s+(?:n\.?\s*)?(?!(?:19|20)\d\d(?!\d))\d{1,4}(?:\s?[A-Za-z](?!\w))?(?:/[A-Za-z0-9]{1,3})?(?!\w)")),
+        # Targa italiana (AB123CD): solo maiuscola, il formato stretto.
+        ("TARGA", _re.compile(r"\b[A-HJ-NPR-TV-Z]{2}\d{3}[A-HJ-NPR-TV-Z]{2}\b")),
         # Telefoni italiani nei formati veri: cellulare 3xx (9-10 cifre) o fisso
         # 0x, con o senza +39/0039 e i separatori tipici. Un importo, una
         # matricola o un codice articolo di 6-8 cifre NON è un telefono: Claude
@@ -231,7 +315,9 @@ class Anonymizer:
         "IP": "Indirizzi IP", "IPV6": "Indirizzi IPv6", "EMAIL": "Email",
         "CVE": "Codici CVE", "MAC": "MAC address", "CF": "Codici fiscali",
         "PIVA": "Partite IVA", "TEL": "Telefoni", "HASH": "Hash/digest",
-        "TOKEN": "Token/chiavi", "HOST": "Hostname/FQDN",
+        "TOKEN": "Token/chiavi", "HOST": "Hostname/FQDN", "IBAN": "IBAN e conti",
+        "CARTA": "Carte di pagamento", "CVV": "Codici di sicurezza carte", "TARGA": "Targhe", "NASCITA": "Date di nascita",
+        "INDIRIZZO": "Indirizzi",
         "NOME": "Nomi (dizionario)", "PERSONA": "Persone (Presidio)",
         "DOCUMENTO": "Documenti d'identità (Presidio)",
     }
@@ -263,8 +349,43 @@ class Anonymizer:
     def _maschera_regex(self, text: str) -> str:
         result = text
         for tipo, pattern in self.PATTERNS:
-            result = pattern.sub(lambda m, tipo=tipo: self._emetti(tipo, m.group(0)), result)
+            result = pattern.sub(lambda m, tipo=tipo: self._sostituisci(tipo, m), result)
         return result
+
+    def _sostituisci(self, tipo: str, m) -> str:
+        """Tutto il riscontro, oppure solo il gruppo «v» (il valore dopo la
+        parola chiave, la data dopo «nato il»): la parola resta leggibile."""
+        if "v" not in m.re.groupindex:
+            return self._emetti(tipo, m.group(0))
+        v = m.group("v")
+        if not v or len(_re.sub(r"[\s\-./]", "", v)) < MIN_VALORE.get(tipo, VALORE_CONTESTO_MIN):
+            return m.group(0)
+        a, b = m.start("v") - m.start(), m.end("v") - m.start()
+        return m.group(0)[:a] + self._emetti(tipo, v) + m.group(0)[b:]
+
+    def _propaga_regole(self, testi: list) -> list:
+        """Un valore trovato da una regola (soprattutto dopo una parola chiave:
+        «P.IVA 0123456») si sostituisce anche dove compare da solo, a parola
+        intera: altrimenti partirebbe in chiaro poche righe sotto, e il
+        controllo in uscita bloccherebbe la richiesta."""
+        valori = {}
+        for tok, val in self._map.items():
+            tipo = tok.strip("[]").rsplit("_", 1)[0]
+            if tipo not in ("NOME", "PERSONA") and len((val or "").strip()) >= 4:
+                valori[_chiave(val)] = (tipo, val)
+        if not valori:
+            return testi
+
+        def _modello(val):
+            return r"\s+".join(_re.escape(p) for p in val.split())
+        ordinati = sorted(valori.values(), key=lambda tv: (-len(tv[1]), tv[1]))
+        rx = _re.compile(r"(?<!\w)(?:" + "|".join(_modello(v) for _, v in ordinati) + r")(?!\w)",
+                         _re.IGNORECASE)
+
+        def _sost(m):
+            tipo = valori.get(_chiave(m.group(0)), ("CODICE", ""))[0]
+            return self._emetti(tipo, m.group(0))
+        return [_fuori_segnaposto(t, lambda p: rx.sub(_sost, p)) if t else t for t in testi]
 
     def _maschera_dizionario(self, text: str, rx) -> str:
         if rx is None or not text:
@@ -393,6 +514,7 @@ class Anonymizer:
         out = [self._applica_intervalli(t, rx, sp, valori) if t else t
                for t, sp in zip(base, trovati or [()] * len(base))]
         out = self._propaga(out, valori)
+        out = self._propaga_regole(out)
         self._propagati.update(valori)
 
         per_tipo: dict = {}

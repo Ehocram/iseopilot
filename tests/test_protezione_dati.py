@@ -550,6 +550,55 @@ def test_nomi_di_persona_in_chiaro_di_default(monkeypatch):
     assert a.restore(out[0]) == t
 
 
+IDENTIFICATIVI = [
+    # (testo, frammenti che NON devono restare in chiaro)
+    ("verifica il codice fiscale BNMMRC81B174Y", ["BNMMRC81B174Y"]),
+    ("il mio cf è BNMMRC81", ["BNMMRC81"]),
+    ("IBAN: IT60 X054 2811 1010 0000 0123 456 grazie", ["X054", "0123 456"]),
+    ("bonifico su IT60X0542811101000000123456 entro venerdì", ["IT60X054"]),
+    ("conto UK GB29 NWBK 6016 1331 9268 19", ["NWBK", "9268"]),
+    ("IBAN parziale IT60X05428", ["IT60X05428"]),
+    ("P.IVA IT01234567897 e partita iva n. 0123456", ["01234567897", "0123456"]),
+    ("la P.IVA è 0123456, ripeto 0123456", ["0123456"]),
+    ("carta di credito 4532 0151 1283 0366 CVV 123", ["4532", "0366", "CVV 123"]),
+    ("numero carta 4532015112830", ["4532015112830"]),
+    ("nato a Brescia il 15/01/1977, data di nascita: 3 marzo 1980", ["15/01/1977", "3 marzo 1980"]),
+    ("abita in Via San Girolamo 13, Pisogne", ["Girolamo 13"]),
+    ("targa AB123CD, CIE CA12345AB, passaporto YA1234567", ["AB123CD", "CA12345AB", "YA1234567"]),
+]
+INTATTI = [
+    "fattura 2024 per 1.250,00 euro, ordine n. 45678, carta A4 210x297",
+    "Corso Sicurezza 2024 in aula 3, documento DOC-2024-001, conto 2024/25",
+    "cf. sezione 3; it30 anni; Via email 3 volte; codice articolo AB-1234; ho 123 euro",
+]
+
+
+def test_identificativi_gdpr_anche_incompleti(monkeypatch):
+    """Decisione del CISO: IBAN, CF, P.IVA, carte, documenti, targhe, indirizzi
+    e date di nascita si mascherano anche se incompleti; il ripristino è esatto
+    e il controllo in uscita non trova nulla."""
+    from app import uscita
+    monkeypatch.setattr(presidio_client, "analizza", lambda testi: [[] for _ in testi])
+    for testo, vietati in IDENTIFICATIVI:
+        a = Anonymizer()
+        out, _ = a.mask_batch([testo], [])
+        assert all(v not in out[0] for v in vietati), (testo, out[0])
+        assert a.restore(out[0]) == testo, (testo, out[0])
+        uscita.verifica_payload({"system": "x", "messages": [{"role": "user", "content": out[0]}]}, a)
+    for testo in INTATTI:
+        a = Anonymizer()
+        out, _ = a.mask_batch([testo], [])
+        assert out[0] == testo, (testo, out[0])
+
+
+def test_valore_dopo_parola_chiave_si_propaga_negli_altri_testi(monkeypatch):
+    monkeypatch.setattr(presidio_client, "analizza", lambda testi: [[] for _ in testi])
+    a = Anonymizer()
+    out, _ = a.mask_batch(["La P.IVA del fornitore è 0123456.", "Controlla 0123456 in Dynamics."], [])
+    assert all("0123456" not in t for t in out), out
+    assert out[1] == "Controlla [PIVA_001] in Dynamics."
+
+
 def test_admin_casella_nomi_di_persona_con_audit(monkeypatch):
     monkeypatch.setattr(_anon_mod, "ner_persone_attivo", _ner_persone_reale)
     c = _mk_user("adm.ner@test", admin=True)
@@ -569,7 +618,7 @@ def test_testi_ui_allineati():
     assert "anonimizzati" not in html and "non passano dall'anonimizzazione" not in html
     assert "sostituiti con codici" in html
     login = TestClient(app).get("/login").text
-    assert "anonimizzati" not in login and "riconosciuti da Presidio" in login
+    assert "anonimizzati" not in login and "anche incompleti" in login
 
 
 # ── Correzioni dopo la revisione ────────────────────────────
@@ -658,8 +707,15 @@ def test_andata_e_ritorno_di_ogni_tipo():
         "HASH": "d41d8cd98f00b204e9800998ecf8427e",
         "TOKEN": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ_123", "HOST": "srv01.iseo.local",
     }
+    # Tipi nuovi (identificativi GDPR): la frase che li introduce fa parte del campione.
+    frasi = {
+        "IBAN": ("IBAN", "IT60X0542811101000000123456"), "CARTA": ("carta di credito", "4532015112830366"),
+        "CVV": ("CVV", "123"), "TARGA": ("targa", "AB123CD"), "NASCITA": ("nato il", "15/01/1977"),
+        "INDIRIZZO": ("abita in", "Via Roma 12"), "DOCUMENTO": ("passaporto", "YA1234567"),
+    }
+    campioni.update({k: v for k, (_, v) in frasi.items()})
     assert set(campioni) == {t for t, _ in Anonymizer.PATTERNS}
-    testo = " ; ".join(f"{k}: {v}" for k, v in campioni.items())
+    testo = " ; ".join(f"{frasi[k][0] if k in frasi else k + ':'} {v}" for k, v in campioni.items())
     out, esito = a.mask_batch([testo], [])
     for tipo, v in campioni.items():
         assert v not in out[0], (tipo, out[0])

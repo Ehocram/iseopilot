@@ -47,8 +47,8 @@ PAIRS = {
     "Sblocco in corso…": "Unlocking…",
     "Conoscenza aziendale, protetta per area.":
         "Company knowledge, secured per area.",
-    "Assistente AI interno con motore Claude e modello locale. Ogni dipartimento ha la propria base di conoscenza isolata. Prima dell'invio a Claude i nomi del dizionario riservato, i telefoni e i documenti riconosciuti da Presidio e alcuni dati tecnici (email, IP, codici fiscali) vengono sostituiti con codici; i valori veri tornano solo nella tua risposta.":
-        "Internal AI assistant with Claude engine and local model. Each department has its own isolated knowledge base. Before anything is sent to Claude, the names in the confidential dictionary, the phone numbers and ID documents recognised by Presidio and some technical data (email, IP, tax codes) are replaced with codes; the real values come back only in your answer.",
+    "Assistente AI interno con motore Claude e modello locale. Ogni dipartimento ha la propria base di conoscenza isolata. Prima dell'invio a Claude i nomi del dizionario riservato e i dati personali (IBAN, carte di pagamento, codici fiscali e partite IVA anche incompleti, documenti, targhe, telefoni, email, indirizzi, date di nascita, IP) vengono sostituiti con codici; i valori veri tornano solo nella tua risposta.":
+        "Internal AI assistant with Claude engine and local model. Each department has its own isolated knowledge base. Before anything is sent to Claude, the names in the confidential dictionary and personal data (IBAN, payment cards, tax codes and VAT numbers even if incomplete, ID documents, number plates, phone numbers, email, addresses, dates of birth, IP) are replaced with codes; the real values come back only in your answer.",
     "Accesso gestito": "Managed access",
     "Segreti cifrati": "Encrypted secrets",
     "Dati sostituiti con codici": "Data replaced with codes",
@@ -132,8 +132,8 @@ PAIRS = {
     "Area conoscenza": "Knowledge area",
     "Sistema": "System",
     "locale": "local",
-    "Assistente AI ISEO. Scrivi una domanda: la risposta arriva in streaming dal motore selezionato. Prima dell'invio a Claude i nomi del dizionario riservato, i telefoni e i documenti riconosciuti da Presidio e alcuni dati tecnici (email, IP, codici fiscali) vengono sostituiti con codici; i valori veri tornano solo nella tua risposta.":
-        "ISEO AI assistant. Type a question: the answer streams from the selected engine. Before anything is sent to Claude, the names in the confidential dictionary, the phone numbers and ID documents recognised by Presidio and some technical data (email, IP, tax codes) are replaced with codes; the real values come back only in your answer.",
+    "Assistente AI ISEO. Scrivi una domanda: la risposta arriva in streaming dal motore selezionato. Prima dell'invio a Claude i nomi del dizionario riservato e i dati personali (IBAN, carte di pagamento, codici fiscali e partite IVA anche incompleti, documenti, targhe, telefoni, email, indirizzi, date di nascita, IP) vengono sostituiti con codici; i valori veri tornano solo nella tua risposta.":
+        "ISEO AI assistant. Type a question: the answer streams from the selected engine. Before anything is sent to Claude, the names in the confidential dictionary and personal data (IBAN, payment cards, tax codes and VAT numbers even if incomplete, ID documents, number plates, phone numbers, email, addresses, dates of birth, IP) are replaced with codes; the real values come back only in your answer.",
     "Scrivi la tua domanda…  (Invio per inviare · Maiusc+Invio per andare a capo)":
         "Type your question…  (Enter to send · Shift+Enter for new line)",
 
