@@ -694,6 +694,189 @@ class DynamicsSearch:
         self._schema_md_cache = {}
         if self._schema_dir:
             _dbg(f"schema .md: cartella attiva -> {self._schema_dir}")
+        # ── Protezione dei dati verso Claude ─────────────────────────────────
+        # UNA mappa per ricerca (= per istanza): i segnaposto restano coerenti
+        # tra traduzione, parole chiave e passi del planner. Vive solo in
+        # memoria e muore con l'istanza.
+        self._anon = None
+        self._anon_memo = {}       # testo in chiaro -> testo mascherato (domanda, note)
+        self._anon_codici = []     # codici risolti da nomi: mascherati nei passi successivi
+        self.presidio_non_disponibile = False
+
+    # ╔══════════════════════════════════════════════════════════════════════╗
+    # ║  PROTEZIONE DEI DATI verso Claude                                     ║
+    # ║  Con il motore Claude le parti DATI dei prompt (domanda, osservazioni, ║
+    # ║  campioni, aggregazioni, note di dominio, codici risolti) passano da   ║
+    # ║  Anonymizer.mask_batch; istruzioni fisse e catalogo entità/campi sono  ║
+    # ║  metadati e restano invariati. Il piano JSON si interpreta PRIMA e si  ║
+    # ║  ripristina DOPO, foglia per foglia, prima di qualunque query OData.   ║
+    # ║  Con LM Studio (locale) nulla cambia.                                  ║
+    # ╚══════════════════════════════════════════════════════════════════════╝
+    ISTRUZIONE_SEGNAPOSTO = (
+        "\nNei dati alcuni valori sono sostituiti da codici come [PERSONA_001] o "
+        "[NOME_001]: trattali come valori letterali e riportali identici, con le "
+        "parentesi quadre, anche nei filtri OData (es. Name eq '[PERSONA_001]') e "
+        "in valore_cerca; non inventarne di nuovi.")
+    # Chiavi del piano che contengono espressioni OData: il ripristino deve
+    # lasciarle valide (apici raddoppiati dentro le stringhe letterali).
+    _CHIAVI_ODATA = ("filtro", "filtro_a", "filtro_extra", "expand")
+    # Le STESSE regex del ripristino (anonymizer): una copia divergente non
+    # riconosceva [IPV6_001] né i codici oltre [TEL_9999].
+    from ..anonymizer import _SEGNAPOSTO as _RX_SEGNAPOSTO, _CODA_APERTA as _RX_CODA_SEGNAPOSTO
+    _RX_VALORE_NUDO = re.compile(r"[\w.\-]+")
+
+    def _protezione_attiva(self) -> bool:
+        return (self.cfg.get("ai_engine", "lmstudio") or "").strip().lower() == "claude"
+
+    def _anonimizzatore(self):
+        if getattr(self, "_anon", None) is None:
+            from ..anonymizer import Anonymizer
+            self._anon = Anonymizer()
+        return self._anon
+
+    def _maschera(self, testi: list) -> list:
+        """Maschera un lotto di testi DATI con la mappa della ricerca. Con un
+        motore diverso da Claude ritorna i testi invariati. Presidio giù non
+        blocca: resta dizionario + regex e si annota l'esito (log senza testo)."""
+        if not self._protezione_attiva():
+            return list(testi)
+        diz = list(self.cfg.get("anon_names") or []) + list(getattr(self, "_anon_codici", []))
+        out, esito = self._anonimizzatore().mask_batch(list(testi), diz)
+        if not esito.get("presidio_ok"):
+            if not getattr(self, "presidio_non_disponibile", False):
+                _dbg(f"protezione: Presidio non disponibile "
+                     f"({esito.get('presidio_motivo', '')}): solo dizionario e regex")
+            self.presidio_non_disponibile = True
+        return out
+
+    def _maschera_memo(self, testo: str) -> str:
+        """Come _maschera per UN testo che si ripete a ogni passo (domanda,
+        note di dominio): una sola chiamata a Presidio per ricerca."""
+        if not self._protezione_attiva() or not testo:
+            return testo
+        memo = getattr(self, "_anon_memo", None)
+        if memo is None:
+            memo = self._anon_memo = {}
+        if testo not in memo:
+            memo[testo] = self._maschera([testo])[0]
+        return memo[testo]
+
+    def _maschera_campione(self, testo: str, max_chars: int) -> str:
+        """Campione JSON di righe ERP: mascherato PER INTERO e poi tagliato, così
+        il taglio non lascia mezzo nome in chiaro; un segnaposto spezzato dal
+        taglio viene tolto. Senza protezione: il taglio di sempre."""
+        if not self._protezione_attiva():
+            return testo[:max_chars]
+        t = self._maschera([testo])[0]
+        if len(t) <= max_chars:
+            return t
+        t = t[:max_chars]
+        m = self._RX_CODA_SEGNAPOSTO.search(t)
+        return t[:m.start()] if m else t
+
+    def _con_istruzione(self, system_prompt: str) -> str:
+        return system_prompt + self.ISTRUZIONE_SEGNAPOSTO if self._protezione_attiva() else system_prompt
+
+    def _ripristina(self, testo: str) -> str:
+        if not self._protezione_attiva() or getattr(self, "_anon", None) is None or not testo:
+            return testo
+        return self._anon.restore(testo)
+
+    def _ripristina_odata(self, filtro: str) -> str:
+        """Ripristina i segnaposto in un'espressione OData lasciandola valida:
+        dentro una stringa letterale l'apostrofo del valore si raddoppia
+        (D'Angelo -> 'D''Angelo'); fuori da un letterale un valore che non è
+        una parola semplice diventa un letterale quotato. Lettura carattere per
+        carattere secondo la grammatica OData ('' dentro un letterale = apice)."""
+        anon = getattr(self, "_anon", None)
+        if anon is None or not filtro or "[" not in filtro:
+            return filtro
+        out, i, n, dentro = [], 0, len(filtro), False
+        while i < n:
+            c = filtro[i]
+            if c == "'":
+                if dentro and filtro.startswith("''", i):
+                    out.append("''")
+                    i += 2
+                    continue
+                dentro = not dentro
+                out.append(c)
+                i += 1
+                continue
+            if c == "[":
+                m = self._RX_SEGNAPOSTO.match(filtro, i)
+                if m:
+                    tok = m.group(0)
+                    val = anon.restore(tok)
+                    if val == tok:                     # codice non emesso: resta com'è
+                        out.append(tok)
+                    elif dentro:
+                        out.append(val.replace("'", "''"))
+                    elif self._RX_VALORE_NUDO.fullmatch(val):
+                        out.append(val)
+                    else:
+                        out.append("'" + val.replace("'", "''") + "'")
+                    i = m.end()
+                    continue
+            out.append(c)
+            i += 1
+        return "".join(out)
+
+    def _ripristina_piano(self, obj, chiave: str = ""):
+        """Piano JSON GIÀ interpretato -> valori originali, foglia per foglia
+        (restore_struttura), con le chiavi OData ripristinate in forma valida.
+        valore_cerca torna puro: l'escape lo fa il codice che costruisce la query."""
+        if not self._protezione_attiva() or getattr(self, "_anon", None) is None:
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._ripristina_piano(v, k) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._ripristina_piano(x, chiave) for x in obj]
+        if isinstance(obj, str) and chiave in self._CHIAVI_ODATA:
+            return self._ripristina_odata(obj)
+        return self._anon.restore_struttura(obj)
+
+    def _proteggi_codici(self, codici) -> None:
+        """I codici risolti da un nome (es. matricole) entrano nel dizionario
+        della ricerca: da qui in avanti viaggiano verso Claude come segnaposto."""
+        if not self._protezione_attiva():
+            return
+        lst = getattr(self, "_anon_codici", None)
+        if lst is None:
+            lst = self._anon_codici = []
+        for c in codici or []:
+            s = str(c).strip()
+            if len(s) >= 3 and s not in lst:
+                lst.append(s)
+
+    def _rimaschera(self, testo: str, solo=None) -> str:
+        """Un valore del piano GIÀ ripristinato che torna a Claude in
+        un'osservazione (es. «entità 'X' inesistente») riprende il suo
+        segnaposto: niente torna in chiaro per eco. Con `solo` si rimascherano
+        soltanto quei valori (es. i codici appena risolti), a parola intera."""
+        anon = getattr(self, "_anon", None)
+        if not self._protezione_attiva() or anon is None or not testo:
+            return testo
+        voci = anon.get_map().items()
+        if solo is not None:
+            ammessi = {str(v).strip() for v in solo}
+            voci = [(t, v) for t, v in voci if v in ammessi]
+        for tok, val in sorted(voci, key=lambda kv: -len(kv[1] or "")):
+            if not val:
+                continue
+            if solo is not None:
+                testo = re.sub(r"(?<!\w)" + re.escape(val) + r"(?!\w)", lambda m, t=tok: t, testo)
+            else:
+                testo = testo.replace(val, tok)
+        return testo
+
+    @property
+    def esito_protezione(self) -> dict:
+        """Esito della protezione per chi mostra note all'utente."""
+        anon = getattr(self, "_anon", None)
+        return {"attiva": self._protezione_attiva() and anon is not None,
+                "presidio_ok": not getattr(self, "presidio_non_disponibile", False),
+                "sostituiti": len(anon.get_map()) if anon is not None else 0}
 
     def _resolve_schema_dir(self, cfg) -> str:
         """Cartella degli schema .md. Priorità: config 'dyn_schema_dir';
@@ -2872,8 +3055,11 @@ class DynamicsSearch:
                  "mantenendo invariati nomi propri, codici, numeri e date. "
                  "Rispondi SOLO con la traduzione, senza virgolette né altro.")
         try:
-            out = self._ask_ai(sys_p, text, max_tokens=200)
-            return (out or "").strip()
+            # Con Claude la domanda parte mascherata e la traduzione torna
+            # ripristinata come TESTO (non è JSON).
+            out = self._ask_ai(self._con_istruzione(sys_p), self._maschera_memo(text),
+                               max_tokens=200)
+            return self._ripristina((out or "").strip())
         except Exception:
             return ""
 
@@ -3452,12 +3638,16 @@ class DynamicsSearch:
             "Includi sempre i campi su cui verte la domanda dell'utente e quelli usati per gli agganci."
         )
 
-        history = [f"DOMANDA UTENTE:\n{query}",
+        # Protezione dei dati (motore Claude): la domanda e le note di dominio
+        # sono DATI e partono mascherate; catalogo, campi e relazioni sono
+        # metadati e restano invariati, come le istruzioni del system.
+        system = self._con_istruzione(system)
+        history = [f"DOMANDA UTENTE:\n{self._maschera_memo(query)}",
                    f"\nENTITÀ CANDIDATE E CAMPI REALI:\n{_desc(entities)}",
                    f"\nRELAZIONI REALI TRA LE CANDIDATE (usa queste per i join/expand):\n{rel_txt}"]
         hints = self._domain_hints()
         if hints:
-            history.append(f"\nNOTE DI DOMINIO (regole aziendali, valide in qualsiasi lingua della domanda):\n{hints}")
+            history.append(f"\nNOTE DI DOMINIO (regole aziendali, valide in qualsiasi lingua della domanda):\n{self._maschera_memo(hints)}")
             _dbg(f"schema .md: note di dominio _hints.md iniettate ({len(hints)} char)")
         resolved_codes = {}  # eventuali codici risolti da 'risolvi', riusabili nei filtri
         _dbg("schema .md: chiavi/enum iniettati nel planner"
@@ -3482,13 +3672,19 @@ class DynamicsSearch:
             except Exception as e:
                 _dbg(f"agentic: JSON non valido al passo {step+1}: {e}")
                 return ""
+            if not isinstance(act, dict):
+                _dbg(f"agentic: il JSON del passo {step+1} non è un oggetto")
+                return ""
+            # Prima il parsing con i segnaposto, poi il ripristino foglia per
+            # foglia: le query OData partono con i valori veri.
+            act = self._ripristina_piano(act)
             azione = (act.get("azione") or "").strip()
             _dbg(f"agentic passo {step+1}: azione={azione} motivo={str(act.get('motivo',''))[:80]}")
 
             if azione == "concludi":
                 ent = (act.get("entita_finale") or "").strip()
                 if ent not in full_catalog:
-                    history.append(f"\n[OSSERVAZIONE] Entità '{ent}' inesistente. Scegline una tra le candidate.")
+                    history.append(f"\n[OSSERVAZIONE] Entità '{self._rimaschera(ent)}' inesistente. Scegline una tra le candidate.")
                     continue
                 filtro = (act.get("filtro") or "").strip()
                 expand = (act.get("expand") or "").strip()
@@ -3527,7 +3723,8 @@ class DynamicsSearch:
                                        campi=act.get("campi") or [])
                 obs = (f"\n[OSSERVAZIONE passo {step+1}] query {ent}: "
                        f"{'OK' if res['ok'] else 'FALLITA HTTP '+str(res['status'])}, "
-                       f"{res['count']} righe. Campione: {json.dumps(self._compact_obs(res['rows']), ensure_ascii=False)[:600]}")
+                       f"{res['count']} righe. Campione: "
+                       f"{self._maschera_campione(json.dumps(self._compact_obs(res['rows']), ensure_ascii=False), 600)}")
                 history.append(obs)
 
             elif azione == "risolvi":
@@ -3538,8 +3735,17 @@ class DynamicsSearch:
                 codici, nomi = self._resolve_codes(el, cc, vc, ck, token, full_catalog)
                 if codici:
                     resolved_codes[ck] = [f"{ck} eq '{str(c).replace(chr(39), chr(39)*2)}'" for c in codici]
-                obs = (f"\n[OSSERVAZIONE passo {step+1}] risolvi '{vc}' in {el}.{cc}: "
-                       f"trovati {len(codici)} codici {ck} = {codici[:5]}. "
+                # Il nome cercato e i codici trovati sono DATI: con Claude i
+                # codici entrano nel dizionario della ricerca e partono come
+                # segnaposto, ripristinati nel piano del passo successivo.
+                self._proteggi_codici(codici)
+                vc_m, codici_m = self._maschera([vc, str(codici[:5])])
+                # Un codice già visto in chiaro in un campione precedente
+                # riprende il suo segnaposto anche lì: il legame nome->codice
+                # non si ricostruisce confrontando i passi.
+                history[:] = [self._rimaschera(h, solo=codici) for h in history]
+                obs = (f"\n[OSSERVAZIONE passo {step+1}] risolvi '{vc_m}' in {self._rimaschera(el)}.{self._rimaschera(cc)}: "
+                       f"trovati {len(codici)} codici {ck} = {codici_m}. "
                        f"Per filtrare un'altra entità su questi codici usa un filtro OR su {ck}.")
                 history.append(obs)
 
@@ -3562,7 +3768,7 @@ class DynamicsSearch:
                 schede = []
                 for e in ents_req:
                     if e not in full_catalog:
-                        schede.append(f"SCHEDA {e}: entità inesistente nel catalogo.")
+                        schede.append(f"SCHEDA {self._rimaschera(e)}: entità inesistente nel catalogo.")
                         continue
                     s = self._entity_schema_full(e)
                     schede.append(s if s else f"SCHEDA {e}: non disponibile (schema .md assente).")
@@ -3575,10 +3781,11 @@ class DynamicsSearch:
                                     token, full_catalog)
                 if not agg.get("ok"):
                     history.append(f"\n[OSSERVAZIONE passo {step+1}] Aggregazione non "
-                                   f"riuscita: {agg.get('errore')}. Riprova diversamente.")
+                                   f"riuscita: {self._rimaschera(str(agg.get('errore')))}. Riprova diversamente.")
                     continue
                 testa = agg["gruppi"][:40]
-                righe_txt = "; ".join(f"{v}={n}" for v, n in testa)
+                # I valori aggregati (clienti, fornitori, persone) sono DATI.
+                righe_txt = self._maschera(["; ".join(f"{v}={n}" for v, n in testa)])[0]
                 stato = ("su TUTTE le righe dell'interrogazione"
                          if agg["completo"] else
                          f"PARZIALE: scansione interrotta al tetto dopo {agg['righe']} "
@@ -3601,7 +3808,7 @@ class DynamicsSearch:
                 history.append(f"\n[OSSERVAZIONE passo {step+1}] nuove entità candidate: {nuove}\n"
                                f"Campi:\n{_desc(nuove)}\nRelazioni aggiornate:\n{rel_txt}")
             else:
-                history.append(f"\n[OSSERVAZIONE] Azione '{azione}' non riconosciuta. "
+                history.append(f"\n[OSSERVAZIONE] Azione '{self._rimaschera(azione)}' non riconosciuta. "
                                f"Usa query/risolvi/join/cerca_entita/schema/concludi.")
 
         _dbg("agentic: esauriti i passi senza conclusione")
@@ -3714,7 +3921,11 @@ class DynamicsSearch:
                 "Rispondi SOLO con le parole inglesi separate da spazio, minuscole, senza "
                 "punteggiatura né spiegazioni (max 8 parole)."
             )
-            kw_raw = self._ask_ai(kw_system, f"Testo: {query}", max_tokens=50)
+            # Con Claude la domanda parte mascherata (UNA volta per ricerca);
+            # la risposta è testo e si ripristina come testo.
+            kw_raw = self._ripristina(self._ask_ai(self._con_istruzione(kw_system),
+                                                   f"Testo: {self._maschera_memo(query)}",
+                                                   max_tokens=50))
             import re as _rk
             kw = [w.lower() for w in _rk.findall(r"[a-zA-Z]{3,}", kw_raw or "")][:6]
             # Aggiungi anche le parole della domanda già in inglese (se l'utente le usa)
@@ -3833,7 +4044,10 @@ class DynamicsSearch:
             "Regole: usa il CASO C per incroci a chiave comune; usa il CASO D quando devi prima "
             "tradurre un nome/etichetta in un codice. Ogni entità e campo deve esistere nel catalogo."
         )
-        user = f"CATALOGO ENTITÀ E CAMPI REALI:\n{catalogo_txt}\n\nDOMANDA:\n{query}"
+        # Protezione dei dati (motore Claude): catalogo e istruzioni sono
+        # metadati e restano invariati; la DOMANDA parte mascherata.
+        system = self._con_istruzione(system)
+        user = f"CATALOGO ENTITÀ E CAMPI REALI:\n{catalogo_txt}\n\nDOMANDA:\n{self._maschera_memo(query)}"
         _dbg(f"dynamic: invio piano AI (motore={self.cfg.get('ai_engine','?')}) per domanda: {query[:80]}")
         _dbg(f"dynamic: catalogo {len(entities)} entità, {sum(len(string_fields.get(e) or []) for e in entities)} campi totali")
         raw = self._ask_ai(system, user, max_tokens=500)
@@ -3860,6 +4074,12 @@ class DynamicsSearch:
         except Exception as e:
             _dbg(f"dynamic: JSON non valido: {e}")
             return ""
+        if not isinstance(plan, dict):
+            _dbg("dynamic: il piano AI non è un oggetto JSON")
+            return ""
+        # Prima il parsing con i segnaposto, poi il ripristino foglia per foglia
+        # (filtri OData in forma valida): le query partono con i valori veri.
+        plan = self._ripristina_piano(plan)
 
         # CASO C: JOIN tra due entità — gestito da un metodo dedicato che fa
         # l'unione NEL CODICE (match esatto sui valori chiave), non nell'AI.
@@ -3900,13 +4120,13 @@ class DynamicsSearch:
                         df = (date_fields.get(e) or [])[:15]
                         cat2.append(f"Entità: {e}\n  Campi testo: {', '.join(sf) or '(nessuno)'}"
                                     f"\n  Campi data: {', '.join(df) or '(nessuno)'}")
-                    user2 = f"CATALOGO ENTITÀ E CAMPI REALI:\n{chr(10).join(cat2)}\n\nDOMANDA:\n{query}"
+                    user2 = f"CATALOGO ENTITÀ E CAMPI REALI:\n{chr(10).join(cat2)}\n\nDOMANDA:\n{self._maschera_memo(query)}"
                     _dbg(f"dynamic: retry con candidate raffinate: {nuove}")
                     raw2 = self._ask_ai(system, user2, max_tokens=500)
                     m2 = _re.search(r"\{.*\}", raw2 or "", _re.S)
                     if m2:
                         try:
-                            plan = json.loads(m2.group(0))
+                            plan = self._ripristina_piano(json.loads(m2.group(0)))
                             ent = (plan.get("entita") or "").strip()
                             entities = nuove
                         except Exception:
@@ -3944,7 +4164,10 @@ class DynamicsSearch:
             filtro = ""
         # Verifica che i campi citati nel filtro esistano davvero
         if filtro:
-            cited = set(_re.findall(r"[A-Za-z_][A-Za-z0-9_]*", filtro))
+            # Le parole DENTRO i letterali stringa ('D''Angelo', 'Mario Rossi')
+            # sono valori, non campi: si tolgono prima di cercare i campi citati.
+            senza_letterali = _re.sub(r"'(?:[^']|'')*'", "''", filtro)
+            cited = set(_re.findall(r"[A-Za-z_][A-Za-z0-9_]*", senza_letterali))
             odata_kw = {"eq","ne","gt","ge","lt","le","and","or","not","contains",
                         "startswith","endswith","true","false","null","Microsoft",
                         "Dynamics","DataEntities"}

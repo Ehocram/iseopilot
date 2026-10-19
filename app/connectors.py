@@ -415,7 +415,20 @@ def _dyn_full_cfg(cfg: dict, ai_settings: dict | None) -> dict:
         "reply_lang": ai.get("reply_lang", "Italiano"),
         # comportamento ricerca
         "dyn_agentic": ai.get("dyn_agentic", True),
+        # protezione dei dati verso Claude: dizionario dei nomi riservati
+        # (admin), lo stesso della chat. Se il chiamante lo passa nei settings
+        # (_anon_names) vale quello, altrimenti si legge dalle impostazioni.
+        "anon_names": list(ai.get("_anon_names") or _anon_names()),
     }
+
+
+def _anon_names() -> list:
+    """Dizionario dei nomi riservati, come main.anon_names()."""
+    try:
+        raw = store.get_setting("anon_dictionary", "")
+    except Exception:
+        return []
+    return [n.strip() for n in (raw or "").splitlines() if n.strip()]
 
 
 def _pbi_full_cfg(user: str, ai_settings: dict | None) -> dict:
@@ -540,6 +553,10 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
                     text = dyn.search(query, max_results=max_results,
                                       current_user_name=current_user_name) or ""
                     _dyn_log(f"search conclusa | caratteri_risultato={len(text)}")
+                    if getattr(dyn, "presidio_non_disponibile", False):
+                        # Nessun testo nel log: solo l'esito.
+                        _dyn_log("protezione: Presidio non disponibile, verso Claude "
+                                 "solo dizionario e regex")
                     # Estrai eventuale report HTML generato dal modulo: lo
                     # registriamo per token e lo togliamo dal testo (così non
                     # finisce grezzo nel contesto inviato a Claude).

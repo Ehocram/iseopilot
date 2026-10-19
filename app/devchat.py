@@ -31,10 +31,57 @@ ESTENSIONI = {".py", ".html", ".css", ".js", ".json", ".md", ".txt", ".yml",
 ESCLUSE = {".git", "__pycache__", ".venv", "node_modules", "data", "data_test"}
 MAX_FILE = 200_000          # oltre, si legge a finestre
 MAX_RISULTATI_GREP = 60
+# File senza estensione che `leggi` puo' aprire: SOLO questi, per nome esatto.
+# Tutto il resto senza estensione e' rifiutato.
+SENZA_ESTENSIONE_AMMESSI = {"Dockerfile", "Makefile", "Procfile", "Containerfile",
+                            "LICENSE", "README"}
+# Parole che in un nome di file o cartella segnalano credenziali.
+NOMI_RISERVATI = ("env", "secret", "key", "token")
 
 
 class FuoriRepo(Exception):
     """Percorso che tenta di uscire dal repository."""
+
+
+class FileNonLeggibile(Exception):
+    """File che la chat sviluppatore non deve leggere (credenziali, nascosti…)."""
+
+
+def _controlla_leggibile(rel: str) -> Path:
+    """Percorso di un file che `leggi` puo' aprire; altrimenti solleva
+    FileNonLeggibile o FuoriRepo.
+
+    Il percorso arriva dal modello, che legge screenshot e messaggi: input non
+    fidato. Si rifiutano, sul percorso chiesto e su quello risolto:
+      * componenti nascosti, cioe' che iniziano con «.» (.env, .git/config, ..);
+      * link simbolici in qualunque punto del percorso, anche se restano nel repo;
+      * percorsi che escono dalla radice del repo;
+      * nomi che contengono env, secret, key o token;
+      * file senza estensione fuori dall'elenco esplicito.
+    """
+    grezzo = str(rel or "").replace("\\", "/").lstrip("/")
+    parti = [x for x in grezzo.split("/") if x not in ("", ".")]
+    if not parti:
+        raise FileNonLeggibile(f"{rel}: percorso vuoto")
+    if any(x.startswith(".") for x in parti):
+        raise FileNonLeggibile(f"{rel}: file o cartelle nascosti non leggibili")
+    corrente = REPO
+    for x in parti:
+        corrente = corrente / x
+        if corrente.is_symlink():
+            raise FileNonLeggibile(f"{rel}: i link simbolici non si seguono")
+    radice = REPO.resolve()
+    p = (REPO / "/".join(parti)).resolve()
+    if p == radice or radice not in p.parents:
+        raise FuoriRepo(rel)
+    for x in p.relative_to(radice).parts:
+        if x.startswith("."):
+            raise FileNonLeggibile(f"{rel}: file o cartelle nascosti non leggibili")
+        if any(r in x.lower() for r in NOMI_RISERVATI):
+            raise FileNonLeggibile(f"{rel}: nome riservato alle credenziali, non leggibile")
+    if not p.suffix and p.name not in SENZA_ESTENSIONE_AMMESSI:
+        raise FileNonLeggibile(f"{rel}: file senza estensione non leggibile")
+    return p
 
 
 def _risolvi(rel: str) -> Path:
@@ -71,7 +118,10 @@ def elenca(rel: str = "") -> list[dict]:
 def leggi(rel: str, da_riga: int = 1, righe: int = 400) -> dict:
     """Contenuto di un file, a finestre: i file lunghi non devono saturare
     il contesto, e il modello puo' chiedere la finestra successiva."""
-    p = _risolvi(rel)
+    try:
+        p = _controlla_leggibile(rel)
+    except FileNonLeggibile as e:
+        return {"errore": str(e)}
     if not p.is_file():
         return {"errore": f"{rel}: file inesistente"}
     if p.suffix and p.suffix not in ESTENSIONI:
@@ -100,11 +150,19 @@ def cerca(testo: str, sottocartella: str = "") -> list[dict]:
             continue
         if any(x in p.parts for x in ESCLUSE):
             continue
+        # Stesse regole di `leggi`: la ricerca non deve restituire righe di
+        # file che leggi() rifiuterebbe (secrets.json, .github/, link…).
+        # `base` e' risolto: il relativo va calcolato sulla radice risolta.
+        try:
+            rel = str(p.relative_to(REPO.resolve()))
+            _controlla_leggibile(rel)
+        except (FileNonLeggibile, FuoriRepo, ValueError):
+            continue
         try:
             for n, riga in enumerate(p.read_text(encoding="utf-8",
                                                  errors="replace").splitlines(), 1):
                 if ago in riga:
-                    out.append({"file": str(p.relative_to(REPO)), "riga": n,
+                    out.append({"file": rel, "riga": n,
                                 "testo": riga.strip()[:180]})
                     if len(out) >= MAX_RISULTATI_GREP:
                         break
