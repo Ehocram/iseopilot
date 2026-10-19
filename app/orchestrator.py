@@ -9,10 +9,13 @@ Motori supportati: Claude (Anthropic) e LM Studio locale. OpenAI rimosso.
 
 Differenze rispetto al desktop:
   * Claude qui è in STREAMING (il desktop lo faceva solo per LM Studio).
-  * Anonimizzazione con ripristino "a flush sicuro": il testo viene emesso man
-    mano, ma un token tipo [EMAIL_001] non viene mai spezzato tra due chunk —
+  * Protezione dei dati con ripristino "a flush sicuro": il testo viene emesso
+    man mano, ma un token tipo [EMAIL_001] non viene mai spezzato tra due chunk —
     si trattiene la coda finché il token non è completo, poi si ripristina il
     valore originale. Garantisce streaming E confidenzialità corretta.
+  * Verso Claude la protezione è SEMPRE attiva (l'interruttore claude_anonymize
+    è ignorato): tutti i messaggi, anche dell'assistente, e le parti dinamiche
+    del system passano da UN solo mask_batch con UNA mappa.
 """
 from __future__ import annotations
 
@@ -24,6 +27,26 @@ import requests
 from .anonymizer import Anonymizer
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+
+# Istruzione FISSA sui segnaposto: senza, il modello traduce o «corregge» i
+# codici e il ripristino non li ritrova.
+ISTRUZIONE_SEGNAPOSTO = (
+    "Nel testo alcuni dati sono sostituiti da codici come [PERSONA_001]: trattali "
+    "come nomi propri e riportali identici, con le parentesi quadre; non "
+    "inventarne di nuovi.")
+
+# Messaggi all'utente sulla protezione dei dati.
+MSG_IMMAGINI_CLAUDE = (
+    "Le immagini non vengono inviate a Claude: rimuovi le immagini allegate e, "
+    "se serve, descrivi a parole cosa contengono.")
+AVVISO_PRESIDIO = (
+    "⚠️ *Riconoscimento automatico dei dati personali (Presidio) non disponibile: "
+    "sostituiti solo i nomi del dizionario e i dati tecnici.*")
+
+
+def nota_sostituzioni(n: int) -> str:
+    """Nota finale 🔒 con il numero di dati DAVVERO sostituiti (mai il dizionario)."""
+    return f"🔒 *{n} dat{'o sostituito' if n == 1 else 'i sostituiti'} con codici prima dell'invio a Claude.*"
 
 # Toni — invariati dalla versione desktop.
 TONES = {
@@ -74,6 +97,7 @@ def build_system(tone_key: str, reply_lang: str, context: str = "",
             "comunque eseguito per intero nella lingua richiesta.")
     # Evita che Claude aggiunga note di anonimizzazione: le gestiamo noi a valle.
     parts.append("Non aggiungere note o avvisi sull'anonimizzazione dei dati.")
+    parts.append(ISTRUZIONE_SEGNAPOSTO)
     # Il modello vive dentro ISEOPilot, che SA generare file scaricabili: non
     # deve mai negare questa capacità (creava risposte fuorvianti agli utenti).
     parts.append(
@@ -148,29 +172,33 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
         yield _sse({"type": "error", "text": "Chiave API Claude non configurata dall'amministratore."})
         return
 
-    do_anon = settings.get("claude_anonymize", True)
-    system = build_system(settings.get("tone_key", "Aziendale formale"),
-                          settings.get("reply_lang", "Italiano"), context, free_mode,
-                          memory_context, feedback_context)
-    anon = Anonymizer()
+    # Immagini: MAI a Claude (non passano da alcuna protezione). Rifiuto prima
+    # di qualunque chiamata, anche per chi usa l'API senza l'interfaccia.
+    if images:
+        yield _sse({"type": "error", "text": MSG_IMMAGINI_CLAUDE})
+        return
 
-    if do_anon:
-        # Regex su tutti i messaggi utente + dizionario nomi (NLP off, come la
-        # modalità KB del desktop: non maschera nomi propri utili al contesto).
-        out_msgs = []
-        for m in messages:
-            if m["role"] == "user":
-                body = anon.anonymize(m["content"])
-                body = anon.anonymize_names(body, anon_names, use_nlp=False)
-                out_msgs.append({"role": "user", "content": body})
-            else:
-                out_msgs.append(m)
-        system = anon.anonymize(system)
-    else:
-        out_msgs = list(messages)
+    # Protezione SEMPRE attiva (claude_anonymize ignorato). In UN solo lotto e
+    # con UNA mappa: tutti i messaggi (anche dell'assistente: dal secondo turno
+    # la cronologia tornava in chiaro) e le parti dinamiche del system, prima di
+    # build_system. Le istruzioni fisse non passano dal mascheramento.
+    yield _sse({"type": "status", "text": "Protezione dei dati in corso…"})
+    anon = Anonymizer()
+    testi = [m.get("content") if isinstance(m.get("content"), str) else str(m.get("content") or "")
+             for m in messages]
+    mascherati, esito = anon.mask_batch(
+        testi + [context or "", memory_context or "", feedback_context or ""], anon_names)
+    out_msgs = [{"role": m["role"], "content": t} for m, t in zip(messages, mascherati)]
+    context_m, memory_m, feedback_m = mascherati[len(messages):]
+    system = build_system(settings.get("tone_key", "Aziendale formale"),
+                          settings.get("reply_lang", "Italiano"), context_m, free_mode,
+                          memory_m, feedback_m)
+    if not esito["presidio_ok"]:
+        import sys
+        print(f"[chat] Presidio non disponibile ({esito['presidio_motivo']}): "
+              f"solo dizionario e regex", file=sys.stderr)
 
     needs_restore = bool(anon.get_map())
-    out_msgs = _apply_images(out_msgs, images or [])
     payload = {"model": model, "max_tokens": 8000, "system": system,
                "messages": out_msgs, "stream": True}
     # RICERCA WEB (tool server-side Anthropic): solo in AI LIBERA e solo se
@@ -195,6 +223,10 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
         resp.raise_for_status()
     except Exception as e:
         yield _sse({"type": "error", "text": f"Errore chiamata Claude: {e}"})
+        # Il payload può essere già partito: l'utente deve sapere comunque che
+        # è partito con il solo dizionario e le regex.
+        if not esito["presidio_ok"]:
+            yield _sse({"type": "delta", "text": "\n\n" + AVVISO_PRESIDIO})
         return
 
     buffer = ""
@@ -222,21 +254,17 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
                 yield _sse({"type": "delta", "text": delta})
                 continue
             # Flush sicuro: non spezzare un token [TIPO_NNN] tra due chunk.
+            # Si ripristinano SOLO i segnaposto emessi in questa richiesta.
             buffer += delta
-            last_open = buffer.rfind("[")
-            last_close = buffer.rfind("]")
-            if last_open > last_close:
-                flush, buffer = buffer[:last_open], buffer[last_open:]
-            else:
-                flush, buffer = buffer, ""
+            flush, buffer = anon.restore_stream(buffer)
             if flush:
-                yield _sse({"type": "delta", "text": anon.restore(flush)})
+                yield _sse({"type": "delta", "text": flush})
         elif etype == "error":
             msg = evt.get("error", {}).get("message", "errore Claude")
             yield _sse({"type": "error", "text": msg})
 
     if needs_restore and buffer:
-        yield _sse({"type": "delta", "text": anon.restore(buffer)})
+        yield _sse({"type": "delta", "text": anon.restore_stream(buffer, finale=True)[0]})
 
     if web_used:
         import sys
@@ -244,10 +272,12 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
         yield _sse({"type": "delta",
                     "text": f"\n\n🌐 *Risposta costruita con {web_used} ricerc"
                             f"{'a' if web_used == 1 else 'he'} web.*"})
-    if needs_restore:
-        n = len(anon.get_map())
-        yield _sse({"type": "delta",
-                    "text": f"\n\n🔒 *{n} elementi anonimizzati prima dell'invio ad Anthropic.*"})
+    # Note finali: il totale dei dati DAVVERO sostituiti (non il dizionario) e,
+    # se Presidio non ha lavorato, l'avviso esplicito all'utente.
+    if esito["totale"] > 0:
+        yield _sse({"type": "delta", "text": "\n\n" + nota_sostituzioni(esito["totale"])})
+    if not esito["presidio_ok"]:
+        yield _sse({"type": "delta", "text": "\n\n" + AVVISO_PRESIDIO})
     yield _sse({"type": "done"})
 
 
@@ -319,10 +349,9 @@ def complete(system: str, user_text: str, settings: dict, max_tokens: int = 4000
 
 
 def _apply_images(msgs: list, images: list) -> list:
-    """Trasforma l'ultimo messaggio utente in contenuto MULTIMODALE per
-    l'API Claude: blocchi immagine (base64) seguiti dal testo. Applicato
-    DOPO l'anonimizzazione del testo: le immagini viaggiano così come sono
-    (limite dichiarato all'utente nell'interfaccia)."""
+    """Trasforma l'ultimo messaggio utente in contenuto MULTIMODALE (blocchi
+    immagine base64 seguiti dal testo). NON più usata verso Claude: le
+    immagini non passano da alcuna protezione e _stream_claude le rifiuta."""
     if not images:
         return msgs
     out = list(msgs)

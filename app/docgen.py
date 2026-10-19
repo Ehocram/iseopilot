@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 from . import orchestrator
+from .anonymizer import Anonymizer
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "doc_templates"
 DOCX_TEMPLATE = TEMPLATES_DIR / "templateIseo.docx"
@@ -403,8 +404,18 @@ def build_spec(fmt: str, user_request: str, context: str, settings: dict,
         "Produci ESCLUSIVAMENTE JSON valido secondo lo schema indicato, senza commenti, "
         "senza markdown, senza testo aggiuntivo. Il contenuto deve essere reale, utile e "
         "PERTINENTE alla richiesta specifica (mai generico), basato sul materiale e sulla "
-        "conversazione forniti quando presenti."
+        "conversazione forniti quando presenti. " + orchestrator.ISTRUZIONE_SEGNAPOSTO
     )
+    # Protezione dei dati (sempre attiva, in ogni modalità): richiesta, note,
+    # storico e materiale si mascherano UNA volta, con UNA mappa, prima dei due
+    # tentativi. Il dizionario arriva nei settings (_anon_names); l'esito resta
+    # in settings["_esito_protezione"] per le note in chat. Schema e istruzioni
+    # sono fissi e non si toccano.
+    anon = Anonymizer()
+    (user_request, note_utente, history_text, context), esito = anon.mask_batch(
+        [user_request or "", note_utente or "", history_text or "", context or ""],
+        settings.get("_anon_names") or [])
+    settings["_esito_protezione"] = esito
     ctx = ("\n\n=== MATERIALE DI RIFERIMENTO ===\n" + context.strip()) if context and context.strip() else ""
     hist = ("\n\n=== CONVERSAZIONE PRECEDENTE (per capire cosa vuole davvero l'utente) ===\n"
             + history_text.strip()) if history_text and history_text.strip() else ""
@@ -420,7 +431,9 @@ def build_spec(fmt: str, user_request: str, context: str, settings: dict,
     for tetto in (8000, 16000):
         try:
             raw = orchestrator.complete(system, user, settings, max_tokens=tetto)
-            return _parse_json(raw)
+            # Prima il parsing con i segnaposto, poi il ripristino foglia per
+            # foglia: un valore con virgolette non rompe più il JSON.
+            return anon.restore_struttura(_parse_json(raw))
         except (json.JSONDecodeError, ValueError) as e:
             ultimo = e
             import sys

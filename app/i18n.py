@@ -47,11 +47,12 @@ PAIRS = {
     "Sblocco in corso…": "Unlocking…",
     "Conoscenza aziendale, protetta per area.":
         "Company knowledge, secured per area.",
-    "Assistente AI interno con motore Claude e modello locale. Ogni dipartimento ha la propria base di conoscenza isolata. Dati sensibili anonimizzati prima di lasciare il perimetro.":
-        "Internal AI assistant with Claude engine and local model. Each department has its own isolated knowledge base. Sensitive data is anonymized before leaving the perimeter.",
+    "Assistente AI interno con motore Claude e modello locale. Ogni dipartimento ha la propria base di conoscenza isolata. Prima dell'invio a Claude i nomi del dizionario, le persone e i telefoni riconosciuti da Presidio e alcuni dati tecnici (email, IP, codici fiscali) vengono sostituiti con codici; i valori veri tornano solo nella tua risposta.":
+        "Internal AI assistant with Claude engine and local model. Each department has its own isolated knowledge base. Before anything is sent to Claude, the names in the dictionary, the people and phone numbers recognised by Presidio and some technical data (email, IP, tax codes) are replaced with codes; the real values come back only in your answer.",
     "Accesso gestito": "Managed access",
     "Segreti cifrati": "Encrypted secrets",
-    "Anonimizzazione": "Anonymization",
+    "Dati sostituiti con codici": "Data replaced with codes",
+    "Protezione dati": "Data protection",
     "ISEO Serrature S.p.A. · Piattaforma interna · L'accesso è registrato.":
         "ISEO Serrature S.p.A. · Internal platform · Access is logged.",
 
@@ -131,8 +132,8 @@ PAIRS = {
     "Area conoscenza": "Knowledge area",
     "Sistema": "System",
     "locale": "local",
-    "Assistente AI ISEO. Scrivi una domanda: la risposta arriva in streaming dal motore selezionato. Con Claude i dati tecnici sensibili (IP, email, codici fiscali, P.IVA, hash, token…) vengono anonimizzati prima dell'invio.":
-        "ISEO AI assistant. Type a question: the answer streams from the selected engine. With Claude, sensitive technical data (IP, email, tax codes, VAT numbers, hashes, tokens…) is anonymized before sending.",
+    "Assistente AI ISEO. Scrivi una domanda: la risposta arriva in streaming dal motore selezionato. Prima dell'invio a Claude i nomi del dizionario, le persone e i telefoni riconosciuti da Presidio e alcuni dati tecnici (email, IP, codici fiscali) vengono sostituiti con codici; i valori veri tornano solo nella tua risposta.":
+        "ISEO AI assistant. Type a question: the answer streams from the selected engine. Before anything is sent to Claude, the names in the dictionary, the people and phone numbers recognised by Presidio and some technical data (email, IP, tax codes) are replaced with codes; the real values come back only in your answer.",
     "Scrivi la tua domanda…  (Invio per inviare · Maiusc+Invio per andare a capo)":
         "Type your question…  (Enter to send · Shift+Enter for new line)",
 
@@ -313,7 +314,7 @@ PAIRS = {
     "Seleziona almeno un file (o trascina una cartella).": "Select at least one file (or drag a folder).",
     "se persiste, ricarica la pagina e ripeti l'accesso": "if it persists, reload the page and sign in again",
     "blocchi": "chunks",
-    "Nota: le immagini allegate non passano dall'anonimizzazione e vengono inviate a Claude così come sono.": "Note: attached images do not go through anonymisation and are sent to Claude as they are.",
+    "Le immagini non vengono inviate a Claude: descrivi a parole cosa contengono.": "Images are not sent to Claude: describe in words what they show.",
     "Interfaccia non aggiornata: clicca qui per ricaricare la versione corrente.": "Interface out of date: click here to reload the current version.",
     "AI libera": "Free AI",
     "Attività": "Tasks",

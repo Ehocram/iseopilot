@@ -993,26 +993,30 @@ def test_chat_streaming_end_to_end_with_key():
     store.set_setting("claude_api_key", "", secret=True)
 
 
-def test_chat_streaming_with_image_sends_multimodal():
-    """Con un'immagine allegata, l'ultimo messaggio verso Claude è a blocchi
-    (image + text) e lo streaming produce comunque il delta."""
-    import io
+def test_chat_streaming_with_image_never_reaches_claude():
+    """Le immagini non passano da alcuna protezione dei dati: MAI a Claude.
+    Un deposito immagine (caricato prima del rilascio o via API diretta) porta
+    a un rifiuto chiaro e requests.post non viene mai chiamato."""
     from unittest.mock import patch
-    from PIL import Image
     import app.orchestrator as orch
+    from app.main import _attach_save
     store.set_setting("claude_api_key", "sk-test", secret=True)
     store.create_user("e2img@test", auth.hash_password("Password123!"), "IT")
     c = fresh_client(); login(c, "e2img@test", "Password123!")
-    im = Image.new("RGB", (60, 60), (0, 120, 0))
-    buf = io.BytesIO(); im.save(buf, "PNG")
-    aid = c.post("/api/attach", files=[("files", ("v.png", buf.getvalue(), "image/png"))]).json()["attachments"][0]["id"]
+    aid = _attach_save("e2img@test", "IMG:image/jpeg\nQUJDRA==")
     with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp:
         r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "cosa vedi?"}],
                                       "free_mode": True, "engine": "claude",
                                       "attachments": [{"id": aid, "name": "v.png", "kind": "image"}]})
-    assert "CIAO DAL FINTO CLAUDE" in r.text
-    sent = mp.call_args.kwargs["json"]["messages"][-1]["content"]
-    assert isinstance(sent, list) and sent[0]["type"] == "image" and sent[-1]["type"] == "text"
+    assert "non vengono inviate a Claude" in r.text
+    assert "CIAO DAL FINTO CLAUDE" not in r.text
+    assert not mp.called
+    # difesa anche nell'orchestratore, per chi lo chiamasse direttamente
+    with patch.object(orch.requests, "post", return_value=_fake_claude_stream()) as mp2:
+        out = "".join(orch.stream_reply([{"role": "user", "content": "x"}],
+                                        {"claude_api_key": "sk-test", "ai_engine": "claude"},
+                                        [], images=[("image/jpeg", "QUJDRA==")]))
+    assert "non vengono inviate a Claude" in out and not mp2.called
     store.set_setting("claude_api_key", "", secret=True)
 
 
@@ -1538,39 +1542,34 @@ def test_prefs_persist_per_user():
 
 
 def test_attach_image_pipeline():
+    """Le immagini si rifiutano già al caricamento, con il motivo nel chip:
+    non vengono inviate a Claude e nel deposito non entra nulla."""
     import io
     from PIL import Image
-    from app.main import _attach_load, _build_attach_block
     store.create_user("img@test", auth.hash_password("Password123!"), "IT")
     c = fresh_client(); login(c, "img@test", "Password123!")
-    im = Image.new("RGB", (3000, 1200), (10, 10, 10))
+    im = Image.new("RGB", (300, 120), (10, 10, 10))
     buf = io.BytesIO(); im.save(buf, "PNG")
     r = c.post("/api/attach", files=[("files", ("screen.png", buf.getvalue(), "image/png"))])
     a = r.json()["attachments"][0]
-    assert a["ok"] and a["kind"] == "image" and a.get("id")
-    stored = _attach_load("img@test", a["id"])
-    assert stored.startswith("IMG:image/jpeg")
-    import base64
-    img2 = Image.open(io.BytesIO(base64.b64decode(stored.split("\n", 1)[1])))
-    assert max(img2.size) <= 1568  # ridimensionata per la visione
-    # il blocco TESTI ignora i depositi immagine: mai base64 nel contesto
-    block = _build_attach_block([{"id": a["id"], "name": "screen.png", "kind": "image"}],
-                                query="cosa vedi?", uid="img@test")
-    assert block == ""
+    assert a["ok"] is False and not a.get("id")
+    assert "non vengono inviate a Claude" in a["error"]
+    # il composer non propone più le immagini nel selettore file
+    html = c.get("/").text
+    assert ".png" not in html.split('id="attach-input"', 1)[1].split(">", 1)[0]
 
 
 def test_chat_images_require_claude_engine():
-    import io
-    from PIL import Image
+    """Con il motore locale le immagini restano rifiutate come prima, con un
+    testo che non rimanda più a Claude."""
+    from app.main import _attach_save
     store.create_user("imgeng@test", auth.hash_password("Password123!"), "IT")
     c = fresh_client(); login(c, "imgeng@test", "Password123!")
-    im = Image.new("RGB", (80, 80), (200, 0, 0))
-    buf = io.BytesIO(); im.save(buf, "PNG")
-    aid = c.post("/api/attach", files=[("files", ("x.png", buf.getvalue(), "image/png"))]).json()["attachments"][0]["id"]
+    aid = _attach_save("imgeng@test", "IMG:image/jpeg\nQUJDRA==")
     r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "cosa vedi?"}],
                                   "free_mode": True, "engine": "lmstudio",
                                   "attachments": [{"id": aid, "name": "x.png", "kind": "image"}]})
-    assert "motore Claude" in r.text
+    assert "motore locale" in r.text and "seleziona Claude" not in r.text
 
 
 def test_orchestrator_apply_images():

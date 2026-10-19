@@ -1,0 +1,14 @@
+# Sorgente di requirements-presidio.txt (sidecar Presidio). Si rigenera sul Mac,
+# in un venv Python 3.11 pulito con pip-tools:
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras \
+#       -o requirements-presidio.txt presidio_svc/requirements-presidio.in
+# Niente presidio-anonymizer: non serve e bloccherebbe cryptography < 49.
+presidio-analyzer==2.2.364
+spacy>=3.8,<3.9
+# Modello NER italiano (decisione del CISO: licenza CC BY-NC-SA accettata per
+# uso interno). Wheel ufficiale di Explosion, fissato per URL e hash.
+it_core_news_md @ https://github.com/explosion/spacy-models/releases/download/it_core_news_md-3.8.0/it_core_news_md-3.8.0-py3-none-any.whl
+fastapi
+gunicorn
+uvicorn
+uvicorn-worker

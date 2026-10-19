@@ -30,6 +30,7 @@ services:
     networks:
       - proxy-net                   # condivisa col Caddy di Flusso-AI
       - internal                    # privata (per eventuali servizi futuri)
+      - presidio-net                # solo verso il sidecar Presidio (PRESIDIO_URL nel .env)
     mem_limit: 3g                    # tetto RAM (ChromaDB + embedding ~1-2 GB)
     memswap_limit: 3g                # niente swap oltre il limite
     cpus: 2.0
@@ -60,11 +61,50 @@ services:
     memswap_limit: 6g
     cpus: 4.0
 
+  # ── Sidecar Presidio (protezione dati verso Claude) ────────
+  # Immagine SEPARATA, senza stato: riceve testo da iseopilot e restituisce
+  # solo intervalli (persone, telefoni, documenti). Rete dedicata «internal:
+  # true» (niente uscita su internet), nessuna porta, nessun .env (che contiene
+  # APP_SECRET_KEY): riceve solo il token. Senza token di almeno 32 caratteri
+  # resta «non pronto» e iseopilot procede con dizionario + regole, avvisando.
+  # NESSUN depends_on in iseopilot: «up -d iseopilot» non deve costruire né
+  # avviare Presidio per caso. Si costruisce e si avvia a mano (DEPLOY.md).
+  presidio:
+    build:
+      context: .
+      dockerfile: Dockerfile.presidio
+    image: iseopilot-presidio:latest
+    container_name: iseopilot-presidio
+    restart: unless-stopped
+    environment:
+      PRESIDIO_TOKEN: ${PRESIDIO_TOKEN:-}   # niente «:?»: un .env incompleto bloccherebbe ogni comando compose
+    networks:
+      - presidio-net
+    mem_limit: 1g
+    memswap_limit: 1g                # niente swap oltre il limite
+    cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp                         # file di heartbeat del worker gunicorn
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/ready', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
 networks:
   proxy-net:
     external: true                  # creata a mano (vedi DEPLOY.md)
   internal:
     driver: bridge
+  presidio-net:
+    driver: bridge
+    internal: true                  # solo iseopilot <-> presidio, nessuna uscita
 
 volumes:
   iseopilot_data:

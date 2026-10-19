@@ -85,35 +85,31 @@
       </div>
     </div>
 
-    <!-- Anonimizzazione -->
+    <!-- Protezione dati verso Claude: sempre attiva, nessun interruttore -->
     <div class="panel">
-      <div class="panel-head"><div class="eyebrow">Privacy</div><h2>Anonimizzazione (solo Claude)</h2></div>
+      <div class="panel-head"><div class="eyebrow">Privacy</div><h2>Protezione dati verso Claude: sempre attiva</h2></div>
       <div class="panel-body">
         <div class="field">
-          <div class="checkrow">
-            <input type="checkbox" id="claude_anonymize" name="claude_anonymize" value="1" {% if claude_anonymize %}checked{% endif %}>
-            <label for="claude_anonymize">Anonimizza i dati tecnici prima dell'invio a Claude</label>
-          </div>
-          <div class="hint">Sostituisce IP, email, codici fiscali, P.IVA, hash, token e i nomi del dizionario con segnaposto, ripristinati nella risposta.</div>
+          <div class="hint">Prima dell'invio a Claude (chat, cronologia, allegati, note, file generati e Attività) vengono sostituiti con codici, ripristinati solo nella risposta: i nomi del dizionario qui sotto; le persone, i telefoni e i documenti d'identità (con contesto) riconosciuti da Presidio; email, IP, codici fiscali, P.IVA, hash e token. Se Presidio non è disponibile l'invio avviene comunque con dizionario e dati tecnici, e l'utente vede un avviso in chat. Le immagini non vengono inviate a Claude. Il riconoscimento automatico non trova tutto. Non coperti per ora: ricerche Dynamics 365 e Power BI, Dub Studio, modifica dei documenti in Documentale, riscrittura AI della query.</div>
         </div>
         <div class="field">
           <div class="checkrow">
             <input type="checkbox" id="claude_web_search" name="claude_web_search" value="1" {% if claude_web_search %}checked{% endif %}>
             <label for="claude_web_search">Ricerca web (solo modalità AI libera)</label>
           </div>
-          <div class="hint">Claude può cercare sul web quando la domanda riguarda informazioni recenti; le fonti sono citate con link nella risposta e la barra mostra "Ricerca web in corso". Max 5 ricerche per domanda. Nota governance: le query (già anonimizzate) transitano dai motori di ricerca via Anthropic — nuovo flusso dati da annotare. Costo per ricerca a consumo.</div>
+          <div class="hint">Claude può cercare sul web quando la domanda riguarda informazioni recenti; le fonti sono citate con link nella risposta e la barra mostra "Ricerca web in corso". Max 5 ricerche per domanda. Nota governance: le query, scritte da Claude sul testo già protetto, transitano dai motori di ricerca via Anthropic — nuovo flusso dati da annotare. Costo per ricerca a consumo.</div>
         </div>
         <div class="field">
           <div class="checkrow">
             <input type="checkbox" id="cowork_enabled" name="cowork_enabled" value="1" {% if cowork_enabled %}checked{% endif %}>
             <label for="cowork_enabled">Modalità Attività (agente sulla Conoscenza)</label>
           </div>
-          <div class="hint">Terza modalità nel selettore: per i COMPITI ("preparami un documento con tutte le certificazioni…"). L'agente pianifica fino a 8 passi: cerca nella Conoscenza, legge documenti interi, può generare un Word. Perimetro identico alla chat: solo la Conoscenza del reparto, sola lettura, anonimizzazione, ogni passo nei log. Costo: più chiamate per domanda.</div>
+          <div class="hint">Terza modalità nel selettore: per i COMPITI ("preparami un documento con tutte le certificazioni…"). L'agente pianifica fino a 8 passi: cerca nella Conoscenza, legge documenti interi, può generare un Word. Perimetro identico alla chat: solo la Conoscenza del reparto, sola lettura, protezione dei dati sempre attiva, ogni passo nei log. Costo: più chiamate per domanda.</div>
         </div>
         <div class="field">
-          <label for="anon_dictionary">Dizionario anonimizzazione nomi</label>
+          <label for="anon_dictionary">Dizionario dei nomi riservati</label>
           <textarea id="anon_dictionary" name="anon_dictionary" placeholder="Un nome per riga (persone, aziende, progetti riservati)…">{{ anon_dictionary }}</textarea>
-          <div class="hint">Un termine per riga. Ogni occorrenza viene mascherata prima dell'invio a Claude.</div>
+          <div class="hint">Un termine per riga. Ogni occorrenza presente nel testo viene sostituita con un codice prima dell'invio a Claude (maiuscole, spazi doppi e apostrofi tipografici compresi). Salvato cifrato; in audit solo il numero di voci.</div>
         </div>
       </div>
     </div>

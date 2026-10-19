@@ -1,0 +1,49 @@
+# ============================================================
+# ISEOPilot — sidecar Presidio (container «iseopilot-presidio»)
+# Immagine SEPARATA da iseopilot: il suo livello pip da 2,25 GB non si tocca.
+# Riconosce persone (spaCy it_core_news_md), telefoni e documenti d'identità
+# italiani e restituisce solo intervalli. Nessuno stato, nessuna porta
+# pubblicata, rete interna senza uscita: tutto si installa qui, con hash.
+# ============================================================
+FROM python:3.11-slim
+
+# Variabili offline: nessun download a runtime (lista dei suffissi di
+# tldextract, hub di Hugging Face). Un solo thread BLAS: il container ha 1 CPU.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    TLDEXTRACT_PUBLIC_SUFFIX_LIST_URLS="" \
+    PRESIDIO_DEVICE=cpu \
+    REGEX_TIMEOUT_SECONDS=10 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1
+
+WORKDIR /svc
+
+# Dipendenze con versione e hash fissati, modello compreso (wheel ufficiale
+# di Explosion). La prova di caricamento fa fallire il build se il modello o
+# spaCy non sono coerenti, invece di scoprirlo all'avvio.
+COPY requirements-presidio.txt .
+RUN pip install --no-cache-dir --require-hashes -r requirements-presidio.txt \
+ && python -c "import spacy; n = spacy.load('it_core_news_md'); assert 'ner' in n.pipe_names; print('it_core_news_md', n.meta['version'])"
+
+COPY presidio_svc/ ./presidio_svc/
+
+# Utente non-root dedicato (uid diverso da appuser 10001 di iseopilot).
+RUN useradd -m -u 10002 presidio
+USER presidio
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/ready', timeout=4).status==200 else 1)"
+
+# Un worker, modello caricato una volta nel master (--preload) e ereditato dal
+# worker. La crescita del vocabolario la ferma memory_zone (motore.py); il
+# riciclo ogni ~500 richieste resta come rete di sicurezza (con --preload il
+# nuovo worker nasce con una fork, in pochi millisecondi). Niente socket di controllo di gunicorn 26 (il filesystem è in
+# sola lettura e non serve).
+CMD ["gunicorn", "presidio_svc.app:app", "-k", "uvicorn_worker.UvicornWorker", "-w", "1", "--preload", \
+     "--max-requests", "500", "--max-requests-jitter", "50", "-b", "0.0.0.0:3000", \
+     "--timeout", "60", "--no-control-socket"]

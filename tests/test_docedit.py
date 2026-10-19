@@ -282,6 +282,8 @@ def test_riepilogo_dichiara_applicate_e_non():
 
 # ── Flusso completo in chat ─────────────────────────────────
 def test_flusso_chat_modifica_documento_allegato(monkeypatch):
+    """In Documentale l'editing in place funziona come prima. In AI LIBERA è
+    spento: invierebbe il documento a Claude senza protezione dei dati."""
     c = _mk_user("edit@test")
     r = c.post("/api/attach", files=[("files", ("Offerta.docx", _docx_bytes(),
                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))])
@@ -292,7 +294,7 @@ def test_flusso_chat_modifica_documento_allegato(monkeypatch):
                         lambda s, u, st, max_tokens=4000, timeout=120:
                         '{"modifiche": [{"trova": "12.000 euro", '
                         '"sostituisci": "14.500 euro", "motivo": "listino 2026"}], "note": ""}')
-    r = c.post("/api/chat", json={"engine": "claude", "free_mode": True,
+    r = c.post("/api/chat", json={"engine": "claude", "free_mode": False, "source": "kb",
                "attachments": [a],
                "messages": [{"role": "user", "content":
                              "modifica il documento: il prezzo diventa 14.500 euro"}]})
@@ -303,6 +305,18 @@ def test_flusso_chat_modifica_documento_allegato(monkeypatch):
     # audit del ramo corretto
     azioni = {x["action"] for x in store.audit_query(username="edit@test")}
     assert "modifica_documento" in azioni
+    # AI libera: stessa richiesta, nessun editing (docedit spento)
+    chiamato = {"n": 0}
+
+    def _non_chiamare(*a, **k):
+        chiamato["n"] += 1
+        return '{"modifiche": [], "note": ""}'
+    monkeypatch.setattr(docedit.orchestrator, "complete", _non_chiamare)
+    r2 = c.post("/api/chat", json={"engine": "claude", "free_mode": True,
+                "attachments": [a],
+                "messages": [{"role": "user", "content":
+                              "modifica il documento: il prezzo diventa 14.500 euro"}]})
+    assert "revisioni tracciate" not in r2.text and chiamato["n"] == 0
 
 
 def test_chat_creazione_non_viene_dirottata_su_editing(monkeypatch):

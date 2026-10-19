@@ -5,7 +5,7 @@
 <div class="statusbar">
   <div class="item"><span class="dot live" id="st-conn"></span><label>{{ t("Stato") }}</label><strong id="st-state">{{ t("Pronto") }}</strong></div>
   <div class="item"><span class="dot on"></span><label>{{ t("Motore") }}</label><strong id="st-engine">Claude</strong></div>
-  <div class="item"><span class="dot on" id="st-anon-dot"></span><label>{{ t("Anonimizzazione") }}</label><strong id="st-anon">{{ t("attiva") }}</strong></div>
+  <div class="item"><span class="dot on" id="st-anon-dot"></span><label>{{ t("Protezione dati") }}</label><strong id="st-anon">{{ t("attiva") }}</strong></div>
   <div class="item"><span class="dot on"></span><label>{{ t("Modalità") }}</label><strong id="st-mode">{{ t("Documentale") }}</strong></div>
   <div class="item"><label>{{ t("Area conoscenza") }}</label><strong>{{ department }}</strong></div>
 </div>
@@ -21,7 +21,7 @@
     <div class="messages" id="messages">
       <div class="msg system">
         <div class="role">{{ t("Sistema") }}</div>
-        <div class="bubble">{{ t("Assistente AI ISEO. Scrivi una domanda: la risposta arriva in streaming dal motore selezionato. Con Claude i dati tecnici sensibili (IP, email, codici fiscali, P.IVA, hash, token…) vengono anonimizzati prima dell'invio.") }}</div>
+        <div class="bubble">{{ t("Assistente AI ISEO. Scrivi una domanda: la risposta arriva in streaming dal motore selezionato. Prima dell'invio a Claude i nomi del dizionario, le persone e i telefoni riconosciuti da Presidio e alcuni dati tecnici (email, IP, codici fiscali) vengono sostituiti con codici; i valori veri tornano solo nella tua risposta.") }}</div>
       </div>
     </div>
 
@@ -46,10 +46,10 @@
       </div>
       <div class="attach-bar" id="attach-bar" hidden></div>
       <div class="attach-bar" id="tpl-bar" hidden></div>
-      <div class="img-hint" id="img-hint" hidden>{{ t("Nota: le immagini allegate non passano dall'anonimizzazione e vengono inviate a Claude così come sono.") }}</div>
+      <div class="img-hint" id="img-hint" hidden>{{ t("Le immagini non vengono inviate a Claude: descrivi a parole cosa contengono.") }}</div>
       <div class="row">
         <button class="attach-btn" id="attach-btn" title="{{ t('Allega file (fino a 20)') }}" type="button">📎</button>
-        <input type="file" id="attach-input" multiple accept=".txt,.md,.csv,.json,.xml,.py,.pdf,.docx,.xlsx,.xls,.pptx,.ppt,.rtf,.png,.jpg,.jpeg,.webp,.gif" hidden>
+        <input type="file" id="attach-input" multiple accept=".txt,.md,.csv,.json,.xml,.py,.pdf,.docx,.xlsx,.xls,.pptx,.ppt,.rtf" hidden>
         <button class="attach-btn" id="tpl-btn" title="{{ t('Template personale (.docx/.dotx/.pptx/.potx): se caricato, i documenti generati usano il TUO template al posto di quello ISEO. Niente macro.') }}" type="button">📐</button>
         <input type="file" id="tpl-input" accept=".docx,.dotx,.pptx,.potx" hidden>
         <textarea id="input" placeholder="{{ t('Scrivi la tua domanda…  (Invio per inviare · Maiusc+Invio per andare a capo)') }}"></textarea>

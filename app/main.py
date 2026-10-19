@@ -35,7 +35,8 @@ from . import auth, connectors, devchat, docedit, docgen, i18n, knowledge, memor
 from .connectors import (DEF_OD_CLIENT_ID, DEF_OD_TENANT_ID, DEF_DYN_CLIENT_ID,
                          DEF_DYN_TENANT_ID, DEF_DYN_RESOURCE_URL,
                          DEF_PBI_CLIENT_ID, DEF_PBI_TENANT_ID)
-from .orchestrator import TONES, LANG_INSTR, stream_reply
+from .orchestrator import (TONES, LANG_INSTR, stream_reply, MSG_IMMAGINI_CLAUDE,
+                           AVVISO_PRESIDIO, nota_sostituzioni as orchestrator_nota)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -557,7 +558,10 @@ def admin_settings() -> dict:
         "claude_model_dynamics": store.get_setting("claude_model_dynamics", "claude-fable-5"),
         "claude_model_rewrite": store.get_setting("claude_model_rewrite", "claude-haiku-4-5-20251001"),
         "claude_model_docgen": store.get_setting("claude_model_docgen", "claude-fable-5"),
-        "claude_anonymize": store.get_setting("claude_anonymize", "1") == "1",
+        # Protezione dei dati verso Claude SEMPRE attiva: il vecchio interruttore
+        # (spegnibile da una casella, per tutti, senza audit) è ignorato anche se
+        # nel DB resta "0".
+        "claude_anonymize": True,
         "claude_web_search": store.get_setting("claude_web_search", "0") == "1",
         "cowork_enabled": store.get_setting("cowork_enabled", "0") == "1",
         "lm_url": store.get_setting("lm_url", ""),
@@ -631,12 +635,12 @@ def api_chat(request: Request, body: ChatRequest):
         raise HTTPException(status_code=401, detail="Sessione scaduta. Effettua di nuovo l'accesso.")
 
     def _strip_note_ui(testo: str) -> str:
-        """Le note 🔒/🌐 in coda alle risposte sono cornice UI, non conversazione:
+        """Le note 🔒/🌐/⚠️ in coda alle risposte sono cornice UI, non conversazione:
         se restano nello storico verso Claude, il modello finisce per fargli eco
         (i '4 lucchetti' del caso Carlos). Via, ovunque compaiano in coda."""
         righe = testo.rstrip().splitlines()
         while righe and (not righe[-1].strip()
-                         or re.match(r"^\s*[🔒🌐]\s*\*.*\*\s*$", righe[-1])):
+                         or re.match(r"^\s*[🔒🌐⚠\ufe0f]+\s*\*.*\*\s*$", righe[-1])):
             righe.pop()
         return "\n".join(righe).rstrip()
 
@@ -675,7 +679,8 @@ def api_chat(request: Request, body: ChatRequest):
             return StreamingResponse(_cw_off(), media_type="text/event-stream",
                                      headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         from . import cowork
-        _audit(request, uid, "cowork", f"domanda={query[:160]}")
+        # Mai il testo della domanda nel registro: solo la lunghezza.
+        _audit(request, uid, "cowork", f"domanda: {len(query)} caratteri")
         dept = _dept_attivo(request, user)
         # Ultimi turni della conversazione: le CORREZIONI ("no, in spagnolo")
         # devono arrivare all'agente col loro contesto, non come compito orfano.
@@ -698,7 +703,10 @@ def api_chat(request: Request, body: ChatRequest):
 
     attach_block = _build_attach_block(body.attachments, query, uid)
 
-    # Immagini allegate → blocchi visione Claude (max 5 per domanda)
+    # Immagini allegate: MAI a Claude, perché non passano da alcuna protezione
+    # dei dati; il motore locale non le ha mai lette. Il rifiuto arriva PRIMA di
+    # qualunque chiamata, con un messaggio chiaro (vale anche per chi chiama
+    # l'API direttamente o ha immagini caricate prima di questo rilascio).
     images = []
     for a in (body.attachments or [])[:20]:
         if a.get("kind") == "image" and a.get("id"):
@@ -706,11 +714,13 @@ def api_chat(request: Request, body: ChatRequest):
             if im:
                 images.append(im)
     images = images[:5]
-    if images and (body.engine or "claude") != "claude":
+    if images:
+        _img_msg = (MSG_IMMAGINI_CLAUDE if (body.engine or "claude") == "claude"
+                    else "Le immagini allegate non sono supportate dal motore locale: "
+                         "rimuovi le immagini e, se serve, descrivi a parole cosa contengono.")
         def _img_err():
-            yield "data: " + json.dumps({"type": "error", "text":
-                "Le immagini allegate sono supportate solo con il motore Claude: "
-                "seleziona Claude oppure rimuovi le immagini."}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({"type": "error", "text": _img_msg},
+                                        ensure_ascii=False) + "\n\n"
         return StreamingResponse(_img_err(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -901,7 +911,9 @@ def api_chat(request: Request, body: ChatRequest):
     # ── Modifica IN PLACE di un documento ALLEGATO (Incremento 10) ──
     # Precede la generazione: se c'è un allegato modificabile e l'utente chiede
     # di correggerlo e riaverlo, si apre QUEL file invece di crearne uno nuovo.
-    edit_att = docedit.detect_edit_request(query, body.attachments)
+    # In AI LIBERA docedit è spento: invierebbe a Claude il documento in chiaro
+    # (fino a 60.000 caratteri) senza passare dalla protezione dei dati.
+    edit_att = None if body.free_mode else docedit.detect_edit_request(query, body.attachments)
     edit_src = None
     if edit_att:
         edit_src = _attach_load_raw(uid, str(edit_att.get("id")))
@@ -917,7 +929,7 @@ def api_chat(request: Request, body: ChatRequest):
     _fmt_sfiorato = None if gen_fmt else docgen.formato_menzionato(query)
     import sys as _sys
     print(f"[chat] generazione: formato={gen_fmt or '-'} "
-          f"sfiorato={_fmt_sfiorato or '-'} domanda={query[:120]!r}", file=_sys.stderr)
+          f"sfiorato={_fmt_sfiorato or '-'} domanda={len(query)} caratteri", file=_sys.stderr)
 
     # NOTE PERSONALI (Incremento 8): cattura del trigger esplicito
     # ("ricordati che…") PRIMA della risposta, con conferma visibile in chat.
@@ -1070,6 +1082,7 @@ def api_chat(request: Request, body: ChatRequest):
             return
 
         if gen_fmt:
+            _ds: dict = {}
             try:
                 yield "data: " + json.dumps({"type": "status", "text":
                     i18n.t("Sto preparando il file…", _lang) + " " +
@@ -1082,7 +1095,14 @@ def api_chat(request: Request, body: ChatRequest):
                     if _t:
                         _tpls[_f], _tpl_names[_f] = _t[0], _t[1]
                 path, fname = None, None
-                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, _area_settings(settings, "claude_model_docgen"), hist_text, templates=_tpls, note_utente=_note_ctx)):
+                # Protezione dei dati anche nella generazione file (in ogni
+                # modalità): il dizionario passa nei settings, build_spec maschera
+                # richiesta, note, storico e contesto UNA volta e lascia l'esito
+                # in _esito_protezione per le note finali. Copia: i settings
+                # dell'area possono essere lo stesso dict condiviso.
+                _ds = dict(_area_settings(settings, "claude_model_docgen"))
+                _ds["_anon_names"] = anon_names()
+                for item in _in_thread_with_pings(lambda: docgen.generate(gen_fmt, query, context, _ds, hist_text, templates=_tpls, note_utente=_note_ctx)):
                     if isinstance(item, tuple) and item[0] == "result":
                         path, fname = item[1]
                     else:
@@ -1091,10 +1111,21 @@ def api_chat(request: Request, body: ChatRequest):
                 _tpl_used = _tpl_names.get("pptx" if gen_fmt == "pptx" else "docx") if gen_fmt in ("docx", "pdf", "pptx") else None
                 _msg_gen = (f"Ho preparato **{fname}** sul tuo template **{_tpl_used}**. Puoi scaricarlo qui sotto."
                             if _tpl_used else f"Ho preparato **{fname}**. Puoi scaricarlo qui sotto.")
+                _esito = _ds.get("_esito_protezione") or {}
+                if _esito.get("totale"):
+                    _msg_gen += "\n\n" + orchestrator_nota(_esito["totale"])
+                if _esito and not _esito.get("presidio_ok"):
+                    _msg_gen += "\n\n" + AVVISO_PRESIDIO
                 yield "data: " + json.dumps({"type": "delta", "text": _msg_gen}, ensure_ascii=False) + "\n\n"
                 yield "data: " + json.dumps({"type": "sources", "items": [{"name": fname, "url": "/download/" + token, "kind": "download"}]}, ensure_ascii=False) + "\n\n"
             except Exception as e:
                 yield "data: " + json.dumps({"type": "error", "text": "Generazione non riuscita: " + str(e)[:200]}, ensure_ascii=False) + "\n\n"
+                # La richiesta può essere già partita verso Claude: l'avviso
+                # su Presidio vale anche quando la generazione fallisce.
+                _esito = _ds.get("_esito_protezione") or {}
+                if _esito and not _esito.get("presidio_ok"):
+                    yield "data: " + json.dumps({"type": "delta", "text": "\n\n" + AVVISO_PRESIDIO},
+                                                ensure_ascii=False) + "\n\n"
             return
 
         # Risposta in streaming (i link NON passano da Claude/anonimizzazione).
@@ -1203,37 +1234,11 @@ async def api_attach(request: Request, files: list[UploadFile] = File(...)):
     for f in files[:20]:
         ext = Path(f.filename or "").suffix.lower()
         if ext in IMG_EXT:
-            # IMMAGINI → visione Claude. Ridimensionate e ricodificate JPEG,
-            # poi nel deposito per-utente come base64. NB dichiarato in UI:
-            # le immagini NON passano dall'anonimizzatore.
-            try:
-                raw = await f.read()
-                if len(raw) > 15 * 1024 * 1024:
-                    out.append({"name": f.filename, "ok": False, "error": "Immagine troppo grande (max 15 MB)"})
-                    continue
-                import base64
-                import io as _io
-                from PIL import Image as _PILImage
-                im = _PILImage.open(_io.BytesIO(raw)); im.load()
-                if im.mode != "RGB":
-                    bg = _PILImage.new("RGB", im.size, (255, 255, 255))
-                    try:
-                        bg.paste(im, mask=im.getchannel("A"))
-                    except Exception:
-                        bg.paste(im.convert("RGB"))
-                    im = bg
-                lato = max(im.size)
-                if lato > 1568:
-                    r = 1568 / lato
-                    im = im.resize((int(im.width * r), int(im.height * r)), _PILImage.LANCZOS)
-                buf = _io.BytesIO(); im.save(buf, "JPEG", quality=85)
-                b64 = base64.b64encode(buf.getvalue()).decode()
-                aid = _attach_save(user["username"], "IMG:image/jpeg\n" + b64)
-                import sys
-                print(f"[attach] {user['username']}: {f.filename} -> immagine {im.width}x{im.height}, {len(buf.getvalue())//1024} KB", file=sys.stderr)
-                out.append({"id": aid, "name": f.filename, "ok": True, "kind": "image", "chars": 0})
-            except Exception as e:
-                out.append({"name": f.filename, "ok": False, "error": f"Immagine non leggibile: {str(e)[:80]}"})
+            # IMMAGINI: non vengono inviate a Claude (nessuna protezione dei dati
+            # le copre) e il motore locale non le legge. Rifiuto immediato, con il
+            # motivo nel chip dell'allegato, prima di qualunque chiamata.
+            out.append({"name": f.filename, "ok": False, "kind": "image",
+                        "error": "Le immagini non vengono inviate a Claude"})
             continue
         if ext not in knowledge.ALLOWED_ATTACH_EXT:
             out.append({"name": f.filename, "ok": False,
@@ -1393,7 +1398,6 @@ def admin_page(request: Request):
         claude_model_rewrite=store.get_setting("claude_model_rewrite", "claude-haiku-4-5-20251001"),
         claude_model_docgen=store.get_setting("claude_model_docgen", "claude-fable-5"),
         claude_key_set=store.has_secret("claude_api_key"),
-        claude_anonymize=store.get_setting("claude_anonymize", "1") == "1",
         claude_web_search=store.get_setting("claude_web_search", "0") == "1",
         cowork_enabled=store.get_setting("cowork_enabled", "0") == "1",
         lm_url=store.get_setting("lm_url", ""),
@@ -1452,7 +1456,6 @@ def admin_save(
     claude_model_rewrite: str = Form("claude-haiku-4-5-20251001"),
     claude_model_docgen: str = Form("claude-fable-5"),
     search_ai_rewrite: str = Form("0"),
-    claude_anonymize: str = Form("0"),
     claude_web_search: str = Form("0"),
     cowork_enabled: str = Form("0"),
     lm_url: str = Form(""),
@@ -1498,12 +1501,19 @@ def admin_save(
     store.set_setting("claude_model_rewrite", claude_model_rewrite.strip() or "claude-haiku-4-5-20251001")
     store.set_setting("claude_model_docgen", claude_model_docgen.strip() or "claude-fable-5")
     store.set_setting("search_ai_rewrite", "1" if search_ai_rewrite == "1" else "0")
-    store.set_setting("claude_anonymize", "1" if claude_anonymize == "1" else "0")
     store.set_setting("claude_web_search", "1" if claude_web_search == "1" else "0")
     store.set_setting("cowork_enabled", "1" if cowork_enabled == "1" else "0")
     store.set_setting("lm_url", lm_url.strip())
     store.set_setting("lm_model", lm_model.strip())
-    store.set_setting("anon_dictionary", anon_dictionary)
+    # Dizionario dei nomi riservati: cifrato (get_setting decifra già, quindi
+    # un rollback del codice lo legge ancora) e in audit SOLO i conteggi delle
+    # voci, mai i valori.
+    _voci = lambda raw: len([n for n in (raw or "").splitlines() if n.strip()])
+    _diz_prima = store.get_setting("anon_dictionary", "")
+    store.set_setting("anon_dictionary", anon_dictionary, secret=True)
+    if anon_dictionary != _diz_prima:
+        _audit(request, user["username"], "anon_dizionario",
+               f"voci: {_voci(_diz_prima)} → {_voci(anon_dictionary)}")
     store.set_setting("kb_embedding_model", kb_embedding_model.strip() or "all-minilm-l6-v2")
     store.set_setting("kb_mode", "remote" if kb_mode == "remote" else "local")
     store.set_setting("kb_host", kb_host.strip() or "localhost")

@@ -6,7 +6,7 @@ archiviati) e COMPORRE un documento Word — poi risponde citando le fonti.
 Garanzie di progetto ("senza compromettere nulla"):
 - modulo separato: Documentale e AI libera non vengono toccate;
 - perimetro identico alla chat: SOLO la Conoscenza del reparto dell'utente,
-  sola lettura, anonimizzazione su tutto ciò che esce, fonti citate;
+  sola lettura, protezione dei dati (codici) su tutto ciò che esce, fonti citate;
 - passi limitati (MAX_PASSI) e memoria limitata: costi e latenza delimitati;
 - ogni passo è nominato nei log ([cowork]) e visibile in /admin/logs;
 - esito ONESTO: se i passi non bastano, lo dice e consegna quanto raccolto.
@@ -21,7 +21,7 @@ from typing import Iterator
 from . import knowledge
 from . import docgen
 from . import connectors
-from .orchestrator import complete, _sse
+from .orchestrator import complete, _sse, ISTRUZIONE_SEGNAPOSTO, AVVISO_PRESIDIO
 from .anonymizer import Anonymizer
 
 MAX_PASSI = 8
@@ -88,18 +88,25 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         note_utente: str = "") -> Iterator[str]:
     """Esegue l'attività e produce eventi SSE (status/delta/sources/done)."""
     anon = Anonymizer()  # UNA mappa per l'intera attività: segnaposto coerenti tra i passi
-    # L'interruttore Admin "Anonimizza i dati tecnici" era rispettato solo da
-    # orchestrator.py: qui l'anonimizzazione veniva applicata comunque, quindi
-    # spegnerla dal pannello non disattivava questo percorso.
-    do_anon = bool(settings.get("claude_anonymize", True))
+    # Protezione dei dati SEMPRE attiva: l'interruttore claude_anonymize è
+    # ignorato, come in chat. Presidio non disponibile non blocca l'attività:
+    # restano dizionario e regex, e in coda compare l'avviso.
+    stato = {"presidio_giu": False}
 
     def _mascherato(testo: str) -> str:
-        """Maschera solo se l'amministratore ha lasciato attiva l'opzione.
-        Con l'opzione spenta anon.restore() resta un'operazione a vuoto, perché
-        la mappa dei segnaposto è vuota."""
-        if not do_anon:
-            return testo
-        return anon.anonymize_names(anon.anonymize(testo), anon_names, use_nlp=False)
+        """Dizionario, regex e Presidio con la mappa dell'attività (mask_batch):
+        lo stesso valore riceve lo stesso segnaposto a ogni passo. Dopo il primo
+        guasto Presidio non si richiama più nella stessa attività: fino a 9
+        chiamate, ognuna con il suo timeout, renderebbero l'attività lentissima."""
+        (out,), esito = anon.mask_batch([testo], anon_names,
+                                        presidio=not stato["presidio_giu"])
+        if not esito["presidio_ok"]:
+            stato["presidio_giu"] = True
+        return out
+
+    def _avviso() -> Iterator[str]:
+        if stato["presidio_giu"]:
+            yield _sse({"type": "delta", "text": "\n\n" + AVVISO_PRESIDIO})
     nomi = [d.get("name", "") for d in knowledge.kb_list(dept)]
     if not nomi:
         yield _sse({"type": "error", "text":
@@ -110,7 +117,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
     # esplicita nel compito/conversazione PREVALE (caso Carlos: "in Spanish").
     _lingua = settings.get("reply_lang") or "Italiano"
     _lingua_frase = ("la stessa lingua del compito" if _lingua == "Auto" else _lingua)
-    protocollo = PROTOCOLLO + (
+    protocollo = PROTOCOLLO + "\n\n" + ISTRUZIONE_SEGNAPOSTO + (
         f"\n\nLINGUA: scrivi risposte e documenti in {_lingua_frase}, SALVO che il "
         "compito o la conversazione chiedano esplicitamente un'altra lingua: in "
         "quel caso prevale quella richiesta. Se il compito è una correzione "
@@ -145,12 +152,14 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         try:
             contesto_anon = _mascherato(contesto)
             raw = complete(protocollo, contesto_anon, settings, max_tokens=2500)
-            raw = anon.restore(raw)
         except Exception as e:
             _log(f"errore modello al passo {passo}: {type(e).__name__}: {e}")
             yield _sse({"type": "error", "text": f"Attività interrotta: {e}"})
+            yield from _avviso()      # il contesto può essere già partito
             return
-        az = _estrai_json(raw)
+        # Prima il parsing con i segnaposto, poi il ripristino foglia per foglia:
+        # un valore ripristinato con virgolette non rompe più il JSON.
+        az = anon.restore_struttura(_estrai_json(raw))
         azione = (az.get("azione") or "").strip().lower()
         _log(f"uid={uid} passo={passo} azione={azione or 'NON RICONOSCIUTA'}")
 
@@ -210,6 +219,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
                         f"\n\n🧭 *Attività: {passo} pass{'o' if passo == 1 else 'i'}, "
                         f"{len(letture)} document{'o letto' if len(letture) == 1 else 'i letti'}, "
                         f"{ricerche} ricerch{'a' if ricerche == 1 else 'e'}{_tpl_nota}.*"})
+            yield from _avviso()
             yield _sse({"type": "done"})
             return
 
@@ -235,7 +245,7 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
                         docgen._SCHEMAS["docx"])
             contesto_anon = _mascherato(contesto)
             raw = complete(sys_spec, contesto_anon, settings, max_tokens=3500)
-            spec = docgen._parse_json(anon.restore(raw))
+            spec = anon.restore_struttura(docgen._parse_json(raw))
             path, fname = docgen.gen_docx(spec, template_path=tpl_docx)
             token = connectors.register_download(uid, path, fname)
             file_generato = fname
@@ -269,4 +279,5 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         coda = (f"\n\n🧭 *Attività: limite di {MAX_PASSI} passi raggiunto — "
                 "sintesi parziale dichiarata.*")
     yield _sse({"type": "delta", "text": coda})
+    yield from _avviso()
     yield _sse({"type": "done"})
