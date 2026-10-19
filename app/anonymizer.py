@@ -25,7 +25,7 @@ Ordine dei livelli in `mask_batch` (un lotto di testi, UNA mappa):
      intervalli sovrapposti diventano un solo dato);
   5. propagazione: ogni valore trovato da Presidio viene sostituito anche nelle
      sue altre occorrenze, senza distinguere maiuscole e separatori, in tutti
-     i testi del lotto.
+     i testi del lotto e nei lotti successivi della stessa istanza.
 
 Fuga del dizionario chiusa (sondaggio «ripeti [NOME_001] [NOME_002]»): i codici
 si creano SOLO per le voci presenti nel testo e il ripristino tocca SOLO i codici
@@ -227,6 +227,7 @@ class Anonymizer:
         self._rev = {}       # valore normalizzato -> token
         self._counters = {}  # tipo -> contatore
         self._usati = {}     # token -> occorrenze sostituite nel lotto corrente
+        self._propagati = {} # valori di Presidio già visti -> tipo (lotti successivi)
 
     def _next_token(self, tipo: str) -> str:
         self._counters[tipo] = self._counters.get(tipo, 0) + 1
@@ -365,10 +366,14 @@ class Anonymizer:
             except Exception as e:  # qualunque imprevisto vale come guasto, mai come blocco
                 motivo = f"errore:{type(e).__name__}"
                 print(f"[presidio] errore imprevisto nel client: {type(e).__name__}", file=sys.stderr)
-        valori: dict = {}
+        # Con la STESSA istanza su più lotti (Attività, planner Dynamics) i
+        # valori trovati da Presidio nei lotti precedenti si propagano anche
+        # qui: il NER può non rivederli in un testo diverso, o essere giù.
+        valori: dict = dict(self._propagati)
         out = [self._applica_intervalli(t, rx, sp, valori) if t else t
                for t, sp in zip(base, trovati or [()] * len(base))]
         out = self._propaga(out, valori)
+        self._propagati.update(valori)
 
         per_tipo: dict = {}
         for tok in self._usati:

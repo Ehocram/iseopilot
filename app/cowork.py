@@ -151,7 +151,8 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
         contesto = "\n\n".join(memoria)[-MEMORIA_MAX_CHARS:]
         try:
             contesto_anon = _mascherato(contesto)
-            raw = complete(protocollo, contesto_anon, settings, max_tokens=2500)
+            raw = complete(protocollo, contesto_anon, settings, max_tokens=2500,
+                           scopo="cowork", controllo=anon)
         except Exception as e:
             _log(f"errore modello al passo {passo}: {type(e).__name__}: {e}")
             yield _sse({"type": "error", "text": f"Attività interrotta: {e}"})
@@ -244,7 +245,8 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
                         "conversazione: in quel caso prevale quella. " +
                         docgen._SCHEMAS["docx"])
             contesto_anon = _mascherato(contesto)
-            raw = complete(sys_spec, contesto_anon, settings, max_tokens=3500)
+            raw = complete(sys_spec, contesto_anon, settings, max_tokens=3500,
+                           scopo="cowork", controllo=anon)
             spec = anon.restore_struttura(docgen._parse_json(raw))
             path, fname = docgen.gen_docx(spec, template_path=tpl_docx)
             token = connectors.register_download(uid, path, fname)
@@ -266,7 +268,8 @@ def run(dept: str, uid: str, domanda: str, settings: dict,
                      "eventuali parti mancanti. Testo semplice, non JSON.]")
         contesto_anon = _mascherato(contesto)
         finale = anon.restore(complete(protocollo, contesto_anon, settings,
-                                       max_tokens=2500))
+                                       max_tokens=2500, scopo="cowork",
+                                       controllo=anon))
     except Exception as e:
         finale = (f"Ho raggiunto il limite di {MAX_PASSI} passi e non sono "
                   f"riuscito a completare la sintesi finale ({e}).")

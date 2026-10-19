@@ -38,6 +38,8 @@ from pathlib import Path
 
 import requests
 
+from .. import uscita
+
 PBI_API = "https://api.powerbi.com/v1.0/myorg"
 
 # Cosa deve FARE l'utente quando il catalogo non si popola. Sta qui, in un
@@ -874,13 +876,12 @@ class PowerBISearch:
 
                 def _call(model_name: str) -> str | None:
                     for tentativo in range(MAX_RETRY):
-                        r = requests.post("https://api.anthropic.com/v1/messages",
-                            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                                     "Content-Type": "application/json"},
-                            json={"model": model_name, "max_tokens": max_tokens,
-                                  "system": system_prompt,
-                                  "messages": [{"role": "user", "content": user_prompt}]},
-                            timeout=45)
+                        # scopo «powerbi»: in chiaro per scelta del CISO (uscita.SCOPI)
+                        r = uscita.invia("powerbi",
+                            {"model": model_name, "max_tokens": max_tokens,
+                             "system": system_prompt,
+                             "messages": [{"role": "user", "content": user_prompt}]},
+                            key, timeout=45)
                         if r.status_code in RETRY_STATUS and tentativo < MAX_RETRY - 1:
                             attesa = 3 * (tentativo + 1)
                             _dbg(f"planner: Claude HTTP {r.status_code}, ritento tra {attesa}s")
@@ -928,11 +929,12 @@ class PowerBISearch:
                 url = self.cfg.get("lm_url", "")
                 if not url:
                     return ""
-                r = requests.post(url, headers={"Content-Type": "application/json"},
-                    json={"model": self.cfg.get("lm_model", "local-model"),
-                          "max_tokens": max_tokens,
-                          "messages": [{"role": "system", "content": system_prompt},
-                                       {"role": "user", "content": user_prompt}]},
+                # rifiuta un endpoint che non sia privato o locale (nessun invio)
+                r = uscita.invia_locale(url,
+                    {"model": self.cfg.get("lm_model", "local-model"),
+                     "max_tokens": max_tokens,
+                     "messages": [{"role": "system", "content": system_prompt},
+                                  {"role": "user", "content": user_prompt}]},
                     timeout=120)
                 if r.status_code != 200:
                     _dbg(f"planner: LM Studio HTTP {r.status_code}")

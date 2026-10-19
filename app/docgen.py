@@ -430,7 +430,8 @@ def build_spec(fmt: str, user_request: str, context: str, settings: dict,
     ultimo = None
     for tetto in (8000, 16000):
         try:
-            raw = orchestrator.complete(system, user, settings, max_tokens=tetto)
+            raw = orchestrator.complete(system, user, settings, max_tokens=tetto,
+                                       scopo="docgen", controllo=anon)
             # Prima il parsing con i segnaposto, poi il ripristino foglia per
             # foglia: un valore con virgolette non rompe più il JSON.
             return anon.restore_struttura(_parse_json(raw))

@@ -493,7 +493,7 @@ def test_cowork_protezione_sempre_attiva(monkeypatch):
     from app import cowork, knowledge as kn
     visti = []
 
-    def finto_complete(system, user, settings, max_tokens=2500, timeout=120):
+    def finto_complete(system, user, settings, max_tokens=2500, timeout=120, **_kw):
         visti.append(user)
         return '{"azione": "rispondi", "testo": "Il referente è [NOME_001]."}'
     monkeypatch.setattr(cowork, "complete", finto_complete)
@@ -657,7 +657,7 @@ def test_docgen_importi_in_chiaro_verso_claude(monkeypatch):
     from app import docgen
     visti = []
 
-    def finto_complete(system, user, settings, max_tokens=4000, timeout=120):
+    def finto_complete(system, user, settings, max_tokens=4000, timeout=120, **_kw):
         visti.append(user)
         return json.dumps({"title": "Fatturato", "sheets": []})
     monkeypatch.setattr(orch, "complete", finto_complete)
@@ -693,7 +693,7 @@ def test_cowork_non_richiama_presidio_dopo_un_guasto(monkeypatch):
     from app import cowork, knowledge as kn
     passi = []
 
-    def finto_complete(system, user, settings, max_tokens=2500, timeout=120):
+    def finto_complete(system, user, settings, max_tokens=2500, timeout=120, **_kw):
         passi.append(user)
         if len(passi) == 1:
             # il modello cita il file con il codice: il ripristino deve ridare il nome vero

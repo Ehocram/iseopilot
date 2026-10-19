@@ -183,7 +183,7 @@ def test_chat_trigger_inerte_a_flag_spento(monkeypatch):
 def test_build_spec_riceve_note(monkeypatch):
     catturato = {}
 
-    def fake_complete(system, user, settings, max_tokens=4000, timeout=120):
+    def fake_complete(system, user, settings, max_tokens=4000, timeout=120, **_kw):
         catturato["user"] = user
         return '{"title": "x", "sections": []}'
 
@@ -196,7 +196,7 @@ def test_build_spec_riceve_note(monkeypatch):
 def test_cowork_riceve_note(monkeypatch):
     catture = []
 
-    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120, **_kw):
         catture.append(user)
         return '{"azione": "rispondi", "testo": "Hecho. [Fonte: Doc.docx]"}'
 

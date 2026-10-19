@@ -309,7 +309,12 @@ def test_traduzione_mascherata_e_ripristinata_come_testo():
 def test_lmstudio_invariato():
     ds = _ds(engine="lmstudio")
     lm, dyn = _Claude(_piano_agentico), _Dynamics()
+    # lm.local risolve a un indirizzo privato (DNS finto): uscita lo ammette
+    import socket
+    _dns = lambda host, porta, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                                          ("192.168.10.5", porta))]
     with patch.object(presidio_client, "analizza", _presidio_vietato), \
+            patch("socket.getaddrinfo", _dns), \
             patch("requests.post", lm), patch("requests.get", dyn):
         out = ds.dynamic_query("ordini di Giovanni Verdi")
     assert lm.payload and all(u == "http://lm.local/v1/chat/completions" for u, _ in lm.payload)

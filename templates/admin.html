@@ -10,6 +10,7 @@
 <div class="wrap">
   <form method="post" action="/admin" autocomplete="off">
     {% if saved %}<div class="flash ok">✓ Impostazioni salvate.</div>{% endif %}
+    {% if lm_err %}<div class="flash err">Impostazioni NON salvate. {{ lm_err }}</div>{% endif %}
 
     <!-- Connessione AI -->
     <div class="panel">

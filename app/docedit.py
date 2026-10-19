@@ -30,6 +30,7 @@ import zipfile
 from pathlib import Path
 
 from . import orchestrator
+from .anonymizer import Anonymizer
 
 OUT_DIR = Path(tempfile.gettempdir()) / "iseopilot_docs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -170,11 +171,24 @@ def build_plan(fmt: str, richiesta: str, testo_doc: str, settings: dict,
         f"Le modifiche vanno scritte nella lingua del documento; le note in {lang}, "
         "salvo diversa lingua chiesta esplicitamente dall'utente. "
         f"Massimo {MAX_MODIFICHE} modifiche.\n\n" + schema)
+    # Protezione dei dati come in docgen: richiesta, note e testo del documento
+    # si mascherano UNA volta, con UNA mappa (il dizionario arriva nei settings,
+    # _anon_names; l'esito resta in _esito_protezione per le note in chat). Il
+    # testo si taglia PRIMA: il taglio non lascia mezzo nome in chiaro. Il piano
+    # si interpreta con i segnaposto e si ripristina foglia per foglia, così gli
+    # ancoraggi «trova» tornano al testo vero del documento.
+    anon = Anonymizer()
+    (richiesta, note_utente, testo_doc), esito = anon.mask_batch(
+        [richiesta or "", note_utente or "", (testo_doc or "")[:TESTO_MAX_CHARS]],
+        settings.get("_anon_names") or [])
+    settings["_esito_protezione"] = esito
+    system += "\n\n" + orchestrator.ISTRUZIONE_SEGNAPOSTO
     note = ("\n\n" + note_utente.strip()) if note_utente and note_utente.strip() else ""
     user = (f"RICHIESTA DI MODIFICA:\n{richiesta}{note}\n\n"
-            f"CONTENUTO ATTUALE DEL DOCUMENTO:\n{testo_doc[:TESTO_MAX_CHARS]}")
-    raw = orchestrator.complete(system, user, settings, max_tokens=4000)
-    plan = _parse_json(raw)
+            f"CONTENUTO ATTUALE DEL DOCUMENTO:\n{testo_doc}")
+    raw = orchestrator.complete(system, user, settings, max_tokens=4000,
+                                scopo="docedit", controllo=anon)
+    plan = anon.restore_struttura(_parse_json(raw))
     mods = plan.get("modifiche") or []
     if not isinstance(mods, list):
         raise ValueError("Piano di modifiche non valido: 'modifiche' non è una lista.")

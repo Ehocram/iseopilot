@@ -260,8 +260,6 @@ def verifica_patch(patch: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════ ciclo con Claude
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-
 SISTEMA = """Sei l'assistente sviluppatore di ISEOPilot, un'applicazione FastAPI
 in Python con template Jinja2. Lavori sul codice sorgente reale.
 
@@ -316,17 +314,16 @@ STRUMENTI = [
 
 def _chiama_claude(messaggi: list, settings: dict, max_tokens: int = 4000,
                    timeout: int = 180) -> dict:
-    import requests
+    from . import uscita
     chiave = (settings.get("claude_api_key") or "").strip()
     if not chiave:
         raise RuntimeError("Chiave API Claude non configurata dall'amministratore.")
     modello = ((settings.get("claude_model_dev") or "").strip()
                or (settings.get("claude_model") or "").strip() or "claude-opus-4-8")
-    r = requests.post(ANTHROPIC_URL, json={
+    # scopo «devchat»: in chiaro per scelta del CISO (solo admin, codice sorgente)
+    r = uscita.invia("devchat", {
         "model": modello, "max_tokens": max_tokens, "system": SISTEMA,
-        "tools": STRUMENTI, "messages": messaggi},
-        headers={"x-api-key": chiave, "anthropic-version": "2023-06-01",
-                 "content-type": "application/json"}, timeout=timeout)
+        "tools": STRUMENTI, "messages": messaggi}, chiave, timeout=timeout)
     if r.status_code != 200:
         raise RuntimeError(f"API Claude HTTP {r.status_code}: {r.text[:300]}")
     return r.json()

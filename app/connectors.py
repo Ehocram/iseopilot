@@ -27,7 +27,7 @@ from pathlib import Path
 
 import requests
 
-from . import store
+from . import store, uscita
 from .engines import onedrive_search, dynamics_search, powerbi_search
 
 # Catalogo entità e schema .md Dynamics: reindirizzati sotto il volume dati
@@ -553,6 +553,11 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
                     text = dyn.search(query, max_results=max_results,
                                       current_user_name=current_user_name) or ""
                     _dyn_log(f"search conclusa | caratteri_risultato={len(text)}")
+                    if getattr(dyn, "uscita_bloccata", None) is not None:
+                        # Il controllo in uscita ha fermato il planner: nessun
+                        # risultato parziale, l'errore arriva all'utente.
+                        _dyn_log("protezione: richiesta a Claude BLOCCATA dal controllo in uscita")
+                        raise dyn.uscita_bloccata
                     if getattr(dyn, "presidio_non_disponibile", False):
                         # Nessun testo nel log: solo l'esito.
                         _dyn_log("protezione: Presidio non disponibile, verso Claude "
@@ -570,6 +575,8 @@ def search_with_links(user: str, conn: str, query: str, max_results: int = 3,
                     return text, links
                 finally:
                     dynamics_search.TOKEN_FILE = prev
+        except uscita.UscitaBloccata:
+            raise
         except Exception as e:
             import traceback
             _dyn_log("ECCEZIONE durante la ricerca " + conn + ":\n" + traceback.format_exc())

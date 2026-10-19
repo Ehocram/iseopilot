@@ -1,11 +1,13 @@
 """
 translate.py — traduzione dei segmenti per il doppiaggio.
-Backend: Claude API (api.anthropic.com) oppure endpoint OpenAI-compatibile
-(es. LM Studio locale). Nessun SDK: solo `requests`.
+Backend: Claude (attraverso app/uscita.py, scopo «dub») oppure endpoint
+OpenAI-compatibile (es. LM Studio locale). Nessun SDK: solo `requests`.
 """
 import json
 
 import requests
+
+from .. import uscita
 
 LANG_NAMES = {"it": "italiano", "en": "inglese", "es": "spagnolo (Spagna)",
               "fr": "francese", "de": "tedesco"}
@@ -108,14 +110,12 @@ def _batched(call, texts, limits=None, batch=BATCH, retries=1):
 def translate_claude(texts, lang, api_key, model="claude-sonnet-4-6",
                      context="", glossary="", src="it", limits=None, timeout=180):
     def call(chunk, lims):
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": model, "max_tokens": 8000, "system": SYSTEM,
-                  "messages": [{"role": "user",
-                                "content": _prompt(chunk, lang, context, glossary, src, lims)}]},
-            timeout=timeout)
+        r = uscita.invia(
+            "dub",
+            {"model": model, "max_tokens": 8000, "system": SYSTEM,
+             "messages": [{"role": "user",
+                           "content": _prompt(chunk, lang, context, glossary, src, lims)}]},
+            api_key, timeout=timeout)
         _check(r)
         return _parse(r.json()["content"][0]["text"], len(chunk))
     return _batched(call, texts, limits)
@@ -143,10 +143,7 @@ def translate_openai_compat(texts, lang, base_url, api_key="", model="local-mode
 
 def list_claude_models(api_key, timeout=15):
     """Modelli realmente disponibili per questa API key (GET /v1/models)."""
-    r = requests.get("https://api.anthropic.com/v1/models",
-                     headers={"x-api-key": api_key,
-                              "anthropic-version": "2023-06-01"},
-                     timeout=timeout)
+    r = uscita.elenca_modelli(api_key, timeout=timeout)
     _check(r)
     return [m["id"] for m in r.json().get("data", []) if m.get("id")]
 
@@ -197,15 +194,12 @@ def make_shortener(cfg):
         sysmsg = SHORTEN_PROMPT.format(lang=LANG_NAMES.get(lang, lang),
                                        n=int(max_chars))
         if b == "claude":
-            r = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": cfg["api_key"],
-                         "anthropic-version": "2023-06-01",
-                         "content-type": "application/json"},
-                json={"model": cfg.get("model") or "claude-sonnet-4-6",
-                      "max_tokens": 500, "system": sysmsg,
-                      "messages": [{"role": "user", "content": text}]},
-                timeout=90)
+            r = uscita.invia(
+                "dub",
+                {"model": cfg.get("model") or "claude-sonnet-4-6",
+                 "max_tokens": 500, "system": sysmsg,
+                 "messages": [{"role": "user", "content": text}]},
+                cfg["api_key"], timeout=90)
             _check(r)
             out = r.json()["content"][0]["text"]
         else:

@@ -254,7 +254,7 @@ def test_build_plan_tetto_e_json_sporco(monkeypatch):
     from app import orchestrator
     tante = ",".join('{"trova": "a%d", "sostituisci": "b"}' % i for i in range(60))
     monkeypatch.setattr(docedit.orchestrator, "complete",
-                        lambda s, u, st, max_tokens=4000, timeout=120:
+                        lambda s, u, st, max_tokens=4000, timeout=120, **_kw:
                         '```json\n{"modifiche": [' + tante + '], "note": ""}\n```')
     plan = docedit.build_plan("docx", "richiesta", "testo", {"claude_api_key": "k"})
     assert len(plan["modifiche"]) == docedit.MAX_MODIFICHE
@@ -263,7 +263,7 @@ def test_build_plan_tetto_e_json_sporco(monkeypatch):
 
 def test_build_plan_json_invalido_fail_loud(monkeypatch):
     monkeypatch.setattr(docedit.orchestrator, "complete",
-                        lambda s, u, st, max_tokens=4000, timeout=120: "non è json")
+                        lambda s, u, st, max_tokens=4000, timeout=120, **_kw: "non è json")
     with pytest.raises(ValueError):
         docedit.build_plan("docx", "r", "t", {"claude_api_key": "k"})
 
@@ -291,7 +291,7 @@ def test_flusso_chat_modifica_documento_allegato(monkeypatch):
     assert a["ok"] and a.get("editable") is True      # sorgente conservato
 
     monkeypatch.setattr(docedit.orchestrator, "complete",
-                        lambda s, u, st, max_tokens=4000, timeout=120:
+                        lambda s, u, st, max_tokens=4000, timeout=120, **_kw:
                         '{"modifiche": [{"trova": "12.000 euro", '
                         '"sostituisci": "14.500 euro", "motivo": "listino 2026"}], "note": ""}')
     r = c.post("/api/chat", json={"engine": "claude", "free_mode": False, "source": "kb",

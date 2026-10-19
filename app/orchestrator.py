@@ -22,11 +22,10 @@ from __future__ import annotations
 import json
 from typing import Iterator
 
-import requests
+import requests  # noqa: F401 — i test intercettano orchestrator.requests.post
 
+from . import uscita
 from .anonymizer import Anonymizer
-
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 # Istruzione FISSA sui segnaposto: senza, il modello traduce o «corregge» i
 # codici e il ripristino non li ritrova.
@@ -212,15 +211,21 @@ def _stream_claude(messages, settings, anon_names, context: str = "", free_mode:
             "informazioni recenti, prezzi, trend o fatti verificabili online. Nel testo "
             "della risposta cita SEMPRE i link delle fonti web che hai usato.")
     web_used = 0
+    # Istruzioni fisse del system (senza i dati): un loro esempio che coincide
+    # con un valore della mappa non è una fuga per il controllo in uscita.
+    fisso = build_system(settings.get("tone_key", "Aziendale formale"),
+                         settings.get("reply_lang", "Italiano"),
+                         "·" if (context_m or "").strip() else "", free_mode)
+    fisso += payload["system"][len(system):]
 
     try:
-        resp = requests.post(
-            ANTHROPIC_URL,
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                     "Content-Type": "application/json"},
-            json=payload, stream=True, timeout=120,
-        )
+        resp = uscita.invia("chat", payload, api_key, stream=True, timeout=120,
+                            controllo=anon, fisso=(fisso,))
         resp.raise_for_status()
+    except uscita.UscitaBloccata as e:
+        # Nulla è partito: errore chiaro, nessun avviso su Presidio.
+        yield _sse({"type": "error", "text": str(e)})
+        return
     except Exception as e:
         yield _sse({"type": "error", "text": f"Errore chiamata Claude: {e}"})
         # Il payload può essere già partito: l'utente deve sapere comunque che
@@ -297,8 +302,8 @@ def _stream_lmstudio(messages, settings, context: str = "", free_mode: bool = Fa
                "max_tokens": settings.get("lm_max_tokens", 1024),
                "temperature": settings.get("lm_temperature", 0.3), "stream": True}
     try:
-        resp = requests.post(url, headers={"Content-Type": "application/json"},
-                             json=payload, stream=True, timeout=300)
+        # uscita.invia_locale rifiuta un endpoint che non sia privato o locale
+        resp = uscita.invia_locale(url, payload, stream=True, timeout=300)
         resp.raise_for_status()
     except Exception as e:
         yield _sse({"type": "error", "text": f"Errore LM Studio: {e}"})
@@ -321,21 +326,57 @@ def _stream_lmstudio(messages, settings, context: str = "", free_mode: bool = Fa
 
 
 # ── Dispatcher ──────────────────────────────────────────────
+def _complete_lmstudio(system: str, user_text: str, settings: dict, max_tokens: int,
+                       timeout: int) -> str:
+    """complete() con LM Studio: stesso endpoint della chat, senza streaming.
+    Nessun ripiego su Claude: se LM Studio non risponde è un errore."""
+    url = settings.get("lm_url", "").strip()
+    model = settings.get("lm_model", "").strip()
+    if not url:
+        raise RuntimeError("Endpoint LM Studio non configurato dall'amministratore.")
+    payload = {"model": model or "local-model",
+               "messages": [{"role": "system", "content": system},
+                            {"role": "user", "content": user_text}],
+               "max_tokens": max_tokens,
+               "temperature": settings.get("lm_temperature", 0.3), "stream": False}
+    try:
+        resp = uscita.invia_locale(url, payload, timeout=timeout)
+    except uscita.EndpointNonPrivato:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Errore LM Studio: {e}") from e
+    if resp.status_code != 200:
+        raise RuntimeError(f"Errore LM Studio ({resp.status_code}): {(resp.text or '').strip()[:200]}")
+    try:
+        return resp.json()["choices"][0]["message"]["content"] or ""
+    except Exception as e:
+        raise RuntimeError(f"Risposta di LM Studio non leggibile: {type(e).__name__}") from e
+
+
 def complete(system: str, user_text: str, settings: dict, max_tokens: int = 4000,
-             timeout: int = 120) -> str:
-    """Chiamata Claude NON in streaming: ritorna il testo completo. Usata per
-    generare contenuti strutturati (documenti) e riscritture brevi."""
+             timeout: int | None = None, *, scopo: str = "", controllo=None) -> str:
+    """Chiamata NON in streaming: ritorna il testo completo. Usata per generare
+    contenuti strutturati (documenti), piani e riscritture brevi.
+
+    Il motore è quello scelto per la richiesta (settings["ai_engine"], come in
+    stream_reply): con LM Studio non si chiama MAI Claude, nemmeno come ripiego.
+    `scopo` è quello di uscita.SCOPI; `controllo` l'Anonymizer del chiamante
+    per il controllo in uscita. Il system di tutti i chiamanti contiene solo
+    istruzioni fisse (i dati vanno in user_text): vale come testo fisso."""
+    uscita.politica(scopo)                     # scopo sconosciuto: ValueError subito
+    if settings.get("ai_engine", "claude") == "lmstudio":
+        # i modelli locali sono lenti: senza un tempo esplicito si attende di più
+        return _complete_lmstudio(system, user_text, settings, max_tokens,
+                                  timeout if timeout is not None else 300)
     api_key = settings.get("claude_api_key", "").strip()
     model = settings.get("claude_model", "claude-opus-4-8").strip() or "claude-opus-4-8"
     if not api_key:
         raise RuntimeError("Chiave API Claude non configurata dall'amministratore.")
     payload = {"model": model, "max_tokens": max_tokens, "system": system,
                "messages": [{"role": "user", "content": user_text}]}
-    resp = requests.post(
-        ANTHROPIC_URL, json=payload,
-        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                 "content-type": "application/json"},
-        timeout=timeout)
+    resp = uscita.invia(scopo, payload, api_key,
+                        timeout=timeout if timeout is not None else 120,
+                        controllo=controllo, fisso=(system,))
     if resp.status_code != 200:
         body = (resp.text or "").strip()
         if body.startswith("<") or "<!DOCTYPE" in body[:200] or "<html" in body[:200].lower():

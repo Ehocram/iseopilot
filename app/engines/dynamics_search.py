@@ -702,6 +702,7 @@ class DynamicsSearch:
         self._anon_memo = {}       # testo in chiaro -> testo mascherato (domanda, note)
         self._anon_codici = []     # codici risolti da nomi: mascherati nei passi successivi
         self.presidio_non_disponibile = False
+        self.uscita_bloccata = None  # UscitaBloccata del controllo in uscita, se scattato
 
     # ╔══════════════════════════════════════════════════════════════════════╗
     # ║  PROTEZIONE DEI DATI verso Claude                                     ║
@@ -3074,9 +3075,14 @@ class DynamicsSearch:
         l'intera operazione dinamica.
         """
         import requests as req, time as _time
+        from .. import uscita
         engine = self.cfg.get("ai_engine", "lmstudio")
         RETRY_STATUS = {429, 529}
         MAX_RETRY = 3
+        # Dopo un blocco del controllo in uscita la ricerca non invia più nulla:
+        # connectors rilancia l'errore e la chat lo mostra all'utente.
+        if getattr(self, "uscita_bloccata", None) is not None:
+            return ""
         try:
             if engine == "claude":
                 key = self.cfg.get("claude_api_key", "")
@@ -3096,13 +3102,14 @@ class DynamicsSearch:
 
                 def _call(model_name: str) -> str | None:
                     for tentativo in range(MAX_RETRY):
-                        r = req.post("https://api.anthropic.com/v1/messages",
-                            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                                     "Content-Type": "application/json"},
-                            json={"model": model_name, "max_tokens": max_tokens,
-                                  "system": system_prompt,
-                                  "messages": [{"role": "user", "content": user_prompt}]},
-                            timeout=45)
+                        # Il system contiene istruzioni fisse (anche esempi di
+                        # nomi): vale come testo fisso per il controllo in uscita.
+                        r = uscita.invia("dynamics",
+                            {"model": model_name, "max_tokens": max_tokens,
+                             "system": system_prompt,
+                             "messages": [{"role": "user", "content": user_prompt}]},
+                            key, timeout=45, controllo=getattr(self, "_anon", None),
+                            fisso=(system_prompt,))
                         if r.status_code in RETRY_STATUS and tentativo < MAX_RETRY - 1:
                             attesa = 3 * (tentativo + 1)  # 3s, poi 6s
                             _dbg(f"dynamic: AI claude HTTP {r.status_code} (sovraccarico), "
@@ -3153,16 +3160,21 @@ class DynamicsSearch:
             else:  # lmstudio (locale: nessun retry, non si sovraccarica come il cloud)
                 url = self.cfg.get("lm_url", "http://localhost:1234/v1/chat/completions")
                 model = self.cfg.get("lm_model", "local-model")
-                r = req.post(url,
-                    headers={"Content-Type": "application/json"},
-                    json={"model": model, "max_tokens": max_tokens, "temperature": 0,
-                          "messages": [{"role": "system", "content": system_prompt},
-                                       {"role": "user", "content": user_prompt}]},
+                # rifiuta un endpoint che non sia privato o locale (nessun invio)
+                r = uscita.invia_locale(url,
+                    {"model": model, "max_tokens": max_tokens, "temperature": 0,
+                     "messages": [{"role": "system", "content": system_prompt},
+                                  {"role": "user", "content": user_prompt}]},
                     timeout=60)
                 if r.status_code != 200:
                     _dbg(f"dynamic: AI lmstudio HTTP {r.status_code}")
                     return ""
                 return r.json()["choices"][0]["message"]["content"].strip()
+        except uscita.UscitaBloccata as e:
+            _dbg(f"dynamic: controllo in uscita, richiesta BLOCCATA "
+                 f"(tipo={e.tipo}, valori={e.conteggio})")
+            self.uscita_bloccata = e
+            return ""
         except Exception as e:
             _dbg(f"dynamic: AI errore {e}")
             return ""

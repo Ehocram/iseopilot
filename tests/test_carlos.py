@@ -384,7 +384,7 @@ def test_cowork_finalizza_documento_a_passi_esauriti(monkeypatch):
     a 'componi' — il documento va COMPOSTO comunque in finalizzazione."""
     import json as _json
 
-    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120, **_kw):
         if "JSON valido" in system:      # chiamata di finalizzazione: la spec
             return _json.dumps({"title": "NIS2 Sales Guide",
                                 "sections": [{"heading": "S", "paragraphs": ["p"],
@@ -403,7 +403,7 @@ def test_cowork_finalizza_documento_a_passi_esauriti(monkeypatch):
 
 
 def test_cowork_senza_richiesta_documento_niente_finalizzazione(monkeypatch):
-    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120, **_kw):
         if "LIMITE PASSI RAGGIUNTO" in user:
             return "Sintesi testuale."
         return '{"azione": "cerca", "query": "nis2"}'
@@ -431,7 +431,7 @@ def test_cowork_componi_usa_template_personale(monkeypatch):
     monkeypatch.setattr(cowork.docgen, "gen_docx", spia)
     calls = {"n": 0}
 
-    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120, **_kw):
         calls["n"] += 1
         if calls["n"] == 1:
             return _json.dumps({"azione": "componi",
@@ -460,7 +460,7 @@ def test_build_system_precedenza_lingua_esplicita():
 def test_build_spec_dichiara_lingua_e_prevalenza(monkeypatch):
     catturato = {}
 
-    def fake_complete(system, user, settings, max_tokens=4000, timeout=120):
+    def fake_complete(system, user, settings, max_tokens=4000, timeout=120, **_kw):
         catturato["system"] = system
         return '{"title": "x", "sections": []}'
 
@@ -474,7 +474,7 @@ def test_build_spec_dichiara_lingua_e_prevalenza(monkeypatch):
 def test_cowork_riceve_conversazione_e_regola_lingua(monkeypatch):
     catture = []
 
-    def fake_complete(system, user, settings, max_tokens=2500, timeout=120):
+    def fake_complete(system, user, settings, max_tokens=2500, timeout=120, **_kw):
         catture.append((system, user))
         return '{"azione": "rispondi", "testo": "Hecho. [Fonte: NIS2 Guide.docx]"}'
 

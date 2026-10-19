@@ -31,7 +31,7 @@ from starlette.background import BackgroundTask
 from . import diag
 diag.install()
 
-from . import auth, connectors, devchat, docedit, docgen, i18n, knowledge, memory, store
+from . import auth, connectors, devchat, docedit, docgen, i18n, knowledge, memory, store, uscita
 from .connectors import (DEF_OD_CLIENT_ID, DEF_OD_TENANT_ID, DEF_DYN_CLIENT_ID,
                          DEF_DYN_TENANT_ID, DEF_DYN_RESOURCE_URL,
                          DEF_PBI_CLIENT_ID, DEF_PBI_TENANT_ID)
@@ -461,6 +461,29 @@ def _area_settings(base: dict, area_key: str) -> dict:
     return s2
 
 
+ISTRUZIONE_RISCRITTURA = (
+    "Trasforma la domanda in una query di ricerca documentale efficace: "
+    "parole chiave essenziali, nomi propri e sinonimi utili, includendo "
+    "gli equivalenti sia in italiano sia in inglese (i documenti sono in "
+    "entrambe le lingue). Massimo 15 parole. Rispondi SOLO con la query, "
+    "senza commenti né punteggiatura finale.")
+
+
+def _riscrivi_query(search_q: str, settings: dict) -> str:
+    """Riscrittura AI della query di ricerca (Conoscenza, Cartelle). La domanda
+    parte MASCHERATA (dizionario, regex, Presidio) e la query riscritta torna
+    con i valori originali PRIMA della ricerca locale: nomi e codici devono
+    ritrovare i documenti. Il motore è quello della richiesta (LM Studio
+    compreso, senza ripiego su Claude)."""
+    from .anonymizer import Anonymizer
+    from .orchestrator import complete, ISTRUZIONE_SEGNAPOSTO
+    anon = Anonymizer()
+    (q_m,), _esito = anon.mask_batch([search_q or ""], anon_names())
+    rq = complete(ISTRUZIONE_RISCRITTURA + " " + ISTRUZIONE_SEGNAPOSTO, q_m, settings,
+                  max_tokens=60, timeout=20, scopo="riscrittura", controllo=anon)
+    return anon.restore((rq or "").strip()).strip()
+
+
 def _client_ip(request: Request) -> str:
     """IP reale del client. Dietro il reverse proxy (Caddy) l'IP diretto è quello
     del proxy: si legge il primo della catena X-Forwarded-For."""
@@ -815,16 +838,11 @@ def api_chat(request: Request, body: ChatRequest):
                 search_q_ai = search_q
                 if src in ("kb", "folder") and store.get_setting("search_ai_rewrite", "0") == "1":
                     try:
-                        from .orchestrator import complete as _complete
-                        rq = _complete(
-                            "Trasforma la domanda in una query di ricerca documentale efficace: "
-                            "parole chiave essenziali, nomi propri e sinonimi utili, includendo "
-                            "gli equivalenti sia in italiano sia in inglese (i documenti sono in "
-                            "entrambe le lingue). Massimo 15 parole. Rispondi SOLO con la query, "
-                            "senza commenti né punteggiatura finale.",
-                            search_q, _area_settings(settings, "claude_model_rewrite"), max_tokens=60, timeout=20).strip()
+                        rq = _riscrivi_query(search_q, _area_settings(settings, "claude_model_rewrite"))
                         if rq and 2 <= len(rq.split()) <= 25:
                             search_q_ai = rq
+                    except uscita.UscitaBloccata:
+                        raise              # nulla è partito: lo vede l'utente
                     except Exception as e:
                         import sys
                         print(f"[search] riscrittura AI non disponibile, uso query deterministica: {str(e)[:120]}", file=sys.stderr)
@@ -868,6 +886,8 @@ def api_chat(request: Request, body: ChatRequest):
                 # budget alzato (caso Carlos): più documenti per argomento senza
                 # tagli in coda; ampiamente dentro la finestra del modello.
                 context = knowledge._fit_budget([p for p in parts if p.strip()], 12000)
+            except uscita.UscitaBloccata:
+                raise                  # nessun contesto di ripiego: errore all'utente
             except Exception as e:
                 # Un errore del connettore svuotava il contesto senza dire nulla.
                 # Il modello rispondeva allora con l'unica cosa rimasta, cioe' lo
@@ -1026,6 +1046,12 @@ def api_chat(request: Request, body: ChatRequest):
                     context, source_links = item[1]
                 else:
                     yield item
+        except uscita.UscitaBloccata as e:
+            # Il controllo in uscita ha fermato una richiesta (riscrittura o
+            # planner Dynamics): nulla è partito, si dice e ci si ferma.
+            yield "data: " + json.dumps({"type": "error", "text": str(e)},
+                                        ensure_ascii=False) + "\n\n"
+            return
         except Exception:
             context, source_links = "", []
 
@@ -1053,11 +1079,14 @@ def api_chat(request: Request, body: ChatRequest):
                 _nome = str(edit_att.get("name") or f"documento{_ext}")
                 _testo = _attach_load(uid, str(edit_att.get("id")))
 
+                # Protezione dei dati come per la generazione: il dizionario
+                # passa nei settings (copia), l'esito torna per le note finali.
+                _es = dict(_area_settings(settings, "claude_model_docgen"))
+                _es["_anon_names"] = anon_names()
+
                 def _lavoro():
-                    plan = docedit.build_plan(
-                        _fmt, query, _testo,
-                        _area_settings(settings, "claude_model_docgen"),
-                        note_utente=_note_ctx)
+                    plan = docedit.build_plan(_fmt, query, _testo, _es,
+                                              note_utente=_note_ctx)
                     return plan, docedit.apply_plan(_fmt, _src_path, plan)
 
                 _res = None
@@ -1070,9 +1099,16 @@ def api_chat(request: Request, body: ChatRequest):
                 _stem = Path(_nome).stem
                 fname = f"{_stem} (rev).{_fmt}"
                 token = connectors.register_download(uid, out_path, fname)
-                yield "data: " + json.dumps({"type": "delta", "text": docedit.riepilogo(
+                _msg_ed = docedit.riepilogo(
                     fname, _fmt, ok, ko, avvisi, plan.get("troncato", False),
-                    str(plan.get("note") or ""))}, ensure_ascii=False) + "\n\n"
+                    str(plan.get("note") or ""))
+                _esito = _es.get("_esito_protezione") or {}
+                if _esito.get("totale"):
+                    _msg_ed += "\n\n" + orchestrator_nota(_esito["totale"])
+                if _esito and not _esito.get("presidio_ok"):
+                    _msg_ed += "\n\n" + AVVISO_PRESIDIO
+                yield "data: " + json.dumps({"type": "delta", "text": _msg_ed},
+                                            ensure_ascii=False) + "\n\n"
                 yield "data: " + json.dumps({"type": "sources", "items": [
                     {"name": fname, "url": "/download/" + token, "kind": "download"}]},
                     ensure_ascii=False) + "\n\n"
@@ -1444,6 +1480,7 @@ def admin_page(request: Request):
         dyn_msg=request.query_params.get("dyn_msg", ""),
         dyn_err=request.query_params.get("dyn_err", ""),
         saved=request.query_params.get("saved") == "1",
+        lm_err=request.query_params.get("lm_err", ""),
     ))
 
 
@@ -1494,6 +1531,14 @@ def admin_save(
     user = auth.current_user(request)
     if not user or not user["is_admin"]:
         raise HTTPException(status_code=403, detail="Accesso riservato all'amministratore.")
+    # LM Studio riceve i dati IN CHIARO: solo un endpoint interno (privato o
+    # loopback). Rifiuto prima di salvare qualunque cosa, con il motivo.
+    if lm_url.strip():
+        _lm_err = uscita.verifica_lm_url(lm_url.strip())
+        if _lm_err:
+            from urllib.parse import quote as _q
+            _audit(request, user["username"], "lm_url_rifiutato", "endpoint non privato o non risolvibile")
+            return RedirectResponse(url="/admin?lm_err=" + _q(_lm_err), status_code=303)
     if claude_api_key.strip():
         store.set_setting("claude_api_key", claude_api_key.strip(), secret=True)
     store.set_setting("claude_model", claude_model.strip() or "claude-opus-4-8")
