@@ -22,9 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # variante di default trascina l'intero stack CUDA NVIDIA (diversi GB di
 # ruote cublas/cudnn/nccl/triton) — causa del "no space left on device".
 # Con torch già presente, sentence-transformers lo riusa e non lo sostituisce.
-COPY requirements.txt requirements-connectors.txt ./
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
- && pip install --no-cache-dir -r requirements.txt -r requirements-connectors.txt
+# constraints-prod.txt fissa le versioni a quelle in produzione (pip list del
+# container): i requirements non hanno versioni, e un build senza cache
+# aggiornerebbe in silenzio torch, transformers, uvicorn… Per aggiornare una
+# dipendenza si cambia la sua riga lì, di proposito.
+COPY requirements.txt requirements-connectors.txt constraints-prod.txt ./
+RUN pip install --no-cache-dir torch -c constraints-prod.txt --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir -r requirements.txt -r requirements-connectors.txt -c constraints-prod.txt
 
 # Codice applicativo (include i template documentali in app/doc_templates)
 COPY app/ ./app/
